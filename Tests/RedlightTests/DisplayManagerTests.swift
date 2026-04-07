@@ -93,4 +93,35 @@ final class MockGammaController: GammaControlling {
         manager.toggle(1)
         #expect(manager.isAnyActive == false)
     }
+
+    @Test func persistenceRoundTripsIntensity() {
+        let d = freshDefaults()
+        let manager1 = makeManager(defaults: d)
+        manager1.intensity = 0.7
+
+        let manager2 = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { [1] },
+            getDisplayName: { "Display \($0)" },
+            defaults: d
+        )
+
+        #expect(manager2.intensity == 0.7)
+    }
+
+    @Test func persistenceRoundTripsDisplayState() {
+        let d = freshDefaults()
+        let manager1 = makeManager(displayIDs: [1], defaults: d)
+        manager1.toggle(1)
+
+        // Second instance picks up persisted state via refreshDisplays() in init
+        let manager2 = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { [1] },
+            getDisplayName: { "Display \($0)" },
+            defaults: d
+        )
+
+        #expect(manager2.displays[0].isEnabled == true)
+    }
 }
