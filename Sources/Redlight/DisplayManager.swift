@@ -77,7 +77,21 @@ final class DisplayManager {
     // MARK: - System Events
 
     func startListening() {
-        // Stub — filled in Task 6
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyToActiveDisplays()
+        }
+
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshDisplays()
+        }
     }
 
     func stopListening() {
