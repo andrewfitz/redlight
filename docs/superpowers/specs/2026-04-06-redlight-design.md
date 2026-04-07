@@ -27,7 +27,7 @@ Wraps Core Graphics gamma APIs. Responsible for applying and restoring gamma on 
   - Red channel: `min = 0, max = intensity, gamma = 1.0`
   - Green channel: `min = 0, max = 0, gamma = 1.0`
   - Blue channel: `min = 0, max = 0, gamma = 1.0`
-- **Restore:** `CGDisplayRestoreColorSyncSettings(displayID)`
+- **Restore single display:** Call `CGDisplayRestoreColorSyncSettings()` (global, no per-display parameter), then re-apply filter to any other still-active displays. This preserves custom ICC color profiles.
 - Stateless — receives display ID and intensity, applies or restores.
 
 ### DisplayManager
