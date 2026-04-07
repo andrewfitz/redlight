@@ -2,12 +2,15 @@ import SwiftUI
 
 @main
 struct RedlightApp: App {
+    @State private var manager = DisplayManager()
+
     var body: some Scene {
         MenuBarExtra {
-            Text("Redlight is running")
-                .padding()
+            MenuBarView(manager: manager)
         } label: {
-            Image(systemName: "circle.fill")
+            Circle()
+                .fill(manager.isAnyActive ? Color.red : Color.gray)
+                .frame(width: 8, height: 8)
         }
         .menuBarExtraStyle(.window)
     }
