@@ -30,7 +30,7 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                 Slider(
                     value: $manager.intensity,
-                    in: 0.1...1.0
+                    in: 0.0...1.0
                 )
             }
 

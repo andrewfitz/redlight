@@ -24,9 +24,7 @@ struct RedlightApp: App {
         MenuBarExtra {
             MenuBarView(manager: manager)
         } label: {
-            Circle()
-                .fill(manager.isAnyActive ? Color.red : Color.gray)
-                .frame(width: 8, height: 8)
+            Image(systemName: manager.isAnyActive ? "circle.fill" : "circle")
         }
         .menuBarExtraStyle(.window)
     }
