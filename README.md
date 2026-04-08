@@ -4,7 +4,8 @@ A macOS menu bar app that applies a red screen filter by manipulating display ga
 
 ## What it does
 
-- Slider goes from **normal screen** (100%) to **pure red** (0%), passing through warm orange tones
+- **Intensity slider** goes from **normal screen** (100%) to **pure red** (0%), passing through warm orange tones
+- **Reduce White Point slider** dims bright areas while leaving darks mostly unchanged — like iOS Reduce White Point but adjustable
 - Per-display toggle — control each monitor independently
 - Remembers your settings across launches
 - Restores normal display on quit
@@ -16,6 +17,7 @@ Click the circle icon in the menu bar to open the popover:
 
 - Toggle each display on/off
 - Drag the intensity slider to control how much blue/green light to remove
+- Drag the white point slider to reduce peak brightness without dimming darks
 - Filled circle = active, outline = inactive
 
 ## Install
@@ -27,14 +29,7 @@ Or build from source:
 ```bash
 git clone https://github.com/andrewfitz/redlight.git
 cd redlight
-swift build -c release
-```
-
-Then create the app bundle:
-
-```bash
-mkdir -p Redlight.app/Contents/MacOS Redlight.app/Contents/Resources
-cp .build/release/Redlight Redlight.app/Contents/MacOS/
+./build.sh
 ```
 
 ## Requirements
@@ -44,7 +39,7 @@ cp .build/release/Redlight Redlight.app/Contents/MacOS/
 
 ## How it works
 
-Uses `CGSetDisplayTransferByFormula` to modify the gamma lookup table per display at the GPU level. Red channel stays at full brightness while green and blue channels scale down — blue drops faster than green to produce a warm orange-to-red transition instead of purple.
+Uses CoreGraphics gamma table APIs (`CGSetDisplayTransferByTable`) to modify the display lookup table per display at the GPU level. Red channel stays at full brightness while green and blue channels scale down — blue drops faster than green to produce a warm orange-to-red transition instead of purple. The white point slider applies a custom transfer curve that concentrates brightness reduction on highlights while preserving darks.
 
 No overlay windows, no accessibility permissions, no screen capture. Just gamma tables.
 
