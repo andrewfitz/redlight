@@ -34,6 +34,16 @@ struct MenuBarView: View {
                 )
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Reduce White Point")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: $manager.whitepoint,
+                    in: 0.25...1.0
+                )
+            }
+
             Divider()
 
             Button("Quit") {

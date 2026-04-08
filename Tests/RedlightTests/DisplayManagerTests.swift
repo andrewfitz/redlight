@@ -4,11 +4,11 @@ import CoreGraphics
 @testable import Redlight
 
 final class MockGammaController: GammaControlling {
-    var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float)] = []
+    var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float)] = []
     var restoreAllCount = 0
 
-    func applyRedFilter(to displayID: CGDirectDisplayID, intensity: Float) {
-        applyCalls.append((displayID, intensity))
+    func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float) {
+        applyCalls.append((displayID, intensity, whitepoint))
     }
 
     func restoreAll() {
