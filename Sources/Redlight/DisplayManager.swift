@@ -17,6 +17,13 @@ final class DisplayManager {
             save()
         }
     }
+    var whitepoint: Double = 1.0 {
+        didSet {
+            guard isInitialized else { return }
+            applyToActiveDisplays()
+            save()
+        }
+    }
 
     var isAnyActive: Bool {
         displays.contains(where: \.isEnabled)
@@ -41,6 +48,7 @@ final class DisplayManager {
         self.getDisplayName = getDisplayName
         self.defaults = defaults
         self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? 0.5
+        self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? 1.0
         refreshDisplays()
         startListening()
         isInitialized = true
@@ -60,7 +68,7 @@ final class DisplayManager {
         guard let i = displays.firstIndex(where: { $0.id == displayID }) else { return }
         displays[i].isEnabled.toggle()
         if displays[i].isEnabled {
-            gamma.applyRedFilter(to: displayID, intensity: Float(intensity))
+            gamma.applyFilter(to: displayID, intensity: Float(intensity), whitepoint: Float(whitepoint))
         } else {
             // Restore all displays to ColorSync profiles (preserves ICC profiles),
             // then re-apply filter to any still-active displays
@@ -105,12 +113,13 @@ final class DisplayManager {
 
     private func applyToActiveDisplays() {
         for display in displays where display.isEnabled {
-            gamma.applyRedFilter(to: display.id, intensity: Float(intensity))
+            gamma.applyFilter(to: display.id, intensity: Float(intensity), whitepoint: Float(whitepoint))
         }
     }
 
     private func save() {
         defaults.set(intensity, forKey: "redlight.intensity")
+        defaults.set(whitepoint, forKey: "redlight.whitepoint")
         for display in displays {
             defaults.set(display.isEnabled, forKey: "redlight.display.\(display.id).enabled")
         }
