@@ -33,8 +33,14 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Redlight uses your location to follow local sunrise and sunset times.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Redlight uses your location to follow local sunrise and sunset times.</string>
 </dict>
 </plist>
 PLIST
+
+codesign --force --deep --sign - "$APP"
 
 echo "Built: $APP"
