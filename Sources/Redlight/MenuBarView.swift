@@ -11,10 +11,20 @@ struct MenuBarView: View {
             Divider()
 
             ForEach(manager.displays) { display in
-                Toggle(display.name, isOn: Binding(
-                    get: { display.isEnabled },
-                    set: { _ in manager.toggle(display.id) }
-                ))
+                HStack {
+                    Toggle(display.name, isOn: Binding(
+                        get: { display.isEnabled },
+                        set: { _ in manager.toggle(display.id) }
+                    ))
+                    Spacer()
+                    Toggle("Invert", isOn: Binding(
+                        get: { display.isInverted },
+                        set: { _ in manager.toggleInvert(display.id) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             if manager.displays.isEmpty {
@@ -73,6 +83,37 @@ struct MenuBarView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+            }
+
+            Divider()
+
+            // MARK: - Adaptive + Greyscale
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Adaptive", isOn: $manager.adaptiveEnabled)
+                    .font(.subheadline)
+
+                if manager.adaptiveEnabled && !manager.adaptiveStatusText.isEmpty {
+                    if manager.adaptiveStatusText == "Location needed" {
+                        Button {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } label: {
+                            Label("Location needed — open Settings", systemImage: "location.slash")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(manager.adaptiveStatusText)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                Toggle("Greyscale", isOn: $manager.grayscale)
+                    .font(.subheadline)
             }
 
             Divider()
