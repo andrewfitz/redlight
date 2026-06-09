@@ -160,16 +160,61 @@ final class FakeLocationProvider: LocationProviding {
         #expect(mock.applyCalls.last?.intensity == Float(1.0))
     }
 
-    @Test func manualSliderDisablesAdaptive() {
+    @Test func manualSliderSetsBaselineKeepsAdaptive() {
         let loc = FakeLocationProvider()
         loc.coordinate = (0, 0)
-        let manager = makeManager(location: loc)
+        // 2025-03-20 12:00 UTC, equator → daytime → curve intensity 1.0.
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
         manager.adaptiveEnabled = true
+        #expect(manager.intensity == 1.0)
+
+        manager.intensity = 0.8    // user nudges down → offset −0.2
+
+        #expect(manager.adaptiveEnabled == true)         // stays adaptive
+        manager.applyAdaptive()                          // re-run same instant
+        #expect(abs(manager.intensity - 0.8) < 1e-9)     // nudge preserved
+    }
+
+    @Test func whitepointSliderSetsBaselineKeepsAdaptive() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+
+        manager.whitepoint = 0.6   // offset −0.4
+
         #expect(manager.adaptiveEnabled == true)
+        manager.applyAdaptive()
+        #expect(abs(manager.whitepoint - 0.6) < 1e-9)
+    }
 
-        manager.intensity = 0.4    // user grabs the slider
+    @Test func reTogglingAdaptiveResetsBaseline() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+        manager.intensity = 0.8    // offset −0.2
 
-        #expect(manager.adaptiveEnabled == false)
+        manager.adaptiveEnabled = false
+        manager.adaptiveEnabled = true   // fresh enable resets the nudge
+
+        #expect(abs(manager.intensity - 1.0) < 1e-9)
+    }
+
+    @Test func adaptiveBaselinePersists() {
+        let d = freshDefaults()
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let loc1 = FakeLocationProvider(); loc1.coordinate = (0, 0)
+        let m1 = makeManager(defaults: d, location: loc1, now: { noon })
+        m1.adaptiveEnabled = true
+        m1.intensity = 0.8         // offset −0.2 persisted
+
+        let loc2 = FakeLocationProvider(); loc2.coordinate = (0, 0)
+        let m2 = makeManager(defaults: d, location: loc2, now: { noon })
+        #expect(abs(m2.intensity - 0.8) < 1e-9)   // restored + applied at launch
     }
 
     @Test func applyingPresetDisablesAdaptive() {
