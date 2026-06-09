@@ -13,6 +13,7 @@ final class DisplayManager {
     var intensity: Double = 0.5 {
         didSet {
             guard isInitialized else { return }
+            if !internalUpdate { activePresetIndex = nil }
             applyToActiveDisplays()
             save()
         }
@@ -20,6 +21,7 @@ final class DisplayManager {
     var whitepoint: Double = 1.0 {
         didSet {
             guard isInitialized else { return }
+            if !internalUpdate { activePresetIndex = nil }
             applyToActiveDisplays()
             save()
         }
@@ -29,6 +31,13 @@ final class DisplayManager {
         displays.contains(where: \.isEnabled)
     }
 
+    // MARK: - Presets
+
+    var presets: [Preset] = Preset.defaults
+    var activePresetIndex: Int? = nil
+
+    // MARK: - Private
+
     private let gamma: GammaControlling
     private let getDisplayIDs: () -> [CGDirectDisplayID]
     private let getDisplayName: (CGDirectDisplayID) -> String
@@ -36,6 +45,7 @@ final class DisplayManager {
     @ObservationIgnored private var isInitialized = false
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var screenObserver: NSObjectProtocol?
+    @ObservationIgnored private var internalUpdate = false
 
     init(
         gamma: GammaControlling = GammaController(),
@@ -49,10 +59,13 @@ final class DisplayManager {
         self.defaults = defaults
         self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? 0.5
         self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? 1.0
+        loadPresets()
         refreshDisplays()
         startListening()
         isInitialized = true
     }
+
+    // MARK: - Displays
 
     func refreshDisplays() {
         let ids = getDisplayIDs()
@@ -70,8 +83,6 @@ final class DisplayManager {
         if displays[i].isEnabled {
             gamma.applyFilter(to: displayID, intensity: Float(intensity), whitepoint: Float(whitepoint))
         } else {
-            // Restore all displays to ColorSync profiles (preserves ICC profiles),
-            // then re-apply filter to any still-active displays
             gamma.restoreAll()
             applyToActiveDisplays()
         }
@@ -80,6 +91,27 @@ final class DisplayManager {
 
     func restoreAllDisplays() {
         gamma.restoreAll()
+    }
+
+    // MARK: - Presets
+
+    func applyPreset(_ index: Int) {
+        guard index >= 0, index < presets.count else { return }
+        let preset = presets[index]
+        internalUpdate = true
+        intensity = preset.intensity
+        whitepoint = preset.whitepoint
+        internalUpdate = false
+        activePresetIndex = index
+        save()
+    }
+
+    func saveToPreset(_ index: Int) {
+        guard index >= 0, index < presets.count else { return }
+        presets[index].intensity = intensity
+        presets[index].whitepoint = whitepoint
+        activePresetIndex = index
+        save()
     }
 
     // MARK: - System Events
@@ -109,7 +141,7 @@ final class DisplayManager {
         screenObserver = nil
     }
 
-    // MARK: - Private
+    // MARK: - Persistence
 
     private func applyToActiveDisplays() {
         for display in displays where display.isEnabled {
@@ -122,6 +154,22 @@ final class DisplayManager {
         defaults.set(whitepoint, forKey: "redlight.whitepoint")
         for display in displays {
             defaults.set(display.isEnabled, forKey: "redlight.display.\(display.id).enabled")
+        }
+        if let data = try? JSONEncoder().encode(presets) {
+            defaults.set(data, forKey: "redlight.presets")
+        }
+        defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
+    }
+
+    private func loadPresets() {
+        if let data = defaults.data(forKey: "redlight.presets"),
+           let saved = try? JSONDecoder().decode([Preset].self, from: data),
+           saved.count == 5 {
+            presets = saved
+        }
+        if defaults.object(forKey: "redlight.activePresetIndex") != nil {
+            let idx = defaults.integer(forKey: "redlight.activePresetIndex")
+            activePresetIndex = idx >= 0 && idx < 5 ? idx : nil
         }
     }
 
