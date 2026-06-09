@@ -14,6 +14,9 @@ final class MockGammaController: GammaControlling {
     func restoreAll() {
         restoreAllCount += 1
     }
+
+    var grayscaleCalls: [Bool] = []
+    func setGrayscale(_ on: Bool) { grayscaleCalls.append(on) }
 }
 
 final class FakeLocationProvider: LocationProviding {
@@ -188,5 +191,21 @@ final class FakeLocationProvider: LocationProviding {
 
         let m2 = makeManager(defaults: d, location: FakeLocationProvider())
         #expect(m2.adaptiveEnabled == true)
+    }
+
+    @Test func grayscaleTogglesForcesGray() {
+        let manager = makeManager()
+        manager.grayscale = true
+        #expect(mock.grayscaleCalls.last == true)
+        manager.grayscale = false
+        #expect(mock.grayscaleCalls.last == false)
+    }
+
+    @Test func grayscalePersists() {
+        let d = freshDefaults()
+        let m1 = makeManager(defaults: d)
+        m1.grayscale = true
+        let m2 = makeManager(defaults: d, location: FakeLocationProvider())
+        #expect(m2.grayscale == true)
     }
 }
