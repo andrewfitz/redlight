@@ -4,11 +4,16 @@ import CoreGraphics
 @testable import Redlight
 
 final class MockGammaController: GammaControlling {
-    var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float)] = []
+    var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)] = []
+    var restoreCalls: [CGDirectDisplayID] = []
     var restoreAllCount = 0
 
-    func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float) {
-        applyCalls.append((displayID, intensity, whitepoint))
+    func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
+        applyCalls.append((displayID, intensity, whitepoint, invert))
+    }
+
+    func restore(_ displayID: CGDirectDisplayID) {
+        restoreCalls.append(displayID)
     }
 
     func restoreAll() {
@@ -64,28 +69,27 @@ final class FakeLocationProvider: LocationProviding {
         #expect(mock.applyCalls[0].intensity == 0.5)
     }
 
-    @Test func toggleOffSingleDisplayRestoresAll() {
+    @Test func toggleOffSingleDisplayRestoresThatDisplay() {
         let manager = makeManager()
         manager.toggle(1) // on
-        mock.restoreAllCount = 0
+        mock.restoreCalls.removeAll()
 
         manager.toggle(1) // off
 
-        #expect(mock.restoreAllCount == 1)
+        #expect(mock.restoreCalls == [1])
     }
 
-    @Test func toggleOffReappliesFilterToRemainingActiveDisplays() {
+    @Test func toggleOffLeavesOtherDisplaysUntouched() {
         let manager = makeManager(displayIDs: [1, 2])
-        manager.toggle(1) // on
-        manager.toggle(2) // on
+        manager.toggle(1)
+        manager.toggle(2)
         mock.applyCalls.removeAll()
-        mock.restoreAllCount = 0
+        mock.restoreCalls.removeAll()
 
-        manager.toggle(1) // off — should restore all, then re-apply to display 2
+        manager.toggle(1) // off — restore only display 1
 
-        #expect(mock.restoreAllCount == 1)
-        #expect(mock.applyCalls.count == 1)
-        #expect(mock.applyCalls[0].displayID == 2)
+        #expect(mock.restoreCalls == [1])
+        #expect(manager.displays.first { $0.id == 2 }?.isEnabled == true)
     }
 
     @Test func intensityChangeUpdatesActiveDisplaysOnly() {
@@ -207,5 +211,42 @@ final class FakeLocationProvider: LocationProviding {
         m1.grayscale = true
         let m2 = makeManager(defaults: d, location: FakeLocationProvider())
         #expect(m2.grayscale == true)
+    }
+
+    @Test func invertOnlyAppliesPureInvertToOffDisplay() {
+        let manager = makeManager()           // display 1 red filter OFF
+        mock.applyCalls.removeAll()
+
+        manager.toggleInvert(1)
+
+        #expect(mock.applyCalls.count == 1)
+        #expect(mock.applyCalls[0].invert == true)
+        #expect(mock.applyCalls[0].intensity == Float(1.0))   // no red
+        #expect(mock.applyCalls[0].whitepoint == Float(1.0))
+    }
+
+    @Test func invertOffRestoresWhenRedAlsoOff() {
+        let manager = makeManager()
+        manager.toggleInvert(1)  // on
+        mock.restoreCalls.removeAll()
+
+        manager.toggleInvert(1)  // off
+
+        #expect(mock.restoreCalls == [1])
+    }
+
+    @Test func invertCountsAsActive() {
+        let manager = makeManager()
+        #expect(manager.isAnyActive == false)
+        manager.toggleInvert(1)
+        #expect(manager.isAnyActive == true)
+    }
+
+    @Test func invertPersists() {
+        let d = freshDefaults()
+        let m1 = makeManager(defaults: d)
+        m1.toggleInvert(1)
+        let m2 = makeManager(defaults: d, location: FakeLocationProvider())
+        #expect(m2.displays[0].isInverted == true)
     }
 }
