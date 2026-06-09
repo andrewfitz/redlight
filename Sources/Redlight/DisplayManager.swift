@@ -7,6 +7,7 @@ final class DisplayManager {
         let id: CGDirectDisplayID
         let name: String
         var isEnabled: Bool
+        var isInverted: Bool
     }
 
     private(set) var displays: [DisplayInfo] = []
@@ -34,7 +35,7 @@ final class DisplayManager {
     }
 
     var isAnyActive: Bool {
-        displays.contains(where: \.isEnabled)
+        displays.contains { $0.isEnabled || $0.isInverted }
     }
 
     // MARK: - Presets
@@ -150,10 +151,12 @@ final class DisplayManager {
 
     func refreshDisplays() {
         let ids = getDisplayIDs()
-        let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0.isEnabled) })
+        let prevEnabled = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0.isEnabled) })
+        let prevInverted = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0.isInverted) })
         displays = ids.map { id in
-            let wasEnabled = previous[id] ?? defaults.bool(forKey: "redlight.display.\(id).enabled")
-            return DisplayInfo(id: id, name: getDisplayName(id), isEnabled: wasEnabled)
+            let enabled = prevEnabled[id] ?? defaults.bool(forKey: "redlight.display.\(id).enabled")
+            let inverted = prevInverted[id] ?? defaults.bool(forKey: "redlight.display.\(id).inverted")
+            return DisplayInfo(id: id, name: getDisplayName(id), isEnabled: enabled, isInverted: inverted)
         }
         applyToActiveDisplays()
     }
@@ -161,12 +164,14 @@ final class DisplayManager {
     func toggle(_ displayID: CGDirectDisplayID) {
         guard let i = displays.firstIndex(where: { $0.id == displayID }) else { return }
         displays[i].isEnabled.toggle()
-        if displays[i].isEnabled {
-            gamma.applyFilter(to: displayID, intensity: Float(intensity), whitepoint: Float(whitepoint))
-        } else {
-            gamma.restoreAll()
-            applyToActiveDisplays()
-        }
+        applyToDisplay(displays[i])
+        save()
+    }
+
+    func toggleInvert(_ displayID: CGDirectDisplayID) {
+        guard let i = displays.firstIndex(where: { $0.id == displayID }) else { return }
+        displays[i].isInverted.toggle()
+        applyToDisplay(displays[i])
         save()
     }
 
@@ -229,8 +234,16 @@ final class DisplayManager {
     // MARK: - Persistence
 
     private func applyToActiveDisplays() {
-        for display in displays where display.isEnabled {
-            gamma.applyFilter(to: display.id, intensity: Float(intensity), whitepoint: Float(whitepoint))
+        for display in displays { applyToDisplay(display) }
+    }
+
+    private func applyToDisplay(_ display: DisplayInfo) {
+        if display.isEnabled || display.isInverted {
+            let i = display.isEnabled ? Float(intensity) : 1.0
+            let w = display.isEnabled ? Float(whitepoint) : 1.0
+            gamma.applyFilter(to: display.id, intensity: i, whitepoint: w, invert: display.isInverted)
+        } else {
+            gamma.restore(display.id)
         }
     }
 
@@ -239,6 +252,7 @@ final class DisplayManager {
         defaults.set(whitepoint, forKey: "redlight.whitepoint")
         for display in displays {
             defaults.set(display.isEnabled, forKey: "redlight.display.\(display.id).enabled")
+            defaults.set(display.isInverted, forKey: "redlight.display.\(display.id).inverted")
         }
         if let data = try? JSONEncoder().encode(presets) {
             defaults.set(data, forKey: "redlight.presets")
