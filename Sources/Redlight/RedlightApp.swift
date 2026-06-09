@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Restore all displays to their ColorSync profiles on any termination
         // (covers force-quit via Activity Monitor, system shutdown, etc.)
-        _ = CGDisplayForceToGray(0)
         CGDisplayRestoreColorSyncSettings()
     }
 }

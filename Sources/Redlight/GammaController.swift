@@ -1,16 +1,9 @@
 import CoreGraphics
 
-// `CGDisplayForceToGray` ships in CoreGraphics (present in the .tbd / framework) but
-// has no public header, so the Swift overlay doesn't expose it. Bind the existing C
-// symbol directly. `boolean_t` is a C `int`, i.e. `Int32`.
-@_silgen_name("CGDisplayForceToGray")
-func CGDisplayForceToGray(_ forceToGray: Int32) -> Int32
-
 protocol GammaControlling {
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)
     func restore(_ displayID: CGDirectDisplayID)
     func restoreAll()
-    func setGrayscale(_ on: Bool)
 }
 
 struct GammaController: GammaControlling {
@@ -57,11 +50,6 @@ struct GammaController: GammaControlling {
     }
 
     func restoreAll() {
-        _ = CGDisplayForceToGray(0)
         CGDisplayRestoreColorSyncSettings()
-    }
-
-    func setGrayscale(_ on: Bool) {
-        _ = CGDisplayForceToGray(on ? 1 : 0)
     }
 }

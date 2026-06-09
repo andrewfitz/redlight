@@ -62,14 +62,6 @@ final class DisplayManager {
     }
     private(set) var adaptiveStatusText: String = ""
 
-    var grayscale: Bool = false {
-        didSet {
-            guard isInitialized else { return }
-            gamma.setGrayscale(grayscale)
-            save()
-        }
-    }
-
     func applyAdaptive() {
         guard adaptiveEnabled else { return }
         switch location.authorization {
@@ -130,11 +122,9 @@ final class DisplayManager {
         self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? 0.5
         self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? 1.0
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
-        self.grayscale = defaults.bool(forKey: "redlight.grayscale")
         loadPresets()
         refreshDisplays()
         startListening()
-        gamma.setGrayscale(grayscale)
         location.onChange = { [weak self] in
             guard let self, self.adaptiveEnabled else { return }
             self.applyAdaptive()
@@ -259,7 +249,6 @@ final class DisplayManager {
         }
         defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
         defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
-        defaults.set(grayscale, forKey: "redlight.grayscale")
     }
 
     private func loadPresets() {

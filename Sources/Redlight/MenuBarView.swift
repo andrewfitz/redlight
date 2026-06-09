@@ -87,7 +87,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            // MARK: - Adaptive + Greyscale
+            // MARK: - Adaptive
 
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Adaptive", isOn: $manager.adaptiveEnabled)
@@ -111,9 +111,6 @@ struct MenuBarView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
-
-                Toggle("Greyscale", isOn: $manager.grayscale)
-                    .font(.subheadline)
             }
 
             Divider()
