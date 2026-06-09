@@ -13,7 +13,10 @@ final class DisplayManager {
     var intensity: Double = 0.5 {
         didSet {
             guard isInitialized else { return }
-            if !internalUpdate { activePresetIndex = nil }
+            if !internalUpdate {
+                if adaptiveEnabled { adaptiveEnabled = false }
+                activePresetIndex = nil
+            }
             applyToActiveDisplays()
             save()
         }
@@ -21,7 +24,10 @@ final class DisplayManager {
     var whitepoint: Double = 1.0 {
         didSet {
             guard isInitialized else { return }
-            if !internalUpdate { activePresetIndex = nil }
+            if !internalUpdate {
+                if adaptiveEnabled { adaptiveEnabled = false }
+                activePresetIndex = nil
+            }
             applyToActiveDisplays()
             save()
         }
@@ -36,12 +42,63 @@ final class DisplayManager {
     var presets: [Preset] = Preset.defaults
     var activePresetIndex: Int? = nil
 
+    // MARK: - Adaptive
+
+    var adaptiveEnabled: Bool = false {
+        didSet {
+            guard isInitialized else { return }
+            if adaptiveEnabled {
+                activePresetIndex = nil
+                location.requestWhenInUse()
+                applyAdaptive()
+                startAdaptiveTimer()
+            } else {
+                adaptiveTimer?.invalidate()
+                adaptiveTimer = nil
+            }
+            save()
+        }
+    }
+    private(set) var adaptiveStatusText: String = ""
+
+    func applyAdaptive() {
+        guard adaptiveEnabled else { return }
+        switch location.authorization {
+        case .denied: adaptiveStatusText = "Location needed"; return
+        default: break
+        }
+        guard let coord = location.coordinate else { adaptiveStatusText = "Locating…"; return }
+
+        let date = now()
+        let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        let t = SolarCurve.target(elevation: elev, minElevation: minElev, presets: presets)
+
+        internalUpdate = true
+        intensity = t.intensity
+        whitepoint = t.whitepoint
+        internalUpdate = false
+
+        let phase = elev >= 0 ? "day" : (elev >= -6 ? "twilight" : "night")
+        adaptiveStatusText = "Following the sun · \(phase)"
+    }
+
+    private func startAdaptiveTimer() {
+        adaptiveTimer?.invalidate()
+        adaptiveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.applyAdaptive()
+        }
+    }
+
     // MARK: - Private
 
     private let gamma: GammaControlling
     private let getDisplayIDs: () -> [CGDirectDisplayID]
     private let getDisplayName: (CGDirectDisplayID) -> String
     private let defaults: UserDefaults
+    @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let location: LocationProviding
+    @ObservationIgnored private var adaptiveTimer: Timer?
     @ObservationIgnored private var isInitialized = false
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var screenObserver: NSObjectProtocol?
@@ -51,18 +108,32 @@ final class DisplayManager {
         gamma: GammaControlling = GammaController(),
         getDisplayIDs: @escaping () -> [CGDirectDisplayID] = { DisplayManager.systemDisplayIDs() },
         getDisplayName: @escaping (CGDirectDisplayID) -> String = { DisplayManager.systemDisplayName(for: $0) },
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        location: LocationProviding = LocationProvider(),
+        now: @escaping () -> Date = { Date() }
     ) {
         self.gamma = gamma
         self.getDisplayIDs = getDisplayIDs
         self.getDisplayName = getDisplayName
         self.defaults = defaults
+        self.location = location
+        self.now = now
         self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? 0.5
         self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? 1.0
+        self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
         loadPresets()
         refreshDisplays()
         startListening()
+        location.onChange = { [weak self] in
+            guard let self, self.adaptiveEnabled else { return }
+            self.applyAdaptive()
+        }
         isInitialized = true
+        if adaptiveEnabled {
+            location.requestWhenInUse()
+            applyAdaptive()
+            startAdaptiveTimer()
+        }
     }
 
     // MARK: - Displays
@@ -97,6 +168,7 @@ final class DisplayManager {
 
     func applyPreset(_ index: Int) {
         guard index >= 0, index < presets.count else { return }
+        if adaptiveEnabled { adaptiveEnabled = false }
         let preset = presets[index]
         internalUpdate = true
         intensity = preset.intensity
@@ -123,6 +195,7 @@ final class DisplayManager {
             queue: .main
         ) { [weak self] _ in
             self?.applyToActiveDisplays()
+            self?.applyAdaptive()
         }
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -139,6 +212,8 @@ final class DisplayManager {
         if let o = screenObserver { NotificationCenter.default.removeObserver(o) }
         wakeObserver = nil
         screenObserver = nil
+        adaptiveTimer?.invalidate()
+        adaptiveTimer = nil
     }
 
     // MARK: - Persistence
@@ -159,6 +234,7 @@ final class DisplayManager {
             defaults.set(data, forKey: "redlight.presets")
         }
         defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
+        defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
     }
 
     private func loadPresets() {

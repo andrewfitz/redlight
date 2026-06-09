@@ -16,19 +16,32 @@ final class MockGammaController: GammaControlling {
     }
 }
 
+final class FakeLocationProvider: LocationProviding {
+    var coordinate: (latitude: Double, longitude: Double)?
+    var authorization: LocationAuthorization = .authorized
+    var onChange: (() -> Void)?
+    var requestCount = 0
+    func requestWhenInUse() { requestCount += 1 }
+}
+
 @Suite struct DisplayManagerTests {
     let mock = MockGammaController()
+    let fakeLocation = FakeLocationProvider()
 
     func makeManager(
         displayIDs: [CGDirectDisplayID] = [1],
-        defaults: UserDefaults? = nil
+        defaults: UserDefaults? = nil,
+        location: LocationProviding? = nil,
+        now: @escaping () -> Date = { Date(timeIntervalSince1970: 0) }
     ) -> DisplayManager {
         let d = defaults ?? freshDefaults()
         return DisplayManager(
             gamma: mock,
             getDisplayIDs: { displayIDs },
             getDisplayName: { "Display \($0)" },
-            defaults: d
+            defaults: d,
+            location: location ?? fakeLocation,
+            now: now
         )
     }
 
@@ -103,7 +116,8 @@ final class MockGammaController: GammaControlling {
             gamma: mock,
             getDisplayIDs: { [1] },
             getDisplayName: { "Display \($0)" },
-            defaults: d
+            defaults: d,
+            location: FakeLocationProvider()
         )
 
         #expect(manager2.intensity == 0.7)
@@ -119,9 +133,60 @@ final class MockGammaController: GammaControlling {
             gamma: mock,
             getDisplayIDs: { [1] },
             getDisplayName: { "Display \($0)" },
-            defaults: d
+            defaults: d,
+            location: FakeLocationProvider()
         )
 
         #expect(manager2.displays[0].isEnabled == true)
+    }
+
+    @Test func enablingAdaptiveAppliesCurveValueAndRequestsLocation() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (0, 0)
+        // 2025-03-20 12:00 UTC, equator → daytime → Day preset (intensity 1.0).
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.toggle(1)            // enable red filter on display 1
+        mock.applyCalls.removeAll()
+
+        manager.adaptiveEnabled = true
+
+        #expect(loc.requestCount == 1)
+        #expect(manager.intensity == 1.0)          // curve drove it to Day
+        #expect(mock.applyCalls.last?.intensity == Float(1.0))
+    }
+
+    @Test func manualSliderDisablesAdaptive() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc)
+        manager.adaptiveEnabled = true
+        #expect(manager.adaptiveEnabled == true)
+
+        manager.intensity = 0.4    // user grabs the slider
+
+        #expect(manager.adaptiveEnabled == false)
+    }
+
+    @Test func applyingPresetDisablesAdaptive() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc)
+        manager.adaptiveEnabled = true
+
+        manager.applyPreset(2)
+
+        #expect(manager.adaptiveEnabled == false)
+        #expect(manager.activePresetIndex == 2)
+    }
+
+    @Test func adaptiveEnabledPersists() {
+        let d = freshDefaults()
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let m1 = makeManager(defaults: d, location: loc)
+        m1.adaptiveEnabled = true
+
+        let m2 = makeManager(defaults: d, location: FakeLocationProvider())
+        #expect(m2.adaptiveEnabled == true)
     }
 }
