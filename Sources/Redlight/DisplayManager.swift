@@ -15,8 +15,13 @@ final class DisplayManager {
         didSet {
             guard isInitialized else { return }
             if !internalUpdate {
-                if adaptiveEnabled { adaptiveEnabled = false }
-                activePresetIndex = nil
+                // While adaptive: a manual nudge becomes a baseline offset the
+                // curve keeps riding. Otherwise it's a plain manual override.
+                if adaptiveEnabled {
+                    adaptiveIntensityOffset = intensity - lastCurveIntensity
+                } else {
+                    activePresetIndex = nil
+                }
             }
             applyToActiveDisplays()
             save()
@@ -26,8 +31,11 @@ final class DisplayManager {
         didSet {
             guard isInitialized else { return }
             if !internalUpdate {
-                if adaptiveEnabled { adaptiveEnabled = false }
-                activePresetIndex = nil
+                if adaptiveEnabled {
+                    adaptiveWhitepointOffset = whitepoint - lastCurveWhitepoint
+                } else {
+                    activePresetIndex = nil
+                }
             }
             applyToActiveDisplays()
             save()
@@ -50,6 +58,8 @@ final class DisplayManager {
             guard isInitialized else { return }
             if adaptiveEnabled {
                 activePresetIndex = nil
+                adaptiveIntensityOffset = 0   // fresh enable = clean baseline
+                adaptiveWhitepointOffset = 0
                 location.requestWhenInUse()
                 applyAdaptive()
                 startAdaptiveTimer()
@@ -74,14 +84,17 @@ final class DisplayManager {
         let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let t = SolarCurve.target(elevation: elev, minElevation: minElev, presets: presets)
+        lastCurveIntensity = t.intensity
+        lastCurveWhitepoint = t.whitepoint
 
         internalUpdate = true
-        intensity = t.intensity
-        whitepoint = t.whitepoint
+        intensity = min(1, max(0, t.intensity + adaptiveIntensityOffset))
+        whitepoint = min(1, max(0.25, t.whitepoint + adaptiveWhitepointOffset))
         internalUpdate = false
 
         let phase = elev >= 0 ? "day" : (elev >= -6 ? "twilight" : "night")
-        adaptiveStatusText = "Following the sun · \(phase)"
+        let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0) ? " (adjusted)" : ""
+        adaptiveStatusText = "Following the sun · \(phase)\(adjusted)"
     }
 
     private func startAdaptiveTimer() {
@@ -100,6 +113,10 @@ final class DisplayManager {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let location: LocationProviding
     @ObservationIgnored private var adaptiveTimer: Timer?
+    @ObservationIgnored private var adaptiveIntensityOffset: Double = 0
+    @ObservationIgnored private var adaptiveWhitepointOffset: Double = 0
+    @ObservationIgnored private var lastCurveIntensity: Double = 1.0
+    @ObservationIgnored private var lastCurveWhitepoint: Double = 1.0
     @ObservationIgnored private var isInitialized = false
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var screenObserver: NSObjectProtocol?
@@ -122,6 +139,8 @@ final class DisplayManager {
         self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? 0.5
         self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? 1.0
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
+        self.adaptiveIntensityOffset = defaults.object(forKey: "redlight.adaptiveOffsetIntensity") as? Double ?? 0
+        self.adaptiveWhitepointOffset = defaults.object(forKey: "redlight.adaptiveOffsetWhitepoint") as? Double ?? 0
         loadPresets()
         refreshDisplays()
         startListening()
@@ -249,6 +268,8 @@ final class DisplayManager {
         }
         defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
         defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
+        defaults.set(adaptiveIntensityOffset, forKey: "redlight.adaptiveOffsetIntensity")
+        defaults.set(adaptiveWhitepointOffset, forKey: "redlight.adaptiveOffsetWhitepoint")
     }
 
     private func loadPresets() {
