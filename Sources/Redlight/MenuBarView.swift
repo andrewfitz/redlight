@@ -35,22 +35,48 @@ struct MenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Intensity")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Slider(
+                HStack {
+                    Text("Intensity")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if manager.adaptiveEnabled {
+                        Spacer()
+                        Text("limit \(Int(manager.adaptiveMin * 100))–\(Int(manager.adaptiveMax * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                BandSlider(
                     value: $manager.intensity,
-                    in: 0.0...1.0
+                    lowerBound: $manager.adaptiveMin,
+                    upperBound: $manager.adaptiveMax,
+                    range: 0.0...1.0,
+                    showBand: manager.adaptiveEnabled,
+                    onPreview: { manager.previewIntensity($0) },
+                    onPreviewEnd: { manager.endPreview() }
                 )
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Reduce White Point")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Slider(
+                HStack {
+                    Text("Reduce White Point")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if manager.adaptiveEnabled {
+                        Spacer()
+                        Text("limit \(Int(manager.adaptiveWpMin * 100))–\(Int(manager.adaptiveWpMax * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                BandSlider(
                     value: $manager.whitepoint,
-                    in: 0.25...1.0
+                    lowerBound: $manager.adaptiveWpMin,
+                    upperBound: $manager.adaptiveWpMax,
+                    range: 0.25...1.0,
+                    showBand: manager.adaptiveEnabled,
+                    onPreview: { manager.previewWhitepoint($0) },
+                    onPreviewEnd: { manager.endPreview() }
                 )
             }
 
