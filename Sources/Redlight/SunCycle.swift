@@ -37,8 +37,9 @@ struct SunCycle {
         nextEvent = SunCycle.findNextEvent(now: now, latitude: latitude, longitude: longitude)
     }
 
-    /// Forward-scan `[now, now+24h]` in 2-min steps for the first crossing of any threshold,
-    /// then bisect the bracketing step to ~2 s. Direction is read at the crossing.
+    /// Forward-scan `[now, now+24h]` in 2-min steps for the next crossing of any threshold,
+    /// then bisect to ~2 s. When several thresholds flip within one step, the earliest in
+    /// time wins. Direction is read across the step.
     private static func findNextEvent(now: Date, latitude: Double, longitude: Double) -> Event? {
         let step: Double = 120
         let horizon: Double = 86_400
@@ -46,22 +47,27 @@ struct SunCycle {
             SolarCalculator.elevation(at: now.addingTimeInterval(offset),
                                       latitude: latitude, longitude: longitude)
         }
+        func crossing(_ thr: Double, _ a: Double, _ b: Double) -> Double {
+            var lo = a, hi = b
+            for _ in 0..<6 {
+                let mid = (lo + hi) / 2
+                if (elev(lo) - thr) * (elev(mid) - thr) <= 0 { hi = mid } else { lo = mid }
+            }
+            return (lo + hi) / 2
+        }
 
         var prevOffset: Double = 0
         var prev = elev(0)
         var offset = step
         while offset <= horizon {
             let cur = elev(offset)
-            for thr in thresholds where (prev - thr) != 0 {
-                if (prev - thr) * (cur - thr) < 0 {
-                    var lo = prevOffset, hi = offset
-                    for _ in 0..<6 {
-                        let mid = (lo + hi) / 2
-                        if (elev(lo) - thr) * (elev(mid) - thr) <= 0 { hi = mid } else { lo = mid }
-                    }
-                    return Event(label: label(threshold: thr, rising: cur > prev),
-                                 seconds: (lo + hi) / 2)
-                }
+            var best: (thr: Double, at: Double)?
+            for thr in thresholds where (prev - thr) * (cur - thr) < 0 {
+                let at = crossing(thr, prevOffset, offset)
+                if best == nil || at < best!.at { best = (thr, at) }
+            }
+            if let best {
+                return Event(label: label(threshold: best.thr, rising: cur > prev), seconds: best.at)
             }
             prevOffset = offset
             prev = cur
@@ -70,15 +76,17 @@ struct SunCycle {
         return nil
     }
 
+    /// Event names paired with the phase vocabulary shown in the status line
+    /// (civil / nautical / astronomical twilight).
     private static func label(threshold thr: Double, rising: Bool) -> String {
         switch (thr, rising) {
         case (0, false):   return "sunset"
-        case (-6, false):  return "dusk"
-        case (-12, false): return "deep twilight"
+        case (-6, false):  return "civil dusk"
+        case (-12, false): return "nautical dusk"
         case (-18, false): return "fully dark"
         case (-18, true):  return "first light"
-        case (-12, true):  return "deep twilight"
-        case (-6, true):   return "dawn"
+        case (-12, true):  return "nautical dawn"
+        case (-6, true):   return "civil dawn"
         case (0, true):    return "sunrise"
         default:           return "transition"
         }

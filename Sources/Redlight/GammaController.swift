@@ -9,7 +9,9 @@ protocol GammaControlling {
 struct GammaController: GammaControlling {
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
         // intensity: 1.0 = normal (no filter), 0.0 = pure red (full filter)
-        // whitepoint: 1.0 = full brightness, 0.25 = heavy white reduction
+        // whitepoint: 1.0 = full brightness, 0.25 = heavy white reduction.
+        // Note: all channels (red included) are scaled by `curve`, which peaks at `whitepoint`,
+        // so reducing the white point also dims red — i.e. it lowers overall brightness.
         // invert: when true, remap input x → 1−x first (the innermost layer).
         // Uses a lookup table so darks are barely affected while bright
         // areas absorb most of the whitepoint reduction.
