@@ -53,4 +53,16 @@ import Foundation
             at: date("2025-12-21T00:00:00Z"), latitude: 0, longitude: 0)
         #expect(m < -64 && m > -70)
     }
+
+    @Test func solarNoonElevationEquatorEquinox() {
+        let n = SolarCalculator.elevationAtSolarNoon(
+            at: date("2025-03-20T12:00:00Z"), latitude: 0, longitude: 0)
+        #expect(abs(n - 90) < 1.0)        // sun overhead at equinox on the equator
+    }
+
+    @Test func solarNoonElevationLondonSummer() {
+        let n = SolarCalculator.elevationAtSolarNoon(
+            at: date("2025-06-21T12:00:00Z"), latitude: 51.5, longitude: -0.13)
+        #expect(n > 58 && n < 65)         // ≈ 61.9°
+    }
 }

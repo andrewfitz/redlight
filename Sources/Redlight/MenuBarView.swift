@@ -137,6 +137,29 @@ struct MenuBarView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+
+                if manager.adaptiveEnabled, let coord = manager.coordinate {
+                    TimelineView(.periodic(from: .now, by: 20)) { context in
+                        let cycle = SunCycle(
+                            now: context.date,
+                            latitude: coord.latitude,
+                            longitude: coord.longitude
+                        )
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let event = cycle.nextEvent {
+                                Text("\(event.label) in \(countdown(event.seconds))")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            SunArcView(
+                                cycle: cycle,
+                                intensities: appliedIntensities(cycle, coord: coord),
+                                intensityLimits: min(manager.adaptiveMin, manager.adaptiveMax)
+                                    ... max(manager.adaptiveMin, manager.adaptiveMax)
+                            )
+                        }
+                    }
+                }
             }
 
             Divider()
@@ -148,6 +171,25 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
+    }
+
+    private func countdown(_ seconds: Double) -> String {
+        let m = max(0, Int((seconds / 60).rounded()))
+        return m < 60 ? "\(m)m" : "\(m / 60)h \(m % 60)m"
+    }
+
+    /// Applied adaptive intensity at each sample time — the same mapping the live filter uses.
+    private func appliedIntensities(_ cycle: SunCycle,
+                                    coord: (latitude: Double, longitude: Double)) -> [Double] {
+        let minElev = SolarCalculator.elevationAtSolarMidnight(
+            at: Date(), latitude: coord.latitude, longitude: coord.longitude)
+        return cycle.samples.map { sample in
+            AdaptiveMapping.banded(
+                elevation: sample.elevation, minElevation: minElev, presets: manager.presets,
+                intensityMin: manager.adaptiveMin, intensityMax: manager.adaptiveMax,
+                whitepointMin: manager.adaptiveWpMin, whitepointMax: manager.adaptiveWpMax
+            ).intensity
+        }
     }
 }
 

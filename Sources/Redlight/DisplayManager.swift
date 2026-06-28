@@ -102,6 +102,8 @@ final class DisplayManager {
         }
     }
     private(set) var adaptiveStatusText: String = ""
+    /// Last known location, set while adaptive resolves it — drives the sun-arc graphic.
+    private(set) var coordinate: (latitude: Double, longitude: Double)?
 
     func applyAdaptive() {
         guard adaptiveEnabled else { return }
@@ -110,29 +112,22 @@ final class DisplayManager {
         default: break
         }
         guard let coord = location.coordinate else { adaptiveStatusText = "Locating…"; return }
+        coordinate = coord
 
         let date = now()
         let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
-        let t = SolarCurve.target(elevation: elev, minElevation: minElev, presets: presets)
-
-        // Normalize each channel to a 0…1 day→deep fraction, then remap into its band
-        // (Day → max, deepest night → min). Default bands reproduce the raw curve.
-        let dayI = presets[0].intensity, deepI = presets[4].intensity
-        let dayW = presets[0].whitepoint, deepW = presets[4].whitepoint
-        let fracI = dayI != deepI ? (t.intensity - deepI) / (dayI - deepI) : 1
-        let fracW = dayW != deepW ? (t.whitepoint - deepW) / (dayW - deepW) : 1
-
-        let iLo = min(adaptiveMin, adaptiveMax), iHi = max(adaptiveMin, adaptiveMax)
-        let wLo = min(adaptiveWpMin, adaptiveWpMax), wHi = max(adaptiveWpMin, adaptiveWpMax)
-        let bandedIntensity = iLo + (iHi - iLo) * min(1, max(0, fracI))
-        let bandedWhitepoint = wLo + (wHi - wLo) * min(1, max(0, fracW))
-        lastCurveIntensity = bandedIntensity
-        lastCurveWhitepoint = bandedWhitepoint
+        let banded = AdaptiveMapping.banded(
+            elevation: elev, minElevation: minElev, presets: presets,
+            intensityMin: adaptiveMin, intensityMax: adaptiveMax,
+            whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
+        )
+        lastCurveIntensity = banded.intensity
+        lastCurveWhitepoint = banded.whitepoint
 
         internalUpdate = true
-        intensity = min(1, max(0, bandedIntensity + adaptiveIntensityOffset))
-        whitepoint = min(1, max(0.25, bandedWhitepoint + adaptiveWhitepointOffset))
+        intensity = min(1, max(0, banded.intensity + adaptiveIntensityOffset))
+        whitepoint = min(1, max(0.25, banded.whitepoint + adaptiveWhitepointOffset))
         internalUpdate = false
 
         let phase: String
