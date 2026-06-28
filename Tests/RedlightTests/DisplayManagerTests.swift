@@ -217,6 +217,85 @@ final class FakeLocationProvider: LocationProviding {
         #expect(abs(m2.intensity - 0.8) < 1e-9)   // restored + applied at launch
     }
 
+    @Test func adaptiveRemapsIntoBandAtDay() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveMin = 0.2
+        manager.adaptiveMax = 0.8
+        manager.adaptiveEnabled = true
+        // daytime curve intensity 1.0 → banded = 0.2 + 0.6 * 1.0 = 0.8
+        #expect(abs(manager.intensity - 0.8) < 1e-9)
+    }
+
+    @Test func adaptiveRemapsIntoBandAtNight() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        // Equator equinox solar midnight → sun far below horizon → curve intensity ~0.
+        let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
+        let manager = makeManager(location: loc, now: { midnight })
+        manager.adaptiveMin = 0.2
+        manager.adaptiveMax = 0.8
+        manager.adaptiveEnabled = true
+        // banded = 0.2 + 0.6 * ~0 ≈ 0.2 (floor)
+        #expect(manager.intensity >= 0.2 - 1e-6)
+        #expect(manager.intensity < 0.5)
+    }
+
+    @Test func adaptiveRemapsWhitepointIntoBand() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveWpMin = 0.5
+        manager.adaptiveWpMax = 0.9
+        manager.adaptiveEnabled = true
+        // daytime whitepoint fraction 1.0 → banded = wpMax = 0.9
+        #expect(abs(manager.whitepoint - 0.9) < 1e-9)
+    }
+
+    @Test func persistenceRoundTripsWhitepointBand() {
+        let d = freshDefaults()
+        let m1 = makeManager(defaults: d)
+        m1.adaptiveWpMin = 0.4
+        m1.adaptiveWpMax = 0.8
+        let m2 = makeManager(defaults: d, location: FakeLocationProvider())
+        #expect(abs(m2.adaptiveWpMin - 0.4) < 1e-9)
+        #expect(abs(m2.adaptiveWpMax - 0.8) < 1e-9)
+    }
+
+    @Test func previewIntensityOverridesThenReverts() {
+        let manager = makeManager()           // intensity 0.5
+        manager.toggle(1)                     // enable display 1
+        mock.applyCalls.removeAll()
+
+        manager.previewIntensity(0.1)
+        #expect(mock.applyCalls.last?.intensity == Float(0.1))
+
+        manager.endPreview()
+        #expect(mock.applyCalls.last?.intensity == Float(manager.intensity))   // reverted
+    }
+
+    @Test func manualNudgeWithBandPreserved() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveMin = 0.2
+        manager.adaptiveMax = 0.8
+        manager.adaptiveEnabled = true          // banded day = 0.8
+        manager.intensity = 0.6                 // nudge → offset −0.2
+        manager.applyAdaptive()
+        #expect(abs(manager.intensity - 0.6) < 1e-9)
+    }
+
+    @Test func persistenceRoundTripsAdaptiveBand() {
+        let d = freshDefaults()
+        let m1 = makeManager(defaults: d)
+        m1.adaptiveMin = 0.3
+        m1.adaptiveMax = 0.7
+        let m2 = makeManager(defaults: d, location: FakeLocationProvider())
+        #expect(abs(m2.adaptiveMin - 0.3) < 1e-9)
+        #expect(abs(m2.adaptiveMax - 0.7) < 1e-9)
+    }
+
     @Test func applyingPresetDisablesAdaptive() {
         let loc = FakeLocationProvider()
         loc.coordinate = (0, 0)

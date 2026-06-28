@@ -70,6 +70,37 @@ final class DisplayManager {
             save()
         }
     }
+    /// Adaptive intensity is remapped into this band: Day → max, deepest night → min.
+    /// Defaults 0…1 = no constraint. White Point is unaffected.
+    var adaptiveMin: Double = 0.0 {
+        didSet {
+            guard isInitialized else { return }
+            if adaptiveEnabled { applyAdaptive() }
+            save()
+        }
+    }
+    var adaptiveMax: Double = 1.0 {
+        didSet {
+            guard isInitialized else { return }
+            if adaptiveEnabled { applyAdaptive() }
+            save()
+        }
+    }
+    /// White Point band. Defaults 0.3…1.0 = the unbanded preset curve (non-breaking).
+    var adaptiveWpMin: Double = 0.3 {
+        didSet {
+            guard isInitialized else { return }
+            if adaptiveEnabled { applyAdaptive() }
+            save()
+        }
+    }
+    var adaptiveWpMax: Double = 1.0 {
+        didSet {
+            guard isInitialized else { return }
+            if adaptiveEnabled { applyAdaptive() }
+            save()
+        }
+    }
     private(set) var adaptiveStatusText: String = ""
 
     func applyAdaptive() {
@@ -84,22 +115,39 @@ final class DisplayManager {
         let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let t = SolarCurve.target(elevation: elev, minElevation: minElev, presets: presets)
-        lastCurveIntensity = t.intensity
-        lastCurveWhitepoint = t.whitepoint
+
+        // Normalize each channel to a 0…1 day→deep fraction, then remap into its band
+        // (Day → max, deepest night → min). Default bands reproduce the raw curve.
+        let dayI = presets[0].intensity, deepI = presets[4].intensity
+        let dayW = presets[0].whitepoint, deepW = presets[4].whitepoint
+        let fracI = dayI != deepI ? (t.intensity - deepI) / (dayI - deepI) : 1
+        let fracW = dayW != deepW ? (t.whitepoint - deepW) / (dayW - deepW) : 1
+
+        let iLo = min(adaptiveMin, adaptiveMax), iHi = max(adaptiveMin, adaptiveMax)
+        let wLo = min(adaptiveWpMin, adaptiveWpMax), wHi = max(adaptiveWpMin, adaptiveWpMax)
+        let bandedIntensity = iLo + (iHi - iLo) * min(1, max(0, fracI))
+        let bandedWhitepoint = wLo + (wHi - wLo) * min(1, max(0, fracW))
+        lastCurveIntensity = bandedIntensity
+        lastCurveWhitepoint = bandedWhitepoint
 
         internalUpdate = true
-        intensity = min(1, max(0, t.intensity + adaptiveIntensityOffset))
-        whitepoint = min(1, max(0.25, t.whitepoint + adaptiveWhitepointOffset))
+        intensity = min(1, max(0, bandedIntensity + adaptiveIntensityOffset))
+        whitepoint = min(1, max(0.25, bandedWhitepoint + adaptiveWhitepointOffset))
         internalUpdate = false
 
-        let phase = elev >= 0 ? "day" : (elev >= -6 ? "twilight" : "night")
+        let phase: String
+        if elev >= 0 { phase = "day" }
+        else if elev >= -6 { phase = "civil twilight" }
+        else if elev >= -12 { phase = "nautical twilight" }
+        else if elev >= -18 { phase = "astronomical twilight" }
+        else { phase = "night" }
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0) ? " (adjusted)" : ""
         adaptiveStatusText = "Following the sun · \(phase)\(adjusted)"
     }
 
     private func startAdaptiveTimer() {
         adaptiveTimer?.invalidate()
-        adaptiveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        adaptiveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.applyAdaptive()
         }
     }
@@ -115,6 +163,9 @@ final class DisplayManager {
     @ObservationIgnored private var adaptiveTimer: Timer?
     @ObservationIgnored private var adaptiveIntensityOffset: Double = 0
     @ObservationIgnored private var adaptiveWhitepointOffset: Double = 0
+    // Transient live-preview overrides while a band marker is being dragged.
+    @ObservationIgnored private var previewIntensityValue: Double?
+    @ObservationIgnored private var previewWhitepointValue: Double?
     @ObservationIgnored private var lastCurveIntensity: Double = 1.0
     @ObservationIgnored private var lastCurveWhitepoint: Double = 1.0
     @ObservationIgnored private var isInitialized = false
@@ -141,6 +192,10 @@ final class DisplayManager {
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
         self.adaptiveIntensityOffset = defaults.object(forKey: "redlight.adaptiveOffsetIntensity") as? Double ?? 0
         self.adaptiveWhitepointOffset = defaults.object(forKey: "redlight.adaptiveOffsetWhitepoint") as? Double ?? 0
+        self.adaptiveMin = defaults.object(forKey: "redlight.adaptiveMin") as? Double ?? 0.0
+        self.adaptiveMax = defaults.object(forKey: "redlight.adaptiveMax") as? Double ?? 1.0
+        self.adaptiveWpMin = defaults.object(forKey: "redlight.adaptiveWpMin") as? Double ?? 0.3
+        self.adaptiveWpMax = defaults.object(forKey: "redlight.adaptiveWpMax") as? Double ?? 1.0
         loadPresets()
         refreshDisplays()
         startListening()
@@ -248,12 +303,33 @@ final class DisplayManager {
 
     private func applyToDisplay(_ display: DisplayInfo) {
         if display.isEnabled || display.isInverted {
-            let i = display.isEnabled ? Float(intensity) : 1.0
-            let w = display.isEnabled ? Float(whitepoint) : 1.0
+            let i = display.isEnabled ? Float(previewIntensityValue ?? intensity) : 1.0
+            let w = display.isEnabled ? Float(previewWhitepointValue ?? whitepoint) : 1.0
             gamma.applyFilter(to: display.id, intensity: i, whitepoint: w, invert: display.isInverted)
         } else {
             gamma.restore(display.id)
         }
+    }
+
+    // MARK: - Band marker live preview
+
+    /// Temporarily drive the live filter to `v` (a dragged intensity-band marker) without
+    /// touching stored state, so the user sees that intensity in real time.
+    func previewIntensity(_ v: Double) {
+        previewIntensityValue = min(1, max(0, v))
+        applyToActiveDisplays()
+    }
+
+    func previewWhitepoint(_ v: Double) {
+        previewWhitepointValue = min(1, max(0.25, v))
+        applyToActiveDisplays()
+    }
+
+    /// End any marker preview and revert to the current (adaptive) value.
+    func endPreview() {
+        previewIntensityValue = nil
+        previewWhitepointValue = nil
+        applyToActiveDisplays()
     }
 
     private func save() {
@@ -270,6 +346,10 @@ final class DisplayManager {
         defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
         defaults.set(adaptiveIntensityOffset, forKey: "redlight.adaptiveOffsetIntensity")
         defaults.set(adaptiveWhitepointOffset, forKey: "redlight.adaptiveOffsetWhitepoint")
+        defaults.set(adaptiveMin, forKey: "redlight.adaptiveMin")
+        defaults.set(adaptiveMax, forKey: "redlight.adaptiveMax")
+        defaults.set(adaptiveWpMin, forKey: "redlight.adaptiveWpMin")
+        defaults.set(adaptiveWpMax, forKey: "redlight.adaptiveWpMax")
     }
 
     private func loadPresets() {
