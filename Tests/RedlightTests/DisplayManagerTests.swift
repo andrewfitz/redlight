@@ -29,7 +29,7 @@ final class FakeLocationProvider: LocationProviding {
     func requestWhenInUse() { requestCount += 1 }
 }
 
-@Suite struct DisplayManagerTests {
+@MainActor @Suite struct DisplayManagerTests {
     let mock = MockGammaController()
     let fakeLocation = FakeLocationProvider()
 
@@ -272,6 +272,19 @@ final class FakeLocationProvider: LocationProviding {
 
         manager.endPreview()
         #expect(mock.applyCalls.last?.intensity == Float(manager.intensity))   // reverted
+    }
+
+    @Test func adaptiveTickPushesGammaOncePerDisplay() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.toggle(1)                 // enable display 1
+        manager.adaptiveEnabled = true
+        mock.applyCalls.removeAll()
+
+        manager.applyAdaptive()           // one adaptive tick
+        // Sets intensity + whitepoint internally, then applies ONCE (not once per setter).
+        #expect(mock.applyCalls.count == 1)
     }
 
     @Test func manualNudgeWithBandPreserved() {

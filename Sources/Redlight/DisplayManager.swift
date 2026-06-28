@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 
+@MainActor
 @Observable
 final class DisplayManager {
     struct DisplayInfo: Identifiable {
@@ -13,15 +14,14 @@ final class DisplayManager {
     private(set) var displays: [DisplayInfo] = []
     var intensity: Double = 0.5 {
         didSet {
-            guard isInitialized else { return }
-            if !internalUpdate {
-                // While adaptive: a manual nudge becomes a baseline offset the
-                // curve keeps riding. Otherwise it's a plain manual override.
-                if adaptiveEnabled {
-                    adaptiveIntensityOffset = intensity - lastCurveIntensity
-                } else {
-                    activePresetIndex = nil
-                }
+            // Internal (adaptive/preset) writes apply + save once at their call site.
+            guard isInitialized, !internalUpdate else { return }
+            // While adaptive: a manual nudge becomes a baseline offset the
+            // curve keeps riding. Otherwise it's a plain manual override.
+            if adaptiveEnabled {
+                adaptiveIntensityOffset = intensity - lastCurveIntensity
+            } else {
+                activePresetIndex = nil
             }
             applyToActiveDisplays()
             save()
@@ -29,13 +29,11 @@ final class DisplayManager {
     }
     var whitepoint: Double = 1.0 {
         didSet {
-            guard isInitialized else { return }
-            if !internalUpdate {
-                if adaptiveEnabled {
-                    adaptiveWhitepointOffset = whitepoint - lastCurveWhitepoint
-                } else {
-                    activePresetIndex = nil
-                }
+            guard isInitialized, !internalUpdate else { return }
+            if adaptiveEnabled {
+                adaptiveWhitepointOffset = whitepoint - lastCurveWhitepoint
+            } else {
+                activePresetIndex = nil
             }
             applyToActiveDisplays()
             save()
@@ -129,6 +127,7 @@ final class DisplayManager {
         intensity = min(1, max(0, banded.intensity + adaptiveIntensityOffset))
         whitepoint = min(1, max(0.25, banded.whitepoint + adaptiveWhitepointOffset))
         internalUpdate = false
+        applyToActiveDisplays()
 
         let phase: String
         if elev >= 0 { phase = "day" }
@@ -143,7 +142,7 @@ final class DisplayManager {
     private func startAdaptiveTimer() {
         adaptiveTimer?.invalidate()
         adaptiveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.applyAdaptive()
+            MainActor.assumeIsolated { self?.applyAdaptive() }
         }
     }
 
@@ -195,8 +194,10 @@ final class DisplayManager {
         refreshDisplays()
         startListening()
         location.onChange = { [weak self] in
-            guard let self, self.adaptiveEnabled else { return }
-            self.applyAdaptive()
+            MainActor.assumeIsolated {
+                guard let self, self.adaptiveEnabled else { return }
+                self.applyAdaptive()
+            }
         }
         isInitialized = true
         if adaptiveEnabled {
@@ -248,6 +249,7 @@ final class DisplayManager {
         intensity = preset.intensity
         whitepoint = preset.whitepoint
         internalUpdate = false
+        applyToActiveDisplays()
         activePresetIndex = index
         save()
     }
@@ -268,8 +270,10 @@ final class DisplayManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.applyToActiveDisplays()
-            self?.applyAdaptive()
+            MainActor.assumeIsolated {
+                self?.applyToActiveDisplays()
+                self?.applyAdaptive()
+            }
         }
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -277,17 +281,8 @@ final class DisplayManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshDisplays()
+            MainActor.assumeIsolated { self?.refreshDisplays() }
         }
-    }
-
-    func stopListening() {
-        if let o = wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
-        if let o = screenObserver { NotificationCenter.default.removeObserver(o) }
-        wakeObserver = nil
-        screenObserver = nil
-        adaptiveTimer?.invalidate()
-        adaptiveTimer = nil
     }
 
     // MARK: - Persistence
@@ -361,7 +356,7 @@ final class DisplayManager {
 
     // MARK: - System Helpers
 
-    static func systemDisplayIDs() -> [CGDirectDisplayID] {
+    nonisolated static func systemDisplayIDs() -> [CGDirectDisplayID] {
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)
         guard count > 0 else { return [] }
@@ -370,7 +365,7 @@ final class DisplayManager {
         return ids
     }
 
-    static func systemDisplayName(for id: CGDirectDisplayID) -> String {
+    nonisolated static func systemDisplayName(for id: CGDirectDisplayID) -> String {
         for screen in NSScreen.screens {
             if let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
                screenID == id {

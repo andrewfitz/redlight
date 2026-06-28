@@ -8,8 +8,10 @@ import SwiftUI
 /// the range floor sits flush left and the ceiling flush right. The span between them is
 /// shaded and the live thumb rides within it.
 ///
-/// While a marker is dragged, `onPreview` fires with the marker's value so the caller can
-/// apply it live; `onPreviewEnd` fires on release so the caller can revert to the real value.
+/// A single drag gesture routes to whichever handle (lower marker, upper marker, or thumb)
+/// is nearest where the drag began, so the handles never fight for the same hit area. While
+/// a marker is dragged, `onPreview` fires with its value so the caller can apply it live;
+/// `onPreviewEnd` fires on release so the caller can revert to the real value.
 struct BandSlider: View {
     @Binding var value: Double          // live value, within `range`
     @Binding var lowerBound: Double     // adaptive min
@@ -20,10 +22,12 @@ struct BandSlider: View {
     var onPreview: ((Double) -> Void)? = nil
     var onPreviewEnd: (() -> Void)? = nil
 
+    @State private var active: Handle?
+    private enum Handle { case lower, upper, value }
+
     private let thumbSize: CGFloat = 18
     private let markerW: CGFloat = 6
     private let markerH: CGFloat = 18
-    private let hitW: CGFloat = 24
     private let trackHeight: CGFloat = 4
 
     var body: some View {
@@ -56,38 +60,48 @@ struct BandSlider: View {
                     .position(x: (fillLeft + valX) / 2, y: midY)
 
                 if showBand {
-                    marker
-                        .position(x: loX, y: midY)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { g in
-                                    let v = min(markerVal(g.location.x, w), upperBound - minGap)
-                                    lowerBound = v
-                                    onPreview?(v)
-                                }
-                                .onEnded { _ in onPreviewEnd?() }
-                        )
-                    marker
-                        .position(x: hiX, y: midY)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { g in
-                                    let v = max(markerVal(g.location.x, w), lowerBound + minGap)
-                                    upperBound = v
-                                    onPreview?(v)
-                                }
-                                .onEnded { _ in onPreviewEnd?() }
-                        )
+                    marker.position(x: loX, y: midY)
+                    marker.position(x: hiX, y: midY)
                 }
 
-                thumb
-                    .position(x: valX, y: midY)
-                    .gesture(DragGesture().onChanged { g in
-                        value = thumbVal(g.location.x, w)
-                    })
+                thumb.position(x: valX, y: midY)
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        let handle = active ?? nearestHandle(toX: g.startLocation.x, w: w)
+                        active = handle
+                        switch handle {
+                        case .lower:
+                            let v = min(markerVal(g.location.x, w), upperBound - minGap)
+                            lowerBound = v
+                            onPreview?(v)
+                        case .upper:
+                            let v = max(markerVal(g.location.x, w), lowerBound + minGap)
+                            upperBound = v
+                            onPreview?(v)
+                        case .value:
+                            value = thumbVal(g.location.x, w)
+                        }
+                    }
+                    .onEnded { _ in
+                        if active == .lower || active == .upper { onPreviewEnd?() }
+                        active = nil
+                    }
+            )
         }
         .frame(height: markerH + 8)
+    }
+
+    private func nearestHandle(toX x: CGFloat, w: CGFloat) -> Handle {
+        guard showBand else { return .value }
+        let candidates: [(Handle, CGFloat)] = [
+            (.lower, markerPos(lowerBound, w)),
+            (.upper, markerPos(upperBound, w)),
+            (.value, thumbPos(value, w)),
+        ]
+        return candidates.min(by: { abs($0.1 - x) < abs($1.1 - x) })!.0
     }
 
     // MARK: - Value ⇄ position mapping
@@ -134,7 +148,5 @@ struct BandSlider: View {
             .fill(Color.red.opacity(0.9))
             .frame(width: markerW, height: markerH)
             .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(.white.opacity(0.6), lineWidth: 0.5))
-            .frame(width: hitW, height: markerH + 8)   // wider invisible drag target
-            .contentShape(Rectangle())
     }
 }

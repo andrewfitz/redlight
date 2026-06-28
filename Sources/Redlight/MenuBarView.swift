@@ -171,6 +171,7 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
+        .onDisappear { manager.endPreview() }   // cancel any band-marker preview left mid-drag
     }
 
     private func countdown(_ seconds: Double) -> String {
@@ -179,6 +180,7 @@ struct MenuBarView: View {
     }
 
     /// Applied adaptive intensity at each sample time — the same mapping the live filter uses.
+    @MainActor
     private func appliedIntensities(_ cycle: SunCycle,
                                     coord: (latitude: Double, longitude: Double)) -> [Double] {
         let minElev = SolarCalculator.elevationAtSolarMidnight(
