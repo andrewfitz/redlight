@@ -26,6 +26,13 @@ enum SolarCalculator {
         return abs(latitude + decl) - 90
     }
 
+    /// Sun elevation in degrees at the day's highest point (upper culmination):
+    /// closed form `90 − |latitude − declination|` (independent of longitude).
+    static func elevationAtSolarNoon(at date: Date, latitude: Double, longitude: Double) -> Double {
+        let decl = solarDeclination(julianCentury(date))
+        return 90 - abs(latitude - decl)
+    }
+
     // MARK: - NOAA intermediate terms (all angles in degrees)
 
     private static func julianDay(_ date: Date) -> Double {
