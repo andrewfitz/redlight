@@ -1,12 +1,58 @@
 import SwiftUI
 
+/// Memoizes the expensive `SunCycle` construction (73 solar elevation evaluations plus a
+/// bisected forward scan) and the per-sample applied-intensity mapping, so they run once
+/// per timeline tick / input change instead of on every SwiftUI body evaluation. A plain
+/// reference type: mutating it inside `body` is safe because the result is deterministic
+/// for a given key and never feeds back into view identity.
+private final class SunArcCache {
+    struct IntensityKey: Equatable {
+        var date: Date, lat: Double, lon: Double
+        var presets: [Preset]
+        var iMin: Double, iMax: Double, wMin: Double, wMax: Double
+        var intensityAdjustment: Double
+    }
+
+    private var cycleKey: (date: Date, lat: Double, lon: Double)?
+    private var cycleValue: SunCycle?
+    private(set) var minElevation: Double = 0
+    private var intensityKey: IntensityKey?
+    private var intensityValue: [Double] = []
+
+    func cycle(now: Date, latitude: Double, longitude: Double) -> SunCycle {
+        if let cycleValue, let k = cycleKey, k.date == now, k.lat == latitude, k.lon == longitude {
+            return cycleValue
+        }
+        let fresh = SunCycle(now: now, latitude: latitude, longitude: longitude)
+        minElevation = SolarCalculator.elevationAtSolarMidnight(
+            at: now, latitude: latitude, longitude: longitude)
+        cycleKey = (now, latitude, longitude)
+        cycleValue = fresh
+        return fresh
+    }
+
+    func intensities(key: IntensityKey, compute: () -> [Double]) -> [Double] {
+        if key == intensityKey { return intensityValue }
+        intensityValue = compute()
+        intensityKey = key
+        return intensityValue
+    }
+}
+
 struct MenuBarView: View {
     @Bindable var manager: DisplayManager
+    var launchAtLogin: LaunchAtLogin? = nil
+
+    @State private var sunCache = SunArcCache()
+    @State private var appearance = AppearanceController.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Redlight")
-                .font(.headline)
+            HStack {
+                Text("Redlight").font(.headline)
+                Spacer()
+                AppearanceSwitch(isDark: appearance.isDark) { appearance.toggle() }
+            }
 
             Divider()
 
@@ -16,6 +62,7 @@ struct MenuBarView: View {
                         get: { display.isEnabled },
                         set: { _ in manager.toggle(display.id) }
                     ))
+                    .accessibilityLabel(display.name)
                     Spacer()
                     Toggle("Invert", isOn: Binding(
                         get: { display.isInverted },
@@ -24,6 +71,7 @@ struct MenuBarView: View {
                     .toggleStyle(.checkbox)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Invert colors on \(display.name)")
                 }
             }
 
@@ -35,49 +83,47 @@ struct MenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Intensity")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    if manager.adaptiveEnabled {
-                        Spacer()
-                        Text("limit \(Int(manager.adaptiveMin * 100))–\(Int(manager.adaptiveMax * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
+                Text("Color")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    BandSlider(
+                        value: $manager.intensity,
+                        lowerBound: $manager.adaptiveMin,
+                        upperBound: $manager.adaptiveMax,
+                        range: 0.0...1.0,
+                        showBand: manager.adaptiveEnabled,
+                        label: "Color",
+                        onPreview: { manager.previewIntensity($0) },
+                        onPreviewEnd: { manager.endPreview() }
+                    )
+                    ResetButton(
+                        help: "Reset color and its limits to default",
+                        isDefault: manager.intensityIsDefault
+                    ) { manager.resetIntensity() }
                 }
-                BandSlider(
-                    value: $manager.intensity,
-                    lowerBound: $manager.adaptiveMin,
-                    upperBound: $manager.adaptiveMax,
-                    range: 0.0...1.0,
-                    showBand: manager.adaptiveEnabled,
-                    onPreview: { manager.previewIntensity($0) },
-                    onPreviewEnd: { manager.endPreview() }
-                )
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Reduce White Point")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    if manager.adaptiveEnabled {
-                        Spacer()
-                        Text("limit \(Int(manager.adaptiveWpMin * 100))–\(Int(manager.adaptiveWpMax * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
+                Text("White Point")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    BandSlider(
+                        value: $manager.whitepoint,
+                        lowerBound: $manager.adaptiveWpMin,
+                        upperBound: $manager.adaptiveWpMax,
+                        range: 0.25...1.0,
+                        showBand: manager.adaptiveEnabled,
+                        label: "White Point",
+                        onPreview: { manager.previewWhitepoint($0) },
+                        onPreviewEnd: { manager.endPreview() }
+                    )
+                    ResetButton(
+                        help: "Reset white point and its limits to default",
+                        isDefault: manager.whitepointIsDefault
+                    ) { manager.resetWhitepoint() }
                 }
-                BandSlider(
-                    value: $manager.whitepoint,
-                    lowerBound: $manager.adaptiveWpMin,
-                    upperBound: $manager.adaptiveWpMax,
-                    range: 0.25...1.0,
-                    showBand: manager.adaptiveEnabled,
-                    onPreview: { manager.previewWhitepoint($0) },
-                    onPreviewEnd: { manager.endPreview() }
-                )
             }
 
             Divider()
@@ -85,7 +131,7 @@ struct MenuBarView: View {
             // MARK: - Presets
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
+                HStack(spacing: 3) {
                     ForEach(Array(manager.presets.enumerated()), id: \.offset) { index, preset in
                         PresetButton(
                             name: preset.name,
@@ -118,6 +164,8 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Adaptive", isOn: $manager.adaptiveEnabled)
                     .font(.subheadline)
+                    .help("Follow real solar elevation. You can still adjust either slider while Adaptive stays on.")
+                    .accessibilityLabel("Adaptive solar mode")
 
                 if manager.adaptiveEnabled && !manager.adaptiveStatusText.isEmpty {
                     if manager.adaptiveStatusText == "Location needed" {
@@ -140,58 +188,139 @@ struct MenuBarView: View {
 
                 if manager.adaptiveEnabled, let coord = manager.coordinate {
                     TimelineView(.periodic(from: .now, by: 20)) { context in
-                        let cycle = SunCycle(
+                        let cycle = sunCache.cycle(
                             now: context.date,
                             latitude: coord.latitude,
                             longitude: coord.longitude
                         )
-                        VStack(alignment: .leading, spacing: 6) {
-                            if let event = cycle.nextEvent {
-                                Text("\(event.label) in \(countdown(event.seconds))")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            SunArcView(
-                                cycle: cycle,
-                                intensities: appliedIntensities(cycle, coord: coord),
-                                intensityLimits: min(manager.adaptiveMin, manager.adaptiveMax)
-                                    ... max(manager.adaptiveMin, manager.adaptiveMax)
-                            )
-                        }
+                        SunArcView(
+                            cycle: cycle,
+                            intensities: appliedIntensities(cycle, at: context.date, coord: coord),
+                            intensityLimits: manager.intensityBand
+                        )
                     }
                 }
             }
 
             Divider()
 
-            Button("Quit") {
-                manager.restoreAllDisplays()
+            if let launchAtLogin {
+                @Bindable var launchAtLogin = launchAtLogin
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Launch at Login", isOn: $launchAtLogin.isEnabled)
+                        .font(.subheadline)
+                        .accessibilityLabel("Launch Redlight at login")
+                    if launchAtLogin.requiresApproval {
+                        Button {
+                            launchAtLogin.openSystemSettings()
+                        } label: {
+                            Label("Approval needed — open Login Items",
+                                  systemImage: "exclamationmark.circle")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .onAppear { launchAtLogin.refresh() }
+            }
+
+            Button(manager.isTerminating ? "Quitting…" : "Quit") {
                 NSApplication.shared.terminate(nil)
             }
+            .accessibilityLabel("Quit Redlight")
         }
+        .disabled(manager.isTerminating)
         .padding()
         .frame(width: 300)
-        .onDisappear { manager.endPreview() }   // cancel any band-marker preview left mid-drag
-    }
-
-    private func countdown(_ seconds: Double) -> String {
-        let m = max(0, Int((seconds / 60).rounded()))
-        return m < 60 ? "\(m)m" : "\(m / 60)h \(m % 60)m"
-    }
-
-    /// Applied adaptive intensity at each sample time — the same mapping the live filter uses.
-    @MainActor
-    private func appliedIntensities(_ cycle: SunCycle,
-                                    coord: (latitude: Double, longitude: Double)) -> [Double] {
-        let minElev = SolarCalculator.elevationAtSolarMidnight(
-            at: Date(), latitude: coord.latitude, longitude: coord.longitude)
-        return cycle.samples.map { sample in
-            AdaptiveMapping.banded(
-                elevation: sample.elevation, minElevation: minElev, presets: manager.presets,
-                intensityMin: manager.adaptiveMin, intensityMax: manager.adaptiveMax,
-                whitepointMin: manager.adaptiveWpMin, whitepointMax: manager.adaptiveWpMax
-            ).intensity
+        .onDisappear {
+            if !manager.isTerminating { manager.endPreview() }
         }
+    }
+
+    /// Applied adaptive intensity at each sample time — the same mapping the live filter
+    /// uses. Memoized: recomputed only when the timeline ticks or the band/presets change.
+    @MainActor
+    private func appliedIntensities(_ cycle: SunCycle, at date: Date,
+                                    coord: (latitude: Double, longitude: Double)) -> [Double] {
+        let key = SunArcCache.IntensityKey(
+            date: date, lat: coord.latitude, lon: coord.longitude,
+            presets: manager.presets,
+            iMin: manager.adaptiveMin, iMax: manager.adaptiveMax,
+            wMin: manager.adaptiveWpMin, wMax: manager.adaptiveWpMax,
+            intensityAdjustment: manager.adaptiveIntensityAdjustment
+        )
+        let minElev = sunCache.minElevation
+        return sunCache.intensities(key: key) {
+            cycle.samples.map { sample in
+                manager.adaptiveIntensity(at: sample.elevation, minElevation: minElev)
+            }
+        }
+    }
+}
+
+// MARK: - Reset Button
+
+/// Sits at the trailing edge of a slider and restores that control — value *and* adaptive
+/// band — to factory settings. Dimmed and inert once there's nothing left to reset, so it
+/// doubles as an at-a-glance "this row is untouched" indicator.
+struct ResetButton: View {
+    let help: String
+    let isDefault: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isDefault ? Color.secondary.opacity(0.35) : Color.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDefault)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Appearance Switch
+
+/// Two-segment sun/moon pill that flips the *system* light/dark appearance. Sized to sit
+/// flush with the header's `.headline` baseline without stretching the popover.
+struct AppearanceSwitch: View {
+    let isDark: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 0) {
+                segment("sun.max.fill", selected: !isDark)
+                segment("moon.fill", selected: isDark)
+            }
+            .background(
+                Capsule().fill(Color.secondary.opacity(0.12))
+            )
+            .overlay(
+                Capsule().strokeBorder(Color.secondary.opacity(0.15), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(isDark ? "Switch to Light Mode" : "Switch to Dark Mode")
+        .accessibilityLabel("System appearance")
+        .accessibilityValue(isDark ? "Dark" : "Light")
+    }
+
+    private func segment(_ symbol: String, selected: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(selected ? Color.primary : Color.secondary.opacity(0.5))
+            .frame(width: 26, height: 20)
+            .background(
+                Capsule()
+                    .fill(selected ? Color.primary.opacity(0.12) : .clear)
+                    .padding(1)
+            )
     }
 }
 
@@ -205,10 +334,11 @@ struct PresetButton: View {
     var body: some View {
         Button(action: action) {
             Text(name)
-                .font(.caption2)
+                .font(.system(size: 10))
                 .fontWeight(isActive ? .semibold : .regular)
                 .lineLimit(1)
-                .padding(.horizontal, 8)
+                .minimumScaleFactor(0.85)
+                .padding(.horizontal, 2)
                 .padding(.vertical, 5)
                 .frame(maxWidth: .infinity)
                 .background(
@@ -221,5 +351,7 @@ struct PresetButton: View {
                 )
         }
         .buttonStyle(.plain)
+        .help(name)
+        .accessibilityLabel(name)
     }
 }

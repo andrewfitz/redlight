@@ -5,12 +5,29 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="$ROOT/Redlight.app"
 CONTENTS="$APP/Contents"
 
+BIN_DIR="$(swift build -c release --package-path "$ROOT" --show-bin-path)"
 swift build -c release --package-path "$ROOT"
 
-rm -rf "$APP"
-mkdir -p "$CONTENTS/MacOS"
+# App icon: regenerated from Tools/make-icon.swift each build (fast, no deps).
+# Fail soft — if the generator or iconutil breaks, keep a previously generated
+# Resources/Redlight.icns, or warn and build without an icon.
+ICONSET="$ROOT/.build/Redlight.iconset"
+ICNS="$ROOT/Resources/Redlight.icns"
+mkdir -p "$ROOT/Resources"
+if ! { swift "$ROOT/Tools/make-icon.swift" "$ICONSET" && iconutil -c icns "$ICONSET" -o "$ICNS"; }; then
+    echo "warning: icon generation failed; using existing Redlight.icns if present" >&2
+fi
 
-cp "$ROOT/.build/arm64-apple-macosx/release/Redlight" "$CONTENTS/MacOS/Redlight"
+rm -rf "$APP"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+cp "$BIN_DIR/Redlight" "$CONTENTS/MacOS/Redlight"
+
+if [[ -f "$ICNS" ]]; then
+    cp "$ICNS" "$CONTENTS/Resources/Redlight.icns"
+else
+    echo "warning: no Redlight.icns available; app will show the generic icon" >&2
+fi
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,6 +50,10 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>Redlight</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Redlight uses System Events to toggle the system light/dark appearance.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
     <key>NSLocationUsageDescription</key>

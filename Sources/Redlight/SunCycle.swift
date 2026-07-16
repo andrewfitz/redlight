@@ -5,7 +5,7 @@ import Foundation
 /// Pure — depends only on `SolarCalculator` and an injectable `Calendar`.
 struct SunCycle {
     struct Sample { let t: Double; let elevation: Double }   // t in [0,1] = fraction of local day
-    struct Event { let label: String; let seconds: Double }
+    struct Event { let label: String; let seconds: Double; let elevation: Double }
 
     let samples: [Sample]
     let nowFraction: Double
@@ -13,13 +13,18 @@ struct SunCycle {
     let maxElevation: Double
     let nextEvent: Event?
 
-    /// Twilight boundaries the countdown watches for.
-    static let thresholds: [Double] = [0, -6, -12, -18]
+    /// Every physical elevation anchor that can change the Adaptive curve. The UI's next-
+    /// marker countdown and the dots on the arc therefore share one source of truth.
+    static let thresholds: [Double] = SolarCurve.elevationMarkers.map(\.elevation)
 
     init(now: Date, latitude: Double, longitude: Double,
          calendar: Calendar = .current, sampleCount: Int = 73) {
+        let sampleCount = max(2, sampleCount)
         let dayStart = calendar.startOfDay(for: now)
-        let daySeconds: Double = 86_400
+        // Actual local day length — 23/25 h on DST transition days, not a hardcoded 24 h.
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(86_400)
+        let daySeconds = dayEnd.timeIntervalSince(dayStart)
 
         var pts: [Sample] = []
         pts.reserveCapacity(sampleCount)
@@ -37,6 +42,34 @@ struct SunCycle {
         nextEvent = SunCycle.findNextEvent(now: now, latitude: latitude, longitude: longitude)
     }
 
+    /// Fractions of this local day where the sampled solar arc crosses a real elevation
+    /// marker. Linear interpolation between the dense samples is accurate enough for the
+    /// small guide dots in `SunArcView` and keeps their x positions tied to the actual day.
+    func crossingFractions(at elevation: Double) -> [Double] {
+        guard samples.count > 1 else { return [] }
+        let epsilon = 1e-9
+        var result: [Double] = []
+
+        func appendUnique(_ t: Double) {
+            guard result.last.map({ abs($0 - t) > epsilon }) ?? true else { return }
+            result.append(t)
+        }
+
+        for i in 0..<(samples.count - 1) {
+            let a = samples[i], b = samples[i + 1]
+            let da = a.elevation - elevation, db = b.elevation - elevation
+            if abs(da) <= epsilon { appendUnique(a.t) }
+            if da * db < 0 {
+                let f = da / (da - db)
+                appendUnique(a.t + (b.t - a.t) * f)
+            }
+        }
+        if let last = samples.last, abs(last.elevation - elevation) <= epsilon {
+            appendUnique(last.t)
+        }
+        return result
+    }
+
     /// Forward-scan `[now, now+24h]` in 2-min steps for the next crossing of any threshold,
     /// then bisect to ~2 s. When several thresholds flip within one step, the earliest in
     /// time wins. Direction is read across the step.
@@ -49,9 +82,11 @@ struct SunCycle {
         }
         func crossing(_ thr: Double, _ a: Double, _ b: Double) -> Double {
             var lo = a, hi = b
+            var fLo = elev(lo) - thr
             for _ in 0..<6 {
                 let mid = (lo + hi) / 2
-                if (elev(lo) - thr) * (elev(mid) - thr) <= 0 { hi = mid } else { lo = mid }
+                let fMid = elev(mid) - thr
+                if fLo * fMid <= 0 { hi = mid } else { lo = mid; fLo = fMid }
             }
             return (lo + hi) / 2
         }
@@ -67,7 +102,10 @@ struct SunCycle {
                 if best == nil || at < best!.at { best = (thr, at) }
             }
             if let best {
-                return Event(label: label(threshold: best.thr, rising: cur > prev), seconds: best.at)
+                return Event(
+                    label: label(threshold: best.thr, rising: cur > prev),
+                    seconds: best.at,
+                    elevation: best.thr)
             }
             prevOffset = offset
             prev = cur

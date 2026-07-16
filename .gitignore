@@ -8,3 +8,6 @@ DerivedData/
 docs/
 TODO.md
 *.todo
+
+# Serena MCP cache
+.serena/
