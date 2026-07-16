@@ -1,15 +1,82 @@
 import SwiftUI
 
+/// Pure geometry + interaction rules for `BandSlider`, kept UI-free so the clamp and
+/// hit-test invariants are unit-testable.
+///
+/// One shared value ⇄ pixel mapping (inset by the thumb radius on both ends) is used for
+/// the thumb AND the band markers, so a thumb at `lowerBound` lands exactly on the lower
+/// bracket instead of drifting past it.
+enum BandSliderCore {
+    enum Handle { case lower, upper, value }
+
+    /// Fraction of `range` for a value, clamped to [0, 1].
+    static func frac(_ v: Double, range: ClosedRange<Double>) -> Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(1, max(0, (v - range.lowerBound) / span))
+    }
+
+    /// Shared value → x mapping: both thumb and markers ride the same inset track.
+    static func position(_ v: Double, width: CGFloat, inset: CGFloat, range: ClosedRange<Double>) -> CGFloat {
+        let usable = max(1, width - 2 * inset)
+        return CGFloat(frac(v, range: range)) * usable + inset
+    }
+
+    /// Shared x → value mapping (inverse of `position`), clamped into `range`.
+    static func value(atX x: CGFloat, width: CGFloat, inset: CGFloat, range: ClosedRange<Double>) -> Double {
+        let usable = max(1, width - 2 * inset)
+        let f = min(1, max(0, Double((x - inset) / usable)))
+        return range.lowerBound + f * (range.upperBound - range.lowerBound)
+    }
+
+    /// Clamp a live value into the band (lo/hi order normalized).
+    static func clampToBand(_ v: Double, lower: Double, upper: Double) -> Double {
+        let lo = min(lower, upper), hi = max(lower, upper)
+        return min(hi, max(lo, v))
+    }
+
+    /// Which handle a drag starting at `x` grabs.
+    ///
+    /// Nearest handle wins, with a deliberate tie-break for the case where clamping has
+    /// parked the thumb exactly on a bracket: grabbing at/inside the band prefers the
+    /// thumb (so it never becomes ungrabbable), grabbing outside the bracket prefers the
+    /// marker (the only handle that can move that way).
+    static func hitHandle(
+        atX x: CGFloat, width: CGFloat, inset: CGFloat, range: ClosedRange<Double>,
+        value v: Double, lower: Double, upper: Double, showBand: Bool,
+        markerHitRadius: CGFloat = 12
+    ) -> Handle {
+        guard showBand else { return .value }
+        let visibleValue = clampToBand(v, lower: lower, upper: upper)
+        let vX = position(visibleValue, width: width, inset: inset, range: range)
+        let loX = position(lower, width: width, inset: inset, range: range)
+        let hiX = position(upper, width: width, inset: inset, range: range)
+        let dV = abs(vX - x), dLo = abs(loX - x), dHi = abs(hiX - x)
+        if dV <= dLo && dV <= dHi {
+            // Tied with a coincident marker: outside the bracket means the marker.
+            if dV == dLo && x < loX { return .lower }
+            if dV == dHi && x > hiX { return .upper }
+            return .value
+        }
+        // Brackets have a finite hit target. A click elsewhere on the track behaves like a
+        // normal slider click and moves the value instead of unexpectedly changing a bound.
+        let nearestMarker = min(dLo, dHi)
+        guard nearestMarker <= markerHitRadius else { return .value }
+        return dLo <= dHi ? .lower : .upper
+    }
+}
+
 /// A value slider with optional adaptive-band bracket markers, over an arbitrary `range`.
 ///
 /// The round thumb sets the live value (a manual nudge while adaptive is on) and is inset
 /// by its radius so it never clips at the ends. When `showBand` is true, two draggable
-/// bracket markers set the adaptive min/max band; they map across the full track width, so
-/// the range floor sits flush left and the ceiling flush right. The span between them is
-/// shaded and the live thumb rides within it.
+/// bracket markers set the adaptive min/max band; the thumb is hard-clamped into the band,
+/// both while dragging and when rendered. Thumb and markers share one value ⇄ pixel
+/// mapping, so a thumb at a bound sits exactly on its bracket.
 ///
 /// A single drag gesture routes to whichever handle (lower marker, upper marker, or thumb)
-/// is nearest where the drag began, so the handles never fight for the same hit area. While
+/// is nearest where the drag began; ties on a coincident thumb/marker prefer the thumb
+/// inside the band and the marker outside it, so neither can become ungrabbable. While
 /// a marker is dragged, `onPreview` fires with its value so the caller can apply it live;
 /// `onPreviewEnd` fires on release so the caller can revert to the real value.
 struct BandSlider: View {
@@ -18,34 +85,46 @@ struct BandSlider: View {
     @Binding var upperBound: Double     // adaptive max
     var range: ClosedRange<Double> = 0...1
     var showBand: Bool
+    var label: String = "Value"
     var minGap: Double = 0.05
     var onPreview: ((Double) -> Void)? = nil
     var onPreviewEnd: (() -> Void)? = nil
 
-    @State private var active: Handle?
-    private enum Handle { case lower, upper, value }
+    @State private var active: BandSliderCore.Handle?
 
     private let thumbSize: CGFloat = 18
     private let markerW: CGFloat = 6
     private let markerH: CGFloat = 18
     private let trackHeight: CGFloat = 4
+    private var inset: CGFloat { thumbSize / 2 }
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let midY = geo.size.height / 2
-            let valX = thumbPos(value, w)
-            let loX = markerPos(lowerBound, w)
-            let hiX = markerPos(upperBound, w)
+            // Render the thumb clamped into the band even if the model briefly lags a
+            // marker drag — it must never draw outside the brackets.
+            let renderValue = showBand
+                ? BandSliderCore.clampToBand(value, lower: lowerBound, upper: upperBound)
+                : value
+            let valX = pos(renderValue, w)
+            let loX = pos(lowerBound, w)
+            let hiX = pos(upperBound, w)
+            // The track spans exactly the travel range, so the range ends ARE the track ends:
+            // a marker dragged to the floor sits flush on the left cap, not short of it. (The
+            // travel range is inset by the thumb radius — that's what keeps the thumb from
+            // clipping — so a full-width track could never be reached at either end.)
+            let trackLeft = pos(range.lowerBound, w)
+            let trackRight = pos(range.upperBound, w)
             // Value fill starts at the left bracket when a band is shown (stays within the
-            // band); otherwise it runs to the very left edge like a normal slider.
-            let fillLeft: CGFloat = showBand ? loX : 0
+            // band); otherwise it runs to the track's left end like a normal slider.
+            let fillLeft: CGFloat = showBand ? loX : trackLeft
 
             ZStack {
                 Capsule()
                     .fill(Color.secondary.opacity(0.25))
-                    .frame(height: trackHeight)
-                    .position(x: w / 2, y: midY)
+                    .frame(width: max(0, trackRight - trackLeft), height: trackHeight)
+                    .position(x: (trackLeft + trackRight) / 2, y: midY)
 
                 if showBand {
                     Capsule()
@@ -70,19 +149,26 @@ struct BandSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        let handle = active ?? nearestHandle(toX: g.startLocation.x, w: w)
+                        let handle = active ?? BandSliderCore.hitHandle(
+                            atX: g.startLocation.x, width: w, inset: inset, range: range,
+                            value: value, lower: lowerBound, upper: upperBound, showBand: showBand
+                        )
                         active = handle
                         switch handle {
                         case .lower:
-                            let v = min(markerVal(g.location.x, w), upperBound - minGap)
-                            lowerBound = v
-                            onPreview?(v)
+                            let v = min(val(g.location.x, w), upperBound - minGap)
+                            lowerBound = max(range.lowerBound, v)
+                            onPreview?(lowerBound)
                         case .upper:
-                            let v = max(markerVal(g.location.x, w), lowerBound + minGap)
-                            upperBound = v
-                            onPreview?(v)
+                            let v = max(val(g.location.x, w), lowerBound + minGap)
+                            upperBound = min(range.upperBound, v)
+                            onPreview?(upperBound)
                         case .value:
-                            value = thumbVal(g.location.x, w)
+                            // Hard limit: the thumb can never land outside the band.
+                            let v = val(g.location.x, w)
+                            value = showBand
+                                ? BandSliderCore.clampToBand(v, lower: lowerBound, upper: upperBound)
+                                : v
                         }
                     }
                     .onEnded { _ in
@@ -92,46 +178,72 @@ struct BandSlider: View {
             )
         }
         .frame(height: markerH + 8)
+        .accessibilityRepresentation {
+            VStack {
+                Slider(value: accessibleValue, in: range) { Text(label) }
+                    .accessibilityLabel("\(label) current value")
+                    .accessibilityValue(Self.percentLabel(value))
+                if showBand {
+                    Slider(value: accessibleLowerBound, in: range) {
+                        Text("\(label) adaptive minimum")
+                    }
+                    .accessibilityLabel("\(label) adaptive minimum")
+                    .accessibilityValue(Self.percentLabel(lowerBound))
+                    Slider(value: accessibleUpperBound, in: range) {
+                        Text("\(label) adaptive maximum")
+                    }
+                    .accessibilityLabel("\(label) adaptive maximum")
+                    .accessibilityValue(Self.percentLabel(upperBound))
+                }
+            }
+        }
     }
 
-    private func nearestHandle(toX x: CGFloat, w: CGFloat) -> Handle {
-        guard showBand else { return .value }
-        let candidates: [(Handle, CGFloat)] = [
-            (.lower, markerPos(lowerBound, w)),
-            (.upper, markerPos(upperBound, w)),
-            (.value, thumbPos(value, w)),
-        ]
-        return candidates.min(by: { abs($0.1 - x) < abs($1.1 - x) })!.0
+    // MARK: - Value ⇄ position mapping (shared by thumb and markers)
+
+    private func pos(_ v: Double, _ w: CGFloat) -> CGFloat {
+        BandSliderCore.position(v, width: w, inset: inset, range: range)
+    }
+    private func val(_ px: CGFloat, _ w: CGFloat) -> Double {
+        BandSliderCore.value(atX: px, width: w, inset: inset, range: range)
     }
 
-    // MARK: - Value ⇄ position mapping
-
-    private var span: Double { range.upperBound - range.lowerBound }
-    private func frac(_ v: Double) -> Double { span > 0 ? clamp01((v - range.lowerBound) / span) : 0 }
-    private func unfrac(_ f: Double) -> Double { range.lowerBound + clamp01(f) * span }
-
-    // Thumb: inset by its radius so the circle never clips at the ends.
-    private func thumbPos(_ v: Double, _ w: CGFloat) -> CGFloat {
-        let usable = max(1, w - thumbSize)
-        return CGFloat(frac(v)) * usable + thumbSize / 2
-    }
-    private func thumbVal(_ px: CGFloat, _ w: CGFloat) -> Double {
-        let usable = max(1, w - thumbSize)
-        return unfrac(Double((px - thumbSize / 2) / usable))
+    private static func percentLabel(_ value: Double) -> String {
+        "\(Int((value * 100).rounded())) percent"
     }
 
-    // Markers: map across the full track (only ±markerW/2 so the bracket sits flush at
-    // each edge), so the range ends are reachable.
-    private func markerPos(_ v: Double, _ w: CGFloat) -> CGFloat {
-        let usable = max(1, w - markerW)
-        return CGFloat(frac(v)) * usable + markerW / 2
-    }
-    private func markerVal(_ px: CGFloat, _ w: CGFloat) -> Double {
-        let usable = max(1, w - markerW)
-        return unfrac(Double((px - markerW / 2) / usable))
+    private var accessibleValue: Binding<Double> {
+        Binding(
+            get: { value },
+            set: { newValue in
+                let ranged = min(range.upperBound, max(range.lowerBound, newValue))
+                value = showBand
+                    ? BandSliderCore.clampToBand(
+                        ranged, lower: lowerBound, upper: upperBound)
+                    : ranged
+            }
+        )
     }
 
-    private func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
+    private var accessibleLowerBound: Binding<Double> {
+        Binding(
+            get: { lowerBound },
+            set: {
+                let ceiling = max(range.lowerBound, upperBound - minGap)
+                lowerBound = min(max(range.lowerBound, $0), ceiling)
+            }
+        )
+    }
+
+    private var accessibleUpperBound: Binding<Double> {
+        Binding(
+            get: { upperBound },
+            set: {
+                let floor = min(range.upperBound, lowerBound + minGap)
+                upperBound = max(min(range.upperBound, $0), floor)
+            }
+        )
+    }
 
     // MARK: - Pieces
 

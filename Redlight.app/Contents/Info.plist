@@ -18,6 +18,10 @@
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>Redlight</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Redlight uses System Events to toggle the system light/dark appearance.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
     <key>NSLocationUsageDescription</key>
