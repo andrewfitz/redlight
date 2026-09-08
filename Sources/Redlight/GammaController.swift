@@ -95,7 +95,15 @@ final class GammaController: GammaControlling {
     }
 
     func restore(_ displayID: CGDirectDisplayID) {
-        guard modified.remove(displayID) != nil else { return }   // never touched → no-op
+        guard modified.contains(displayID) else { return }   // never touched → no-op
+        // Writing the captured table back via `CGSetDisplayTransferByTable` does not fully
+        // reinstall ColorSync on some third-party monitors after a link retrain. When this
+        // is the last display we own, ColorSync-restore everything — the same call Quit uses.
+        if modified == [displayID] {
+            restoreAll()
+            return
+        }
+        modified.remove(displayID)
         if var t = originalTables.removeValue(forKey: displayID) {
             CGSetDisplayTransferByTable(displayID, UInt32(t.r.count), &t.r, &t.g, &t.b)
         } else {

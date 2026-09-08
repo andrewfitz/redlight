@@ -25,6 +25,7 @@ final class FakeLocationProvider: LocationProviding {
     var coordinate: (latitude: Double, longitude: Double)?
     var authorization: LocationAuthorization = .authorized
     var onChange: (() -> Void)?
+    var isApproximate = false
     var requestCount = 0
     func requestWhenInUse() { requestCount += 1 }
 }
@@ -1499,12 +1500,42 @@ final class FakeLocationProvider: LocationProviding {
         manager.intensity = 0.7
         manager.toggle(2)
         mock.restoreCalls.removeAll()
+        mock.restoreAllCount = 0
 
         ids = [1]
         manager.refreshDisplays()
 
-        #expect(mock.restoreCalls.contains(2))
+        #expect(mock.restoreAllCount == 1)
         #expect(manager.displays.map(\.id) == [1])
+    }
+
+    @Test func monitorWakeRecapturesColorSyncBeforeReapplyingFilter() {
+        // Turning a third-party panel off and on often retrains the link without changing
+        // the CoreGraphics display ID. The GPU LUT and ColorSync profile are both reset, so
+        // the pre-sleep snapshot is stale: writing it back on disable leaves a residual
+        // red cast. ColorSync-restore + recapture, then re-apply, matches what Quit does.
+        let ids: [CGDirectDisplayID] = [1]
+        let manager = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { ids },
+            getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) },
+            defaults: freshDefaults(),
+            location: FakeLocationProvider()
+        )
+        manager.intensity = 0.4
+        manager.toggle(1)
+        manager.completeDisplayTransitions()
+        mock.applyCalls.removeAll()
+        mock.restoreCalls.removeAll()
+        mock.restoreAllCount = 0
+
+        manager.refreshDisplays()
+
+        #expect(mock.restoreAllCount == 1)
+        #expect(mock.applyCalls.contains { call in
+            call.displayID == 1 && abs(call.intensity - 0.4) < 0.0001
+        })
     }
 
     @Test func adaptiveStartupAppliesCurrentCurveWithoutPersistedValueFlash() {
@@ -1519,6 +1550,37 @@ final class FakeLocationProvider: LocationProviding {
 
         #expect(mock.applyCalls.count == 1)
         #expect(mock.applyCalls[0].intensity < 0.5)
+    }
+
+    @Test func adaptiveRetriesApproximateLocationUntilAPreciseFixArrives() {
+        var date = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let loc = FakeLocationProvider()
+        loc.coordinate = (41.8, -87.6)
+        loc.isApproximate = true
+        let manager = makeManager(location: loc, now: { date })
+        manager.adaptiveEnabled = true
+        #expect(loc.requestCount == 1)
+
+        date.addTimeInterval(59)
+        manager.applyAdaptive()
+        #expect(loc.requestCount == 1)
+
+        date.addTimeInterval(2)
+        manager.applyAdaptive()
+        #expect(loc.requestCount == 2)
+    }
+
+    @Test func approximateFixStillPublishesCoordinateForTheSunArc() {
+        let loc = FakeLocationProvider()
+        loc.coordinate = (41.8, -87.6)
+        loc.isApproximate = true
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+
+        #expect(manager.coordinate != nil)
+        #expect(manager.adaptiveStatusText.contains("time zone"))
+        #expect(!manager.adaptiveStatusText.contains("Locating"))
     }
 
     @Test func adaptiveRetriesMissingLocationWithoutContinuousPolling() {

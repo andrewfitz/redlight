@@ -45,8 +45,25 @@ struct MenuBarView: View {
 
     @State private var sunCache = SunArcCache()
     @State private var appearance = AppearanceController.shared
+    @State private var showingAbout = false
 
     var body: some View {
+        Group {
+            if showingAbout {
+                AboutView { showingAbout = false }
+            } else {
+                controls
+            }
+        }
+        .disabled(manager.isTerminating)
+        .padding()
+        .frame(width: 300)
+        .onDisappear {
+            if !manager.isTerminating { manager.endPreview() }
+        }
+    }
+
+    private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Redlight").font(.headline)
@@ -225,16 +242,15 @@ struct MenuBarView: View {
                 .onAppear { launchAtLogin.refresh() }
             }
 
-            Button(manager.isTerminating ? "Quitting…" : "Quit") {
-                NSApplication.shared.terminate(nil)
+            HStack {
+                Button("About") { showingAbout = true }
+                    .accessibilityLabel("About Redlight")
+                Spacer()
+                Button(manager.isTerminating ? "Quitting…" : "Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .accessibilityLabel("Quit Redlight")
             }
-            .accessibilityLabel("Quit Redlight")
-        }
-        .disabled(manager.isTerminating)
-        .padding()
-        .frame(width: 300)
-        .onDisappear {
-            if !manager.isTerminating { manager.endPreview() }
         }
     }
 
@@ -259,7 +275,51 @@ struct MenuBarView: View {
     }
 }
 
+// MARK: - About
+
+/// Credit page that replaces the controls when About is tapped. Same 300-pt column as the
+/// rest of the popover; the app icon is the only visual, everything else is quiet type.
+struct AboutView: View {
+    var onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 72, height: 72)
+                .padding(.top, 8)
+
+            Text(AboutInfo.name)
+                .font(.headline)
+
+            Text("by \(AboutInfo.author)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Text("Version \(AboutInfo.version())")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Link(AboutInfo.repositoryDisplay, destination: AboutInfo.repositoryURL)
+                .font(.caption)
+                .padding(.top, 4)
+
+            Spacer(minLength: 16)
+
+            HStack {
+                Spacer()
+                Button("Done", action: onDone)
+                    .accessibilityLabel("Close About")
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .multilineTextAlignment(.center)
+    }
+}
+
 // MARK: - Reset Button
+
 
 /// Sits at the trailing edge of a slider and restores that control — value *and* adaptive
 /// band — to factory settings. Dimmed and inert once there's nothing left to reset, so it

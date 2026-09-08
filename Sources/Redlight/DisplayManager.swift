@@ -306,7 +306,8 @@ final class DisplayManager {
         let elevationText = Self.formatElevation(elev)
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0)
             ? " · adjusted" : ""
-        let status = "Following the sun · \(elevationText)\(adjusted)"
+        let source = location.isApproximate ? " · time zone" : ""
+        let status = "Following the sun · \(elevationText)\(adjusted)\(source)"
         if status != adaptiveStatusText { adaptiveStatusText = status }   // avoid 5 s-tick invalidation
         return target
     }
@@ -562,9 +563,14 @@ final class DisplayManager {
     private func requestLocationIfNeeded(at date: Date, force: Bool = false) {
         guard location.authorization != .denied else { return }
         let elapsed = lastLocationRequest.map { date.timeIntervalSince($0) }
-        let refreshInterval: TimeInterval = location.coordinate == nil ? 60 : 3_600
+        let refreshInterval: TimeInterval =
+            (location.coordinate == nil || location.isApproximate) ? 60 : 3_600
         if !force, let elapsed, elapsed >= 0, elapsed < refreshInterval { return }
         lastLocationRequest = date
+        // LSUIElement menu-bar apps otherwise often never surface the permission dialog.
+        if location.authorization == .notDetermined {
+            NSApplication.shared.activate()
+        }
         location.requestWhenInUse()
     }
 
@@ -576,12 +582,22 @@ final class DisplayManager {
         var seen = Set<CGDirectDisplayID>()
         let ids = getDisplayIDs().filter { seen.insert($0).inserted }
         let currentIDs = Set(ids)
-        // Forget a disconnected display's captured gamma table. If the same CoreGraphics ID
-        // is reused when it reconnects, GammaController must snapshot its fresh calibration.
-        for display in displays where !currentIDs.contains(display.id)
-            && (display.isEnabled || display.isInverted || displayTransitions[display.id] != nil)
-        {
-            gamma.restore(display.id)
+        // A panel power-cycle often retrains the link without changing the CoreGraphics ID.
+        // The GPU LUT and ColorSync profile are both reset, so any snapshot taken before
+        // the drop is stale: writing it back on disable leaves a residual red cast on
+        // third-party monitors. ColorSync-restore everything, drop captures, then recapture
+        // on the re-apply below — the same path Quit uses.
+        if apply, !isTerminating {
+            gamma.restoreAll()
+        } else {
+            // Forget a disconnected display's captured gamma table. If the same CoreGraphics
+            // ID is reused when it reconnects, GammaController must snapshot its fresh
+            // calibration.
+            for display in displays where !currentIDs.contains(display.id)
+                && (display.isEnabled || display.isInverted || displayTransitions[display.id] != nil)
+            {
+                gamma.restore(display.id)
+            }
         }
         for id in Array(displayTransitions.keys) where !currentIDs.contains(id) {
             cancelDisplayTransition(id)
@@ -790,9 +806,12 @@ final class DisplayManager {
     }
 
     /// Reapply gamma after wake and force a fresh one-shot location request: the laptop may
-    /// have traveled while asleep. Kept internal so the no-double-apply behavior is testable.
+    /// have traveled while asleep. ColorSync-restore first so a GPU LUT reset during sleep
+    /// cannot be snapshotted as the "original" calibration. Kept internal so the
+    /// no-double-apply behavior is testable.
     func handleWake() {
         synchronizeTransitionState(at: transitionUptime())
+        if !isTerminating { gamma.restoreAll() }
         guard adaptiveEnabled else { applyToActiveDisplays(); return }
         requestLocationIfNeeded(at: now(), force: true)
         if location.coordinate == nil { applyToActiveDisplays() }

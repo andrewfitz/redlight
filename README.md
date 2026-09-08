@@ -29,7 +29,7 @@ Click the sun icon in the menu bar to open the popover:
 
 ## Install
 
-Download `Redlight-v1.0.zip` from [Releases](../../releases), unzip, and drag to `/Applications`.
+Download `Redlight-1.1.dmg` from [Releases](../../releases), open it, and drag **Redlight** to `/Applications`.
 
 Or build from source:
 
@@ -50,7 +50,7 @@ Uses CoreGraphics gamma table APIs (`CGSetDisplayTransferByTable`) to modify the
 
 No overlay windows, no accessibility permissions, no screen capture. Just gamma tables.
 
-Adaptive mode adds CoreLocation: it caches an approximate coordinate for offline use, refreshes it occasionally and after wake, and computes the sun's elevation angle locally with a standard NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6°, Sunset at 0°, follows the civil/nautical/astronomical twilight boundaries at −6°/−12°/−18°, and reaches Deep Red at solar midnight. The popover shows the live elevation and those same markers on its sun arc. Invert is the innermost layer of the same per-display gamma table (`x → 1 − x`), so it composes with the red filter without extra permissions.
+Adaptive mode adds CoreLocation: it caches an approximate coordinate for offline use, refreshes it occasionally and after wake, and computes the sun's elevation angle locally with a standard NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6°, Sunset at 0°, follows the civil/nautical/astronomical twilight boundaries at −6°/−12°/−18°, and reaches Deep Red at solar midnight. The popover shows the live elevation on its sun arc. Invert is the innermost layer of the same per-display gamma table (`x → 1 − x`), so it composes with the red filter without extra permissions.
 
 ## License
 

@@ -13,8 +13,8 @@ struct SunCycle {
     let maxElevation: Double
     let nextEvent: Event?
 
-    /// Every physical elevation anchor that can change the Adaptive curve. The UI's next-
-    /// marker countdown and the dots on the arc therefore share one source of truth.
+    /// Every physical elevation anchor that can change the Adaptive curve. The next-event
+    /// countdown uses this same set.
     static let thresholds: [Double] = SolarCurve.elevationMarkers.map(\.elevation)
 
     init(now: Date, latitude: Double, longitude: Double,
@@ -44,7 +44,7 @@ struct SunCycle {
 
     /// Fractions of this local day where the sampled solar arc crosses a real elevation
     /// marker. Linear interpolation between the dense samples is accurate enough for the
-    /// small guide dots in `SunArcView` and keeps their x positions tied to the actual day.
+    /// next-event math and keeps times tied to the actual day.
     func crossingFractions(at elevation: Double) -> [Double] {
         guard samples.count > 1 else { return [] }
         let epsilon = 1e-9
