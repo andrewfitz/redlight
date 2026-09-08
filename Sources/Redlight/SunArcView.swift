@@ -2,8 +2,7 @@ import SwiftUI
 
 /// Clean, flat sun-arc graphic. The smooth elevation curve (x = local time, y = sun
 /// elevation) over an area tinted by the applied adaptive intensity — clear by day, red at
-/// night. Dots on the arc mark the exact real-world elevations that drive adaptive
-/// transitions; the larger dot is the sun right now.
+/// night. The larger dot is the sun right now.
 struct SunArcView: View {
     let cycle: SunCycle
     var intensities: [Double] = []                 // applied intensity per sample (0…1)
@@ -70,20 +69,6 @@ struct SunArcView: View {
                 ctx.stroke(curve, with: .color(.orange),
                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-                // Adaptive elevation markers — interpolated onto the actual solar arc for this
-                // location/day. There are usually two of each (dawn and dusk).
-                for marker in SolarCurve.elevationMarkers {
-                    let markerY = y(marker.elevation)
-                    for t in cycle.crossingFractions(at: marker.elevation) {
-                        let center = CGPoint(x: x(t), y: markerY)
-                        let dot = CGRect(x: center.x - 1.75, y: center.y - 1.75,
-                                         width: 3.5, height: 3.5)
-                        ctx.fill(Path(ellipseIn: dot), with: .color(.primary.opacity(0.70)))
-                        ctx.stroke(Path(ellipseIn: dot), with: .color(.orange.opacity(0.85)),
-                                   lineWidth: 0.6)
-                    }
-                }
-
                 // Sun dot — flat fill, thin outline.
                 let core: Color = cycle.nowElevation >= 0
                     ? Color(red: 1, green: 0.86, blue: 0.4) : .red
@@ -99,10 +84,7 @@ struct SunArcView: View {
     }
 
     static func accessibilitySummary(currentElevation: Double) -> String {
-        let anchors = SolarCurve.elevationMarkers
-            .map { degreeLabel($0.elevation) }
-            .joined(separator: ", ")
-        return "Solar elevation \(degreeLabel(currentElevation)). Adaptive degree markers: \(anchors)."
+        "Solar elevation \(degreeLabel(currentElevation))."
     }
 
     static func degreeLabel(_ elevation: Double) -> String {
