@@ -7,6 +7,8 @@ import Observation
 final class DisplayManager {
     struct DisplayInfo: Identifiable {
         let id: CGDirectDisplayID
+        /// Stable ColorSync-UUID key used for UserDefaults; resolved once on connect.
+        let persistenceKey: String
         var name: String
         var isEnabled: Bool
         var isInverted: Bool
@@ -77,8 +79,6 @@ final class DisplayManager {
                 }
             } else {
                 activePresetIndex = nil
-                manualActivePresetIndex = nil
-                manualIntensity = intensity
                 pendingAdaptiveIntensity = nil
             }
             applyToActiveDisplays()
@@ -100,8 +100,6 @@ final class DisplayManager {
                 }
             } else {
                 activePresetIndex = nil
-                manualActivePresetIndex = nil
-                manualWhitepoint = whitepoint
                 pendingAdaptiveWhitepoint = nil
             }
             applyToActiveDisplays()
@@ -126,9 +124,6 @@ final class DisplayManager {
             let rendered = currentRenderedOutput()
             cancelOutputTransition()
             if adaptiveEnabled {
-                manualIntensity = intensity
-                manualWhitepoint = whitepoint
-                manualActivePresetIndex = activePresetIndex
                 activePresetIndex = nil
                 animateNextAdaptiveTarget = true
                 requestLocationIfNeeded(at: now(), force: true)
@@ -150,9 +145,6 @@ final class DisplayManager {
                     whitepoint = rendered.whitepoint
                     activePresetIndex = nil
                 }
-                manualIntensity = rendered.intensity
-                manualWhitepoint = rendered.whitepoint
-                manualActivePresetIndex = nil
                 applyToActiveDisplays()
             }
             save()
@@ -231,9 +223,11 @@ final class DisplayManager {
             || pendingAdaptiveWhitepoint != nil
         guard let target = resolveAdaptiveTarget() else { return }
         let rendered = explicitStart ?? currentRenderedOutput()
+        // @Observable fires on every write, equal or not. On the 5 s tick the target
+        // usually hasn't moved; skip the write so the open popover doesn't re-render.
         setInternal {
-            intensity = target.intensity
-            whitepoint = target.whitepoint
+            if intensity != target.intensity { intensity = target.intensity }
+            if whitepoint != target.whitepoint { whitepoint = target.whitepoint }
         }
 
         let transitionChannels: Set<OutputChannel>
@@ -371,7 +365,6 @@ final class DisplayManager {
             pendingAdaptiveIntensity = nil
             intensity = Defaults.intensity
         }
-        if !adaptiveEnabled { manualIntensity = Defaults.intensity }
         finishReset()
     }
 
@@ -386,7 +379,6 @@ final class DisplayManager {
             pendingAdaptiveWhitepoint = nil
             whitepoint = Defaults.whitepoint
         }
-        if !adaptiveEnabled { manualWhitepoint = Defaults.whitepoint }
         finishReset()
     }
 
@@ -395,8 +387,10 @@ final class DisplayManager {
     /// that's intended: default means "whatever the sun says, unconstrained".
     private func finishReset() {
         activePresetIndex = nil
-        if !adaptiveEnabled { manualActivePresetIndex = nil }
         if adaptiveEnabled {
+            // No solar target yet: still render the value we just set, as init/wake do,
+            // so model and gamma cannot disagree.
+            if location.coordinate == nil { applyToActiveDisplays() }
             applyAdaptive()
         } else {
             applyToActiveDisplays()
@@ -432,11 +426,6 @@ final class DisplayManager {
     // desired value until the curve resolves, then convert it to the usual persistent offset.
     @ObservationIgnored private var pendingAdaptiveIntensity: Double?
     @ObservationIgnored private var pendingAdaptiveWhitepoint: Double?
-    // The current non-Adaptive pair, also used as Adaptive's held fallback while a valid
-    // solar target is unavailable.
-    @ObservationIgnored private var manualIntensity: Double = Defaults.intensity
-    @ObservationIgnored private var manualWhitepoint: Double = Defaults.whitepoint
-    @ObservationIgnored private var manualActivePresetIndex: Int?
     // Transient live-preview overrides while a band marker is being dragged.
     @ObservationIgnored private var previewIntensityValue: Double?
     @ObservationIgnored private var previewWhitepointValue: Double?
@@ -487,10 +476,12 @@ final class DisplayManager {
         self.adaptiveTransitionDuration = max(0, adaptiveTransitionDuration)
         self.displayTransitionDuration = max(0, displayTransitionDuration)
         self.transitionUptime = transitionUptime
-        self.intensity = defaults.object(forKey: "redlight.intensity") as? Double ?? Defaults.intensity
-        self.whitepoint = defaults.object(forKey: "redlight.whitepoint") as? Double ?? Defaults.whitepoint
-        self.manualIntensity = defaults.object(forKey: "redlight.manualIntensity") as? Double ?? self.intensity
-        self.manualWhitepoint = defaults.object(forKey: "redlight.manualWhitepoint") as? Double ?? self.whitepoint
+        // Clamp on load: a hand-edited or corrupt plist must not put the thumb off the
+        // track or send >1 into the gamma composer. (Bands are normalized below.)
+        self.intensity = Self.loadClamped(
+            defaults, "redlight.intensity", default: Defaults.intensity, range: 0...1)
+        self.whitepoint = Self.loadClamped(
+            defaults, "redlight.whitepoint", default: Defaults.whitepoint, range: 0.25...1)
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
         self.adaptiveIntensityOffset = defaults.object(forKey: "redlight.adaptiveOffsetIntensity") as? Double ?? 0
         self.adaptiveWhitepointOffset = defaults.object(forKey: "redlight.adaptiveOffsetWhitepoint") as? Double ?? 0
@@ -504,18 +495,15 @@ final class DisplayManager {
         self.adaptiveWpMax = defaults.object(forKey: "redlight.adaptiveWpMax") as? Double ?? Defaults.whitepointMax
         normalizeBands()
         loadPresets()
-        if defaults.object(forKey: "redlight.manualPresetIndex") != nil {
-            let index = defaults.integer(forKey: "redlight.manualPresetIndex")
-            manualActivePresetIndex = presets.indices.contains(index) ? index : nil
-        } else {
-            manualActivePresetIndex = activePresetIndex
-        }
         if adaptiveEnabled { activePresetIndex = nil }
         refreshDisplays(apply: false)
         startListening()
         location.onChange = { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.adaptiveEnabled else { return }
+                // A better fix (time-zone city → precise, or a move while asleep) can
+                // shift the target several degrees. Fade there rather than step.
+                self.animateNextAdaptiveTarget = true
                 self.applyAdaptive()
             }
         }
@@ -559,11 +547,23 @@ final class DisplayManager {
         min(range.upperBound, max(range.lowerBound, v))
     }
 
-    /// Write properties without re-triggering their didSet side effects.
+    /// Write properties without re-triggering their didSet side effects. Nesting-safe: an
+    /// inner call restores the outer state instead of re-enabling didSets mid-body.
     private func setInternal(_ body: () -> Void) {
+        let previous = internalUpdate
         internalUpdate = true
+        defer { internalUpdate = previous }
         body()
-        internalUpdate = false
+    }
+
+    private static func loadClamped(
+        _ defaults: UserDefaults, _ key: String, default fallback: Double,
+        range: ClosedRange<Double>
+    ) -> Double {
+        guard let value = defaults.object(forKey: key) as? Double, value.isFinite else {
+            return fallback
+        }
+        return min(range.upperBound, max(range.lowerBound, value))
     }
 
     /// Refresh the one-shot kilometer-accuracy location occasionally while Adaptive stays
@@ -618,10 +618,18 @@ final class DisplayManager {
         if topologyChanged {
             let prevEnabled = Dictionary(displays.map { ($0.id, $0.isEnabled) }, uniquingKeysWith: { a, _ in a })
             let prevInverted = Dictionary(displays.map { ($0.id, $0.isInverted) }, uniquingKeysWith: { a, _ in a })
+            let prevKey = Dictionary(displays.map { ($0.id, $0.persistenceKey) }, uniquingKeysWith: { a, _ in a })
             displays = ids.map { id in
-                let enabled = prevEnabled[id] ?? persistedDisplayFlag(id, suffix: "enabled")
-                let inverted = prevInverted[id] ?? persistedDisplayFlag(id, suffix: "inverted")
-                return DisplayInfo(id: id, name: getDisplayName(id), isEnabled: enabled, isInverted: inverted)
+                // The ColorSync UUID lookup is a CoreGraphics call; resolve it once per
+                // connect instead of on every save().
+                let key = prevKey[id] ?? getDisplayPersistenceKey(id)
+                let enabled = prevEnabled[id]
+                    ?? persistedDisplayFlag(id, persistenceKey: key, suffix: "enabled")
+                let inverted = prevInverted[id]
+                    ?? persistedDisplayFlag(id, persistenceKey: key, suffix: "inverted")
+                return DisplayInfo(
+                    id: id, persistenceKey: key, name: getDisplayName(id),
+                    isEnabled: enabled, isInverted: inverted)
             }
         } else {
             // Same displays: refresh names in place (a monitor can be renamed in System
@@ -762,9 +770,6 @@ final class DisplayManager {
             intensity = preset.intensity
             whitepoint = preset.whitepoint
         }
-        manualIntensity = preset.intensity
-        manualWhitepoint = preset.whitepoint
-        manualActivePresetIndex = index
         activePresetIndex = index
         if shouldFade {
             startOutputTransition(
@@ -803,7 +808,6 @@ final class DisplayManager {
             applyAdaptive()
         } else {
             activePresetIndex = index
-            manualActivePresetIndex = index
         }
         save()
     }
@@ -1275,10 +1279,8 @@ final class DisplayManager {
     private func save() {
         defaults.set(intensity, forKey: "redlight.intensity")
         defaults.set(whitepoint, forKey: "redlight.whitepoint")
-        defaults.set(manualIntensity, forKey: "redlight.manualIntensity")
-        defaults.set(manualWhitepoint, forKey: "redlight.manualWhitepoint")
         for display in displays {
-            let prefix = displayDefaultsPrefix(display.id)
+            let prefix = displayDefaultsPrefix(display.persistenceKey)
             defaults.set(display.isEnabled, forKey: "\(prefix).enabled")
             defaults.set(display.isInverted, forKey: "\(prefix).inverted")
         }
@@ -1287,7 +1289,6 @@ final class DisplayManager {
             lastSavedPresets = presets
         }
         defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
-        defaults.set(manualActivePresetIndex ?? -1, forKey: "redlight.manualPresetIndex")
         defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
         defaults.set(adaptiveIntensityOffset, forKey: "redlight.adaptiveOffsetIntensity")
         defaults.set(adaptiveWhitepointOffset, forKey: "redlight.adaptiveOffsetWhitepoint")
@@ -1320,14 +1321,16 @@ final class DisplayManager {
         }
     }
 
-    private func displayDefaultsPrefix(_ id: CGDirectDisplayID) -> String {
-        "redlight.display.\(getDisplayPersistenceKey(id))"
+    private func displayDefaultsPrefix(_ persistenceKey: String) -> String {
+        "redlight.display.\(persistenceKey)"
     }
 
     /// Migrate the old transient-CGDisplayID key on first read. CoreGraphics IDs can change
     /// across reboot; the ColorSync UUID remains tied to the physical display.
-    private func persistedDisplayFlag(_ id: CGDirectDisplayID, suffix: String) -> Bool {
-        let stableKey = "\(displayDefaultsPrefix(id)).\(suffix)"
+    private func persistedDisplayFlag(
+        _ id: CGDirectDisplayID, persistenceKey: String, suffix: String
+    ) -> Bool {
+        let stableKey = "\(displayDefaultsPrefix(persistenceKey)).\(suffix)"
         if defaults.object(forKey: stableKey) != nil { return defaults.bool(forKey: stableKey) }
 
         let legacyKey = "redlight.display.\(id).\(suffix)"

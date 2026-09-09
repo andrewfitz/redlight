@@ -10,7 +10,9 @@ enum ApproximateLocation {
         // estimate 15° east for half the year. 240 s per degree of longitude.
         let standardOffset = Double(timeZone.secondsFromGMT(for: date))
             - timeZone.daylightSavingTimeOffset(for: date)
-        let longitude = min(180, max(-180, standardOffset / 240.0))
+        // UTC+13/+14 zones (Apia, Kiritimati) sit west of the antimeridian: wrap, don't clamp.
+        var longitude = standardOffset / 240.0
+        if longitude > 180 { longitude -= 360 } else if longitude < -180 { longitude += 360 }
         return (inferredLatitude(timeZone.identifier), longitude)
     }
 
@@ -42,6 +44,15 @@ enum ApproximateLocation {
         "America/Bogota": (4.71, -74.07),
         "America/Lima": (-12.05, -77.04),
         "America/Caracas": (10.48, -66.90),
+        "America/La_Paz": (-16.50, -68.15),
+        "America/Asuncion": (-25.28, -57.63),
+        "America/Montevideo": (-34.90, -56.16),
+        "America/Guayaquil": (-2.17, -79.92),
+        "America/Manaus": (-3.12, -60.02),
+        "America/Recife": (-8.05, -34.90),
+        "America/Fortaleza": (-3.72, -38.54),
+        "America/Bahia": (-12.97, -38.51),
+        "America/Punta_Arenas": (-53.16, -70.91),
         "Europe/London": (51.51, -0.13),
         "Europe/Dublin": (53.35, -6.26),
         "Europe/Lisbon": (38.72, -9.14),
@@ -67,6 +78,15 @@ enum ApproximateLocation {
         "Africa/Johannesburg": (-26.20, 28.04),
         "Africa/Lagos": (6.52, 3.38),
         "Africa/Nairobi": (-1.29, 36.82),
+        "Africa/Maputo": (-25.97, 32.57),
+        "Africa/Lusaka": (-15.39, 28.32),
+        "Africa/Harare": (-17.83, 31.05),
+        "Africa/Windhoek": (-22.56, 17.08),
+        "Africa/Luanda": (-8.84, 13.23),
+        "Africa/Kinshasa": (-4.32, 15.31),
+        "Africa/Dar_es_Salaam": (-6.79, 39.28),
+        "Indian/Antananarivo": (-18.88, 47.51),
+        "Indian/Mauritius": (-20.16, 57.50),
         "Asia/Tokyo": (35.68, 139.69),
         "Asia/Seoul": (37.57, 126.98),
         "Asia/Shanghai": (31.23, 121.47),
@@ -80,6 +100,17 @@ enum ApproximateLocation {
         "Asia/Dubai": (25.20, 55.27),
         "Asia/Tehran": (35.69, 51.39),
         "Asia/Jerusalem": (31.77, 35.22),
+        "Asia/Makassar": (-5.15, 119.43),
+        "Asia/Jayapura": (-2.53, 140.72),
+        "Asia/Dili": (-8.56, 125.58),
+        "Australia/Darwin": (-12.46, 130.84),
+        "Pacific/Port_Moresby": (-9.44, 147.18),
+        "Pacific/Guadalcanal": (-9.43, 159.95),
+        "Pacific/Noumea": (-22.28, 166.46),
+        "Pacific/Tongatapu": (-21.14, -175.20),
+        "Pacific/Apia": (-13.83, -171.76),
+        "Pacific/Tahiti": (-17.53, -149.57),
+        "Pacific/Kiritimati": (1.87, -157.40),
         "Australia/Sydney": (-33.87, 151.21),
         "Australia/Melbourne": (-37.81, 144.96),
         "Australia/Brisbane": (-27.47, 153.03),
@@ -97,9 +128,24 @@ enum ApproximateLocation {
         if id.hasPrefix("antarctica/") { return -75 }
         if id.hasPrefix("arctic/") { return 78 }
         if id.hasPrefix("australia/") || id.hasPrefix("pacific/auckland") { return -36 }
+        // Southern-hemisphere zones without a table entry. Getting the hemisphere wrong
+        // inverts the seasons, so err toward a generic southern latitude for these.
         if id.contains("argentina") || id.contains("sao_paulo") || id.contains("santiago")
-            || id.contains("montevideo") || id.hasPrefix("africa/johannesburg") {
-            return -34
+            || id.contains("montevideo") || id.hasPrefix("africa/johannesburg")
+            || id.hasPrefix("africa/maseru") || id.hasPrefix("africa/mbabane")
+            || id.hasPrefix("africa/gaborone") || id.hasPrefix("africa/blantyre")
+            || id.hasPrefix("africa/lubumbashi") || id.hasPrefix("africa/kigali")
+            || id.hasPrefix("africa/bujumbura") || id.hasPrefix("america/cuiaba")
+            || id.hasPrefix("america/campo_grande") || id.hasPrefix("america/porto_velho")
+            || id.hasPrefix("america/rio_branco") || id.hasPrefix("america/maceio")
+            || id.hasPrefix("america/belem") || id.hasPrefix("america/araguaina")
+            || id.hasPrefix("pacific/efate") || id.hasPrefix("pacific/norfolk")
+            || id.hasPrefix("pacific/chatham") || id.hasPrefix("pacific/pitcairn")
+            || id.hasPrefix("pacific/easter") || id.hasPrefix("pacific/rarotonga")
+            || id.hasPrefix("pacific/niue") || id.hasPrefix("pacific/bougainville")
+            || id.hasPrefix("indian/reunion") || id.hasPrefix("indian/mahe")
+            || id.hasPrefix("indian/christmas") || id.hasPrefix("indian/cocos") {
+            return -20
         }
         if id.hasPrefix("europe/") { return 50 }
         if id.hasPrefix("asia/") { return 30 }

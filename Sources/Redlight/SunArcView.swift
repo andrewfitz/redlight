@@ -39,9 +39,10 @@ struct SunArcView: View {
                     let stops = zip(cycle.samples, intensities).map { sample, i in
                         Gradient.Stop(color: Self.intensityColor(i), location: sample.t)
                     }
+                    // Same x mapping as the curve, so stop `t` lands under its sample.
                     ctx.fill(area, with: .linearGradient(Gradient(stops: stops),
-                                                         startPoint: CGPoint(x: 0, y: 0),
-                                                         endPoint: CGPoint(x: w, y: 0)))
+                                                         startPoint: CGPoint(x: x(0), y: 0),
+                                                         endPoint: CGPoint(x: x(1), y: 0)))
                 } else {
                     ctx.fill(area, with: .color(.orange.opacity(0.18)))
                 }
@@ -54,7 +55,7 @@ struct SunArcView: View {
                     var line = Path()
                     line.move(to: CGPoint(x: 0, y: bandY(v)))
                     line.addLine(to: CGPoint(x: w, y: bandY(v)))
-                    ctx.stroke(line, with: .color(.white.opacity(0.20)),
+                    ctx.stroke(line, with: .color(.primary.opacity(0.25)),
                                style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
                 }
 
@@ -62,7 +63,8 @@ struct SunArcView: View {
                 var hz = Path()
                 hz.move(to: CGPoint(x: 0, y: horizonY))
                 hz.addLine(to: CGPoint(x: w, y: horizonY))
-                ctx.stroke(hz, with: .color(.white.opacity(0.18)),
+                // `.primary` adapts to the popover's appearance; fixed white vanished in Light Mode.
+                ctx.stroke(hz, with: .color(.primary.opacity(0.22)),
                            style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                 // Curve — single clean stroke.
@@ -74,7 +76,7 @@ struct SunArcView: View {
                     ? Color(red: 1, green: 0.86, blue: 0.4) : .red
                 let dot = CGRect(x: sx - 4, y: sy - 4, width: 8, height: 8)
                 ctx.fill(Path(ellipseIn: dot), with: .color(core))
-                ctx.stroke(Path(ellipseIn: dot), with: .color(.white.opacity(0.7)),
+                ctx.stroke(Path(ellipseIn: dot), with: .color(.primary.opacity(0.6)),
                            lineWidth: 0.75)
         }
         .frame(height: 70)

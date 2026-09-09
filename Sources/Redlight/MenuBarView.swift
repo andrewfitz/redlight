@@ -11,6 +11,15 @@ private final class SunArcCache {
         var presets: [Preset]
         var iMin: Double, iMax: Double, wMin: Double, wMax: Double
         var intensityAdjustment: Double
+
+        /// Same as `==` except the date only has to fall within one timeline tick.
+        func matches(_ other: IntensityKey) -> Bool {
+            abs(date.timeIntervalSince(other.date)) < SunArcCache.tickTolerance
+                && lat == other.lat && lon == other.lon && presets == other.presets
+                && iMin == other.iMin && iMax == other.iMax
+                && wMin == other.wMin && wMax == other.wMax
+                && intensityAdjustment == other.intensityAdjustment
+        }
     }
 
     private var cycleKey: (date: Date, lat: Double, lon: Double)?
@@ -19,8 +28,15 @@ private final class SunArcCache {
     private var intensityKey: IntensityKey?
     private var intensityValue: [Double] = []
 
+    /// The graphic is rebuilt on a 20 s timeline. Treat any date within that window as the
+    /// same tick, so a body re-evaluation that happens to restart the timeline (a slider
+    /// drag) does not throw the memo away. The sun moves ~0.08° in 20 s — invisible here.
+    static let tickTolerance: TimeInterval = 20
+
     func cycle(now: Date, latitude: Double, longitude: Double) -> SunCycle {
-        if let cycleValue, let k = cycleKey, k.date == now, k.lat == latitude, k.lon == longitude {
+        if let cycleValue, let k = cycleKey,
+           abs(k.date.timeIntervalSince(now)) < Self.tickTolerance,
+           k.lat == latitude, k.lon == longitude {
             return cycleValue
         }
         let fresh = SunCycle(now: now, latitude: latitude, longitude: longitude)
@@ -32,7 +48,7 @@ private final class SunArcCache {
     }
 
     func intensities(key: IntensityKey, compute: () -> [Double]) -> [Double] {
-        if key == intensityKey { return intensityValue }
+        if let k = intensityKey, k.matches(key) { return intensityValue }
         intensityValue = compute()
         intensityKey = key
         return intensityValue
@@ -46,6 +62,9 @@ struct MenuBarView: View {
     @State private var sunCache = SunArcCache()
     @State private var appearance = AppearanceController.shared
     @State private var showingAbout = false
+    // Fixed anchor: `.periodic(from: .now, …)` would build a new schedule on every body
+    // evaluation and restart the timeline (and its date) on each slider tick.
+    @State private var sunArcScheduleStart = Date()
 
     var body: some View {
         Group {
@@ -206,7 +225,7 @@ struct MenuBarView: View {
                 }
 
                 if manager.adaptiveEnabled, let coord = manager.coordinate {
-                    TimelineView(.periodic(from: .now, by: 20)) { context in
+                    TimelineView(.periodic(from: sunArcScheduleStart, by: SunArcCache.tickTolerance)) { context in
                         let cycle = sunCache.cycle(
                             now: context.date,
                             latitude: coord.latitude,

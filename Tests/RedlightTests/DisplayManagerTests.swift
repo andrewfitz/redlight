@@ -855,8 +855,6 @@ final class FakeLocationProvider: LocationProviding {
         #expect(!defaults.bool(forKey: "redlight.adaptiveEnabled"))
         #expect(abs(defaults.double(forKey: "redlight.intensity") - 0.6) < 1e-9)
         #expect(abs(defaults.double(forKey: "redlight.whitepoint") - 0.7) < 1e-9)
-        #expect(abs(defaults.double(forKey: "redlight.manualIntensity") - 0.6) < 1e-9)
-        #expect(abs(defaults.double(forKey: "redlight.manualWhitepoint") - 0.7) < 1e-9)
 
         let heldCallCount = mock.applyCalls.count
         uptime += 1
@@ -1029,8 +1027,8 @@ final class FakeLocationProvider: LocationProviding {
         #expect(abs(manager.whitepoint - 0.5625) < 1e-9)
         #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
         #expect(abs(Double(call.whitepoint) - 0.5625) < 0.0001)
-        #expect(abs(defaults.double(forKey: "redlight.manualIntensity") - 0.65) < 1e-9)
-        #expect(abs(defaults.double(forKey: "redlight.manualWhitepoint") - 0.5625) < 1e-9)
+        #expect(abs(defaults.double(forKey: "redlight.intensity") - 0.65) < 1e-9)
+        #expect(abs(defaults.double(forKey: "redlight.whitepoint") - 0.5625) < 1e-9)
 
         let heldCallCount = mock.applyCalls.count
         manager.advanceOutputTransition(toProgress: 1)
@@ -1416,7 +1414,7 @@ final class FakeLocationProvider: LocationProviding {
         #expect(abs(d.double(forKey: "redlight.adaptiveOffsetIntensity") + 0.2) < 1e-9)
         #expect(manager.adaptiveStatusText.isEmpty)
         #expect(abs(manager.intensity - 0.8) < 1e-9)
-        #expect(abs(d.double(forKey: "redlight.manualIntensity") - 0.8) < 1e-9)
+        #expect(abs(d.double(forKey: "redlight.intensity") - 0.8) < 1e-9)
 
         manager.adaptiveEnabled = true
         #expect(abs(manager.intensity - 0.8) < 1e-9)   // same valid target stays continuous
@@ -1658,6 +1656,39 @@ final class FakeLocationProvider: LocationProviding {
         manager.adaptiveEnabled = false
 
         #expect(loc.cancelCount == 1)
+    }
+
+    @Test func betterLocationFixFadesToTheNewTargetInsteadOfStepping() throws {
+        // Time-zone city → precise fix (or a move while asleep) can shift the solar target
+        // by several degrees. That must be a 2 s fade, not a jump.
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)   // sun overhead → Day
+        let manager = makeManager(location: loc, now: { noon }, transitionDuration: 1)
+        manager.toggle(1)
+        manager.adaptiveMax = 0.8                                     // Day → 0.8, so it's a real write
+        manager.adaptiveEnabled = true
+        manager.completeOutputTransition()
+        let dayIntensity = try #require(mock.applyCalls.last).intensity
+        #expect(abs(dayIntensity - 0.8) < 0.0001)
+        mock.applyCalls.removeAll()
+
+        loc.coordinate = (0, 180)                                     // solar midnight
+        loc.onChange?()
+
+        let first = try #require(mock.applyCalls.last)
+        #expect(abs(first.intensity - dayIntensity) < 0.0001)        // fade starts where we were
+        manager.completeOutputTransition()
+        let settled = try #require(mock.applyCalls.last)
+        #expect(settled.intensity < dayIntensity - 0.3)               // and lands on Night
+    }
+
+    @Test func corruptPersistedValuesAreClampedOnLoad() {
+        let d = freshDefaults()
+        d.set(5.0, forKey: "redlight.intensity")
+        d.set(-3.0, forKey: "redlight.whitepoint")
+        let manager = makeManager(defaults: d)
+        #expect(manager.intensity == 1.0)
+        #expect(manager.whitepoint == 0.25)
     }
 
     @Test func wakeRefreshesLocationAndAppliesAdaptiveOnce() {

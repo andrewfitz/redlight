@@ -5,27 +5,34 @@ import Testing
 @testable import Redlight
 
 @Suite struct AppLifecycleTests {
-    func freshDefaults() -> UserDefaults {
+    /// `DisplaySessionRecovery` calls `synchronize()`, which writes a real plist under
+    /// ~/Library/Preferences. Clean it up afterwards so test runs leave no litter.
+    func withFreshDefaults(_ body: (UserDefaults) -> Void) {
         let name = "RedlightLifecycleTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
-        return defaults
+        defer {
+            defaults.removePersistentDomain(forName: name)
+            defaults.synchronize()
+        }
+        body(defaults)
     }
 
     @Test func cleanSessionDoesNotTriggerRecoveryButUncleanSessionDoes() {
-        let defaults = freshDefaults()
-        var restoreCount = 0
+        withFreshDefaults { defaults in
+            var restoreCount = 0
 
-        DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
-        #expect(restoreCount == 0)       // first launch has nothing stale to recover
-        DisplaySessionRecovery.finish(defaults: defaults)
+            DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
+            #expect(restoreCount == 0)       // first launch has nothing stale to recover
+            DisplaySessionRecovery.finish(defaults: defaults)
 
-        DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
-        #expect(restoreCount == 0)       // previous session exited cleanly
+            DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
+            #expect(restoreCount == 0)       // previous session exited cleanly
 
-        // Beginning again without `finish` simulates a crash/kill during the prior session.
-        DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
-        #expect(restoreCount == 1)
+            // Beginning again without `finish` simulates a crash/kill during the prior session.
+            DisplaySessionRecovery.begin(defaults: defaults) { restoreCount += 1 }
+            #expect(restoreCount == 1)
+        }
     }
 
     @Test @MainActor func pendingLoginItemApprovalStillCountsAsRegistered() {

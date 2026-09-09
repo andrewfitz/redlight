@@ -42,7 +42,12 @@ final class LaunchAtLogin {
             do {
                 if isEnabled { try service.register() }
                 else { try service.unregister() }
-            } catch {}
+            } catch {
+                // Typical when running unbundled (`swift run`) or from outside /Applications.
+                // The toggle snaps back via refresh(); leave a trace of why.
+                NSLog("Redlight: login item %@ failed: %@",
+                      isEnabled ? "register" : "unregister", String(describing: error))
+            }
             refresh()  // reflect the actual system state, including registration failures
         }
     }

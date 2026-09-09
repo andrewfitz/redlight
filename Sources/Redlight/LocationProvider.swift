@@ -1,7 +1,9 @@
 import CoreLocation
+import Foundation
 
 enum LocationAuthorization { case notDetermined, denied, authorized }
 
+@MainActor
 protocol LocationProviding: AnyObject {
     var coordinate: (latitude: Double, longitude: Double)? { get }
     var authorization: LocationAuthorization { get }
@@ -13,14 +15,23 @@ protocol LocationProviding: AnyObject {
     func cancelRequest()
 }
 
+/// Core Location wrapper with a time-zone fallback so Adaptive always has *some* coordinate.
+///
+/// Threading: `CLLocationManager` delivers delegate callbacks on the run loop of the thread
+/// that created it, and this object is created on the main actor, so the `nonisolated`
+/// delegate entry points can hop straight back onto `MainActor` with `assumeIsolated`.
+/// That keeps the whole class main-actor-isolated like the `DisplayManager` that owns it.
+@MainActor
 final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private let defaults: UserDefaults
-    private let timeZone: TimeZone
+    private var timeZone: TimeZone
     /// True between `requestWhenInUse()` and either a fix or `cancelRequest()`. Authorization
     /// callbacks arrive asynchronously (and at launch); without this they would start the
     /// hardware even when Adaptive is off.
     private var wantsFix = false
+    // nonisolated(unsafe): set once in init on the main actor; read in deinit for cleanup.
+    nonisolated(unsafe) private var timeZoneObserver: NSObjectProtocol?
     var onChange: (() -> Void)?
     private(set) var coordinate: (latitude: Double, longitude: Double)?
     private(set) var isApproximate = false
@@ -42,6 +53,17 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
             coordinate = ApproximateLocation.from(timeZone)
             isApproximate = true
         }
+        // A laptop that was denied location but flies to another time zone should still
+        // move its fallback city. Only matters while the coordinate is the fallback.
+        timeZoneObserver = NotificationCenter.default.addObserver(
+            forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemTimeZoneChanged() }
+        }
+    }
+
+    deinit {
+        if let timeZoneObserver { NotificationCenter.default.removeObserver(timeZoneObserver) }
     }
 
     var authorization: LocationAuthorization {
@@ -58,45 +80,58 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
         wantsFix = true
         switch manager.authorizationStatus {
         case .notDetermined:
-            // Updates start from the authorization callback once the user answers.
+            // The fix is requested from the authorization callback once the user answers.
             manager.requestWhenInUseAuthorization()
         default:
-            startUpdatingIfWanted()
+            requestFixIfWanted()
         }
     }
 
     func cancelRequest() {
         wantsFix = false
-        manager.stopUpdatingLocation()
+        manager.stopUpdatingLocation()   // also cancels a pending requestLocation()
     }
 
-    func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
-        // A negative horizontal accuracy is Core Location's "invalid fix" marker.
-        guard let loc = locs.last(where: { $0.horizontalAccuracy >= 0 }) else { return }
-        accept(loc)
-        wantsFix = false
-        m.stopUpdatingLocation()
-    }
+    // MARK: - CLLocationManagerDelegate (delivered on the creating thread: main)
 
-    func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
-        startUpdatingIfWanted()
-        onChange?()
-    }
-
-    func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {
-        let nsError = error as NSError
-        if nsError.domain == kCLErrorDomain, nsError.code == CLError.denied.rawValue {
+    nonisolated func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
+        MainActor.assumeIsolated {
+            // A negative horizontal accuracy is Core Location's "invalid fix" marker.
+            guard let loc = locs.last(where: { $0.horizontalAccuracy >= 0 }) else { return }
             wantsFix = false
-            m.stopUpdatingLocation()
-            onChange?()
-            return
+            accept(loc)
         }
-        // `kCLErrorLocationUnknown` is routine on a Mac without GPS. Keep the time-zone
-        // fallback in place and leave updates running so a later Wi-Fi/IP fix can land.
-        ensureFallbackCoordinate()
     }
 
-    private func startUpdatingIfWanted() {
+    nonisolated func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
+        MainActor.assumeIsolated {
+            if authorization == .authorized {
+                requestFixIfWanted()
+            } else {
+                manager.stopUpdatingLocation()
+            }
+            onChange?()
+        }
+    }
+
+    nonisolated func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {
+        let nsError = error as NSError
+        let denied = nsError.domain == kCLErrorDomain && nsError.code == CLError.denied.rawValue
+        MainActor.assumeIsolated {
+            if denied {
+                wantsFix = false
+                manager.stopUpdatingLocation()
+                onChange?()
+            }
+            // `kCLErrorLocationUnknown` is routine on a Mac without GPS: the one-shot
+            // request has timed out. The time-zone fallback stays in place and
+            // `DisplayManager` asks again in a minute, so nothing needs to keep running.
+        }
+    }
+
+    // MARK: - Private
+
+    private func requestFixIfWanted() {
         guard wantsFix, authorization == .authorized else { return }
         // The system's last known fix is usually recent and costs nothing. Use it right
         // away; only ask the hardware when it is missing or old enough that the Mac may
@@ -108,7 +143,10 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
                 return
             }
         }
-        manager.startUpdatingLocation()
+        // One-shot: delivers a single fix or a single error (after Core Location's own
+        // ~10 s timeout) and stops itself, so the "location in use" arrow never sits in
+        // the menu bar for the life of Adaptive on a Mac that can't get a fix.
+        manager.requestLocation()
     }
 
     private func accept(_ loc: CLLocation) {
@@ -127,10 +165,12 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
         onChange?()
     }
 
-    private func ensureFallbackCoordinate() {
-        guard coordinate == nil else { return }
-        coordinate = ApproximateLocation.from(timeZone)
-        isApproximate = true
+    private func systemTimeZoneChanged() {
+        timeZone = .current
+        guard isApproximate else { return }
+        let fresh = ApproximateLocation.from(timeZone)
+        if let current = coordinate, current == fresh { return }
+        coordinate = fresh
         onChange?()
     }
 

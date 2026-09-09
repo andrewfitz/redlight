@@ -3,12 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 VERSION="${VERSION:-1.1.1}"
+# Ad-hoc ("-") by default. macOS keys Location Services / Automation consent to the code
+# signature, so an ad-hoc build re-prompts on every update. Pass a stable identity
+# (Developer ID, or a self-signed "Redlight" certificate) to avoid that:
+#   SIGN_IDENTITY="Developer ID Application: …" ./build.sh
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 APP="$ROOT/Redlight.app"
 CONTENTS="$APP/Contents"
 DMG="$ROOT/Redlight-${VERSION}.dmg"
+YEAR="$(date +%Y)"
 
-BIN_DIR="$(swift build -c release --package-path "$ROOT" --show-bin-path)"
-swift build -c release --package-path "$ROOT"
+# Universal binary so the DMG runs on Intel and Apple silicon Macs alike.
+ARCH_FLAGS=(--arch arm64 --arch x86_64)
+BIN_DIR="$(swift build -c release "${ARCH_FLAGS[@]}" --package-path "$ROOT" --show-bin-path)"
+swift build -c release "${ARCH_FLAGS[@]}" --package-path "$ROOT"
 
 # App icon: regenerated from Tools/make-icon.swift each build (fast, no deps).
 # Fail soft — if the generator or iconutil breaks, keep a previously generated
@@ -36,12 +44,22 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
     <key>CFBundleExecutable</key>
     <string>Redlight</string>
     <key>CFBundleIdentifier</key>
     <string>com.redlight.app</string>
     <key>CFBundleName</key>
     <string>Redlight</string>
+    <key>CFBundleDisplayName</key>
+    <string>Redlight</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© ${YEAR} Andrew Fitzgerald. MIT License.</string>
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key>
@@ -64,7 +82,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/redlight-dmg.XXXXXX")"
 cleanup() { rm -rf "$STAGE"; }
