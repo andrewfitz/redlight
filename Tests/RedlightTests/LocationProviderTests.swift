@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Redlight
 
-@Suite struct LocationProviderTests {
+@MainActor @Suite struct LocationProviderTests {
     @Test func missingCacheFallsBackToTimeZoneSoAdaptiveIsNeverStuck() throws {
         let name = "RedlightLocationTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

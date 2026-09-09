@@ -178,6 +178,9 @@ struct BandSlider: View {
             )
         }
         .frame(height: markerH + 8)
+        // DragGesture has no cancel callback. If the popover closes mid-drag, onEnded never
+        // runs and the next drag anywhere would route to the stale handle.
+        .onDisappear { active = nil }
         .accessibilityRepresentation {
             VStack {
                 Slider(value: accessibleValue, in: range) { Text(label) }

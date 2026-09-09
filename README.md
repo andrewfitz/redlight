@@ -17,7 +17,7 @@ A macOS menu bar app that applies a red screen filter by manipulating display ga
 - Restores each display's ColorSync calibration when its filter turns off, and everything on quit
 - No dock icon, lives in the menu bar
 
-## Screenshot
+## Using it
 
 Click the sun icon in the menu bar to open the popover:
 
@@ -30,6 +30,12 @@ Click the sun icon in the menu bar to open the popover:
 ## Install
 
 Download the latest `Redlight-<version>.dmg` from [Releases](../../releases), open it, and drag **Redlight** to `/Applications`.
+
+The release is a universal (Apple silicon + Intel) build, but it is not notarized, so the first launch is blocked by Gatekeeper. Either right-click the app and choose **Open** (macOS 14), or open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway** (macOS 15+). Equivalent from a terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Redlight.app
+```
 
 Or build from source:
 

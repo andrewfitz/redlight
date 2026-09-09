@@ -39,7 +39,17 @@ import Testing
     }
 
     @Test func southernHemisphereZonesGetANegativeLatitude() {
-        let tz = TimeZone(identifier: "Australia/Darwin")!   // not in the city table
-        #expect(ApproximateLocation.from(tz).latitude < 0)
+        for id in ["Australia/Darwin", "America/La_Paz", "Africa/Maputo", "Pacific/Apia",
+                   "Asia/Makassar", "Pacific/Chatham", "America/Cuiaba"] {
+            let tz = TimeZone(identifier: id)!
+            #expect(ApproximateLocation.from(tz).latitude < 0, "\(id)")
+        }
+    }
+
+    @Test func farEasternOffsetsWrapWestOfTheAntimeridian() {
+        // Etc/GMT-14 is UTC+14, standard time only. 14 h × 15° = 210° → −150°.
+        let tz = TimeZone(identifier: "Etc/GMT-14")!
+        let coord = ApproximateLocation.from(tz)
+        #expect(abs(coord.longitude - (-150)) < 0.01)
     }
 }
