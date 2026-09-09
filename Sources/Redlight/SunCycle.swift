@@ -11,7 +11,15 @@ struct SunCycle {
     let nowFraction: Double
     let nowElevation: Double
     let maxElevation: Double
-    let nextEvent: Event?
+    /// Time to the next twilight transition. Computed on demand: it is a 720-step forward
+    /// scan plus bisection, and the sun-arc graphic (which rebuilds a `SunCycle` every 20 s)
+    /// never reads it.
+    var nextEvent: Event? {
+        SunCycle.findNextEvent(now: now, latitude: latitude, longitude: longitude)
+    }
+    private let now: Date
+    private let latitude: Double
+    private let longitude: Double
 
     /// Every physical elevation anchor that can change the Adaptive curve. The next-event
     /// countdown uses this same set.
@@ -39,7 +47,9 @@ struct SunCycle {
         nowFraction = min(1, max(0, now.timeIntervalSince(dayStart) / daySeconds))
         nowElevation = SolarCalculator.elevation(at: now, latitude: latitude, longitude: longitude)
         maxElevation = SolarCalculator.elevationAtSolarNoon(at: now, latitude: latitude, longitude: longitude)
-        nextEvent = SunCycle.findNextEvent(now: now, latitude: latitude, longitude: longitude)
+        self.now = now
+        self.latitude = latitude
+        self.longitude = longitude
     }
 
     /// Fractions of this local day where the sampled solar arc crosses a real elevation

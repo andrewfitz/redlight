@@ -7,7 +7,7 @@ import Observation
 final class DisplayManager {
     struct DisplayInfo: Identifiable {
         let id: CGDirectDisplayID
-        let name: String
+        var name: String
         var isEnabled: Bool
         var isInverted: Bool
     }
@@ -259,15 +259,11 @@ final class DisplayManager {
     private func resolveAdaptiveTarget() -> OutputPair? {
         let date = now()
         requestLocationIfNeeded(at: date)
-        switch location.authorization {
-        case .denied:
-            coordinate = nil
-            adaptiveStatusText = "Location needed"
-            return nil
-        default: break
-        }
+        // A denied prompt is not fatal: the time-zone city (or the last precise fix) still
+        // gives the curve a solar position. Only a total absence of any coordinate blocks.
         guard let coord = location.coordinate else {
-            adaptiveStatusText = "Locating…"
+            coordinate = nil
+            adaptiveStatusText = location.authorization == .denied ? "Location needed" : "Locating…"
             return nil
         }
         if coordinate == nil || coordinate! != coord { coordinate = coord }   // avoid spurious invalidation
@@ -306,7 +302,8 @@ final class DisplayManager {
         let elevationText = Self.formatElevation(elev)
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0)
             ? " · adjusted" : ""
-        let source = location.isApproximate ? " · time zone" : ""
+        let source = location.isApproximate ? " · time zone"
+            : location.authorization == .denied ? " · last known" : ""
         let status = "Following the sun · \(elevationText)\(adjusted)\(source)"
         if status != adaptiveStatusText { adaptiveStatusText = status }   // avoid 5 s-tick invalidation
         return target
@@ -320,9 +317,16 @@ final class DisplayManager {
 
     private func startAdaptiveTimer() {
         adaptiveTimer?.invalidate()
-        adaptiveTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyAdaptive() }
         }
+        // The sun moves ~0.004°/s; a second of slack lets the kernel coalesce this wake-up
+        // with others instead of firing on its own, which matters for a resident app.
+        timer.tolerance = 1
+        // Common mode keeps the status line and curve moving while the popover tracks a
+        // control, matching the fade timer.
+        RunLoop.main.add(timer, forMode: .common)
+        adaptiveTimer = timer
     }
 
     /// Stop solar tracking without discarding any user-authored offsets or limits. Those
@@ -330,6 +334,7 @@ final class DisplayManager {
     private func stopAdaptiveTracking() {
         adaptiveTimer?.invalidate()
         adaptiveTimer = nil
+        location.cancelRequest()
         lastCurveIntensity = nil
         lastCurveWhitepoint = nil
         lastLocationRequest = nil
@@ -449,6 +454,9 @@ final class DisplayManager {
     @ObservationIgnored private var lastCurveIntensity: Double?
     @ObservationIgnored private var lastCurveWhitepoint: Double?
     @ObservationIgnored private var lastLocationRequest: Date?
+    @ObservationIgnored private var hasActivatedForLocationPrompt = false
+    // Presets rarely change; skip re-encoding them on every slider-driven save.
+    @ObservationIgnored private var lastSavedPresets: [Preset]?
     @ObservationIgnored private var isInitialized = false
     @ObservationIgnored private var internalUpdate = false
     @ObservationIgnored private let adaptiveTransitionDuration: TimeInterval
@@ -518,7 +526,7 @@ final class DisplayManager {
             // With a cached coordinate, calculate first so a persisted value from hours ago
             // is never flashed onto the display during launch. Without one, use the saved
             // value as a temporary fallback until Core Location responds.
-            if location.coordinate == nil || location.authorization == .denied {
+            if location.coordinate == nil {
                 applyToActiveDisplays()
             }
             applyAdaptive()
@@ -568,7 +576,10 @@ final class DisplayManager {
         if !force, let elapsed, elapsed >= 0, elapsed < refreshInterval { return }
         lastLocationRequest = date
         // LSUIElement menu-bar apps otherwise often never surface the permission dialog.
-        if location.authorization == .notDetermined {
+        // Once per process: the 60 s retry loop must not keep yanking focus from whatever
+        // the user is doing while the prompt sits unanswered.
+        if location.authorization == .notDetermined, !hasActivatedForLocationPrompt {
+            hasActivatedForLocationPrompt = true
             NSApplication.shared.activate()
         }
         location.requestWhenInUse()
@@ -582,12 +593,14 @@ final class DisplayManager {
         var seen = Set<CGDirectDisplayID>()
         let ids = getDisplayIDs().filter { seen.insert($0).inserted }
         let currentIDs = Set(ids)
-        // A panel power-cycle often retrains the link without changing the CoreGraphics ID.
-        // The GPU LUT and ColorSync profile are both reset, so any snapshot taken before
-        // the drop is stale: writing it back on disable leaves a residual red cast on
-        // third-party monitors. ColorSync-restore everything, drop captures, then recapture
-        // on the re-apply below — the same path Quit uses.
-        if apply, !isTerminating {
+        let previousIDs = Set(displays.map(\.id))
+        // The screen-parameters notification also fires for Dock show/hide, resolution
+        // changes and window minimize. Only a real add/remove can reset the GPU LUT and
+        // ColorSync profile (a panel power-cycle removes and re-adds its display), so only
+        // then ColorSync-restore everything, drop captures, and recapture on the re-apply
+        // below — the same path Quit uses. Anywhere else this would be a visible flicker.
+        let topologyChanged = previousIDs != currentIDs
+        if apply, !isTerminating, topologyChanged {
             gamma.restoreAll()
         } else {
             // Forget a disconnected display's captured gamma table. If the same CoreGraphics
@@ -602,15 +615,27 @@ final class DisplayManager {
         for id in Array(displayTransitions.keys) where !currentIDs.contains(id) {
             cancelDisplayTransition(id)
         }
-        let prevEnabled = Dictionary(displays.map { ($0.id, $0.isEnabled) }, uniquingKeysWith: { a, _ in a })
-        let prevInverted = Dictionary(displays.map { ($0.id, $0.isInverted) }, uniquingKeysWith: { a, _ in a })
-        displays = ids.map { id in
-            let enabled = prevEnabled[id] ?? persistedDisplayFlag(id, suffix: "enabled")
-            let inverted = prevInverted[id] ?? persistedDisplayFlag(id, suffix: "inverted")
-            return DisplayInfo(id: id, name: getDisplayName(id), isEnabled: enabled, isInverted: inverted)
+        if topologyChanged {
+            let prevEnabled = Dictionary(displays.map { ($0.id, $0.isEnabled) }, uniquingKeysWith: { a, _ in a })
+            let prevInverted = Dictionary(displays.map { ($0.id, $0.isInverted) }, uniquingKeysWith: { a, _ in a })
+            displays = ids.map { id in
+                let enabled = prevEnabled[id] ?? persistedDisplayFlag(id, suffix: "enabled")
+                let inverted = prevInverted[id] ?? persistedDisplayFlag(id, suffix: "inverted")
+                return DisplayInfo(id: id, name: getDisplayName(id), isEnabled: enabled, isInverted: inverted)
+            }
+        } else {
+            // Same displays: refresh names in place (a monitor can be renamed in System
+            // Settings) without replacing the array and invalidating every row's identity.
+            for i in displays.indices {
+                let name = getDisplayName(displays[i].id)
+                if displays[i].name != name { displays[i].name = name }
+            }
         }
         if apply {
             synchronizeTransitionState(at: transitionUptime())
+            // Always re-write: a resolution or refresh-rate change can reset the LUT without
+            // changing the display set. Writing an identical table is invisible, so this
+            // costs nothing on the Dock/minimize notifications.
             applyToActiveDisplays()
         }
         finishTerminationIfReady()
@@ -761,7 +786,7 @@ final class DisplayManager {
             // Bake the live values into the preset, then rebase the manual offsets against
             // the newly shaped curve. Reusing the old offsets would apply the same nudge a
             // second time and make the display jump immediately after Save.
-            if location.authorization != .denied, let coord = location.coordinate {
+            if let coord = location.coordinate {
                 let date = now()
                 let elev = SolarCalculator.elevation(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
@@ -1216,7 +1241,7 @@ final class DisplayManager {
         let changedChannels = pendingBandRefreshChannels
         pendingBandRefreshChannels.removeAll()
         if adaptiveEnabled {
-            if location.authorization == .denied || location.coordinate == nil {
+            if location.coordinate == nil {
                 // There is no solar baseline to recalculate yet, but a hard limit still has
                 // to take effect immediately. Preserve a pending manual nudge, clamped into
                 // the new band, so it lands at that same bounded value once location resolves.
@@ -1257,8 +1282,9 @@ final class DisplayManager {
             defaults.set(display.isEnabled, forKey: "\(prefix).enabled")
             defaults.set(display.isInverted, forKey: "\(prefix).inverted")
         }
-        if let data = try? JSONEncoder().encode(presets) {
+        if lastSavedPresets != presets, let data = try? JSONEncoder().encode(presets) {
             defaults.set(data, forKey: "redlight.presets")
+            lastSavedPresets = presets
         }
         defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
         defaults.set(manualActivePresetIndex ?? -1, forKey: "redlight.manualPresetIndex")
@@ -1286,6 +1312,7 @@ final class DisplayManager {
            let saved = try? JSONDecoder().decode([Preset].self, from: data),
            saved.count == 5 {
             presets = saved
+            lastSavedPresets = saved
         }
         if defaults.object(forKey: "redlight.activePresetIndex") != nil {
             let idx = defaults.integer(forKey: "redlight.activePresetIndex")

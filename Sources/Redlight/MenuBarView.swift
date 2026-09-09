@@ -60,6 +60,8 @@ struct MenuBarView: View {
         .frame(width: 300)
         .onDisappear {
             if !manager.isTerminating { manager.endPreview() }
+            // Reopening the popover should land on the controls, not a stale About page.
+            showingAbout = false
         }
     }
 

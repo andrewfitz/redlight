@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.1}"
+VERSION="${VERSION:-1.1.1}"
 APP="$ROOT/Redlight.app"
 CONTENTS="$APP/Contents"
 DMG="$ROOT/Redlight-${VERSION}.dmg"

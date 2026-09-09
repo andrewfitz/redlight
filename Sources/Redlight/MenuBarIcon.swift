@@ -19,8 +19,13 @@ enum MenuBarIcon {
     static let screenCornerRadius: CGFloat = 0.6
     static let screenOpacity: CGFloat = 0.70  // 30% transparent glass
 
-    static func activeImage() -> NSImage { templateImage(active: true) }
-    static func inactiveImage() -> NSImage { templateImage(active: false) }
+    // Drawn once per process. The label closure re-evaluates on every `isAnyActive` change
+    // and both images are immutable, so there is no reason to rebuild them.
+    @MainActor static func activeImage() -> NSImage { active }
+    @MainActor static func inactiveImage() -> NSImage { inactive }
+
+    @MainActor private static let active = templateImage(active: true)
+    @MainActor private static let inactive = templateImage(active: false)
 
     /// A template image: only the alpha channel matters, so any fill color works and macOS
     /// supplies the final color. The bezel is opaque (the app's identity), the screen is

@@ -4,9 +4,13 @@ import Foundation
 /// get a fix (common on desktop Macs that are ethernet-only, with no Wi-Fi scan for
 /// triangulation) so Adaptive and the sun-arc graphic still have a solar position to follow.
 enum ApproximateLocation {
-    static func from(_ timeZone: TimeZone) -> (latitude: Double, longitude: Double) {
+    static func from(_ timeZone: TimeZone, at date: Date = Date()) -> (latitude: Double, longitude: Double) {
         if let known = coordinates[timeZone.identifier] { return known }
-        let longitude = Double(timeZone.secondsFromGMT()) / 240.0
+        // Standard offset only: the daylight-saving hour would otherwise shift the
+        // estimate 15° east for half the year. 240 s per degree of longitude.
+        let standardOffset = Double(timeZone.secondsFromGMT(for: date))
+            - timeZone.daylightSavingTimeOffset(for: date)
+        let longitude = min(180, max(-180, standardOffset / 240.0))
         return (inferredLatitude(timeZone.identifier), longitude)
     }
 
