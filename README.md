@@ -29,7 +29,7 @@ Click the sun icon in the menu bar to open the popover:
 
 ## Install
 
-Download `Redlight-1.1.dmg` from [Releases](../../releases), open it, and drag **Redlight** to `/Applications`.
+Download the latest `Redlight-<version>.dmg` from [Releases](../../releases), open it, and drag **Redlight** to `/Applications`.
 
 Or build from source:
 

@@ -27,7 +27,9 @@ final class FakeLocationProvider: LocationProviding {
     var onChange: (() -> Void)?
     var isApproximate = false
     var requestCount = 0
+    var cancelCount = 0
     func requestWhenInUse() { requestCount += 1 }
+    func cancelRequest() { cancelCount += 1 }
 }
 
 @MainActor @Suite struct DisplayManagerTests {
@@ -1509,12 +1511,12 @@ final class FakeLocationProvider: LocationProviding {
         #expect(manager.displays.map(\.id) == [1])
     }
 
-    @Test func monitorWakeRecapturesColorSyncBeforeReapplyingFilter() {
-        // Turning a third-party panel off and on often retrains the link without changing
-        // the CoreGraphics display ID. The GPU LUT and ColorSync profile are both reset, so
-        // the pre-sleep snapshot is stale: writing it back on disable leaves a residual
-        // red cast. ColorSync-restore + recapture, then re-apply, matches what Quit does.
-        let ids: [CGDirectDisplayID] = [1]
+    @Test func reconnectedMonitorRecapturesColorSyncBeforeReapplyingFilter() {
+        // Power-cycling a third-party panel removes and re-adds its display. The GPU LUT and
+        // ColorSync profile are reset on reconnect, so any earlier snapshot is stale: writing
+        // it back on disable leaves a residual red cast. ColorSync-restore + recapture, then
+        // re-apply, matches what Quit does.
+        var ids: [CGDirectDisplayID] = [1, 2]
         let manager = DisplayManager(
             gamma: mock,
             getDisplayIDs: { ids },
@@ -1524,6 +1526,29 @@ final class FakeLocationProvider: LocationProviding {
             location: FakeLocationProvider()
         )
         manager.intensity = 0.4
+        manager.toggle(2)
+        manager.completeDisplayTransitions()
+        ids = [1]
+        manager.refreshDisplays()
+        mock.applyCalls.removeAll()
+        mock.restoreCalls.removeAll()
+        mock.restoreAllCount = 0
+
+        ids = [1, 2]
+        manager.refreshDisplays()
+
+        #expect(mock.restoreAllCount == 1)
+        #expect(mock.applyCalls.contains { call in
+            call.displayID == 2 && abs(call.intensity - 0.4) < 0.0001
+        })
+    }
+
+    @Test func screenParameterChangeWithSameDisplaysDoesNotResetColorSync() {
+        // Dock show/hide, resolution changes and window minimize all post the screen-
+        // parameters notification without touching the display set. Resetting ColorSync and
+        // re-applying there is a visible flicker.
+        let manager = makeManager()
+        manager.intensity = 0.4
         manager.toggle(1)
         manager.completeDisplayTransitions()
         mock.applyCalls.removeAll()
@@ -1532,10 +1557,8 @@ final class FakeLocationProvider: LocationProviding {
 
         manager.refreshDisplays()
 
-        #expect(mock.restoreAllCount == 1)
-        #expect(mock.applyCalls.contains { call in
-            call.displayID == 1 && abs(call.intensity - 0.4) < 0.0001
-        })
+        #expect(mock.restoreAllCount == 0)
+        #expect(mock.restoreCalls.isEmpty)
     }
 
     @Test func adaptiveStartupAppliesCurrentCurveWithoutPersistedValueFlash() {
@@ -1597,6 +1620,44 @@ final class FakeLocationProvider: LocationProviding {
         date.addTimeInterval(2)
         manager.applyAdaptive()
         #expect(loc.requestCount == 2)
+    }
+
+    @Test func deniedLocationStillFollowsTheSunFromTheTimeZoneFallback() {
+        // A user who declines the permission prompt should not lose Adaptive entirely;
+        // the time-zone city is good enough for the solar curve.
+        let loc = FakeLocationProvider()
+        loc.authorization = .denied
+        loc.coordinate = (41.8, -87.6)
+        loc.isApproximate = true
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T18:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+
+        #expect(manager.coordinate != nil)
+        #expect(manager.adaptiveStatusText.hasPrefix("Following the sun"))
+        #expect(manager.adaptiveStatusText.contains("time zone"))
+        #expect(loc.requestCount == 0)   // nothing to ask for once denied
+    }
+
+    @Test func deniedLocationWithNoCoordinateAsksForPermission() {
+        let loc = FakeLocationProvider()
+        loc.authorization = .denied
+        let manager = makeManager(location: loc)
+        manager.adaptiveEnabled = true
+
+        #expect(manager.coordinate == nil)
+        #expect(manager.adaptiveStatusText == "Location needed")
+    }
+
+    @Test func turningAdaptiveOffCancelsAnyPendingLocationRequest() {
+        let loc = FakeLocationProvider()
+        let manager = makeManager(location: loc)
+        manager.adaptiveEnabled = true
+        #expect(loc.requestCount == 1)
+
+        manager.adaptiveEnabled = false
+
+        #expect(loc.cancelCount == 1)
     }
 
     @Test func wakeRefreshesLocationAndAppliesAdaptiveOnce() {
