@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.1.1}"
+VERSION="${VERSION:-1.2}"
 # Ad-hoc ("-") by default. macOS keys Location Services / Automation consent to the code
 # signature, so an ad-hoc build re-prompts on every update. Pass a stable identity
 # (Developer ID, or a self-signed "Redlight" certificate) to avoid that:
@@ -32,6 +32,15 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
 cp "$BIN_DIR/Redlight" "$CONTENTS/MacOS/Redlight"
+
+# Sparkle (auto-update). SwiftPM links the framework but doesn't embed it, so copy it in
+# and point the binary's rpath at Contents/Frameworks.
+SPARKLE_FW="$ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+mkdir -p "$CONTENTS/Frameworks"
+ditto "$SPARKLE_FW" "$CONTENTS/Frameworks/Sparkle.framework"
+if ! otool -l "$CONTENTS/MacOS/Redlight" | grep -q "@executable_path/../Frameworks"; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$CONTENTS/MacOS/Redlight"
+fi
 
 if [[ -f "$ICNS" ]]; then
     cp "$ICNS" "$CONTENTS/Resources/Redlight.icns"
@@ -78,6 +87,12 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
     <key>NSLocationUsageDescription</key>
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/andrewfitz/redlight/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>SEcy337jNOT0XmvFnGPciypmt8hO3YKfa/uXUHQXiI4=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>
 PLIST

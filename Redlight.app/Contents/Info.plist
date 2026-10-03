@@ -19,9 +19,9 @@
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Andrew Fitzgerald. MIT License.</string>
     <key>CFBundleVersion</key>
-    <string>1.1.1</string>
+    <string>1.2</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.1</string>
+    <string>1.2</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -36,5 +36,11 @@
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
     <key>NSLocationUsageDescription</key>
     <string>Redlight uses your location to follow local sunrise and sunset times.</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/andrewfitz/redlight/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>SEcy337jNOT0XmvFnGPciypmt8hO3YKfa/uXUHQXiI4=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>

@@ -266,6 +266,10 @@ struct MenuBarView: View {
             HStack {
                 Button("About") { showingAbout = true }
                     .accessibilityLabel("About Redlight")
+                if Updater.shared.isAvailable {
+                    Button("Updates…") { Updater.shared.checkForUpdates() }
+                        .accessibilityLabel("Check for Updates")
+                }
                 Spacer()
                 Button(manager.isTerminating ? "Quitting…" : "Quit") {
                     NSApplication.shared.terminate(nil)

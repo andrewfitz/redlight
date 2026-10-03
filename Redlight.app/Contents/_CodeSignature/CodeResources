@@ -6,16 +6,25 @@
 	<dict>
 		<key>Resources/Redlight.icns</key>
 		<data>
-		tK/BbKiFMiEjdg/OMFV3CJHD26g=
+		mljWNniDyCK2Vi1mZYRbfbhhWKQ=
 		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Frameworks/Sparkle.framework</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			usK9HfZqQvu4vrynma864kqhf0M=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"bac2bd1df66a42fbb8bebca799af3ae24aa17f43" or cdhash H"e1f6116a172f9b8387f6295cabed46fe5b67a73f"</string>
+		</dict>
 		<key>Resources/Redlight.icns</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			ar5oS6kcravYH5LqwGrLW3hE5vVcV3d2pIND26aSWfU=
+			J848yfOaPt9bxn3d4wCTk0X1cs9z2n+q8hXqT9f2vOk=
 			</data>
 		</dict>
 	</dict>
