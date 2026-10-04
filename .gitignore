@@ -15,3 +15,6 @@ TODO.md
 
 # Serena MCP cache
 .serena/
+
+# Sparkle EdDSA private key export — never commit
+sparkle-key.txt
