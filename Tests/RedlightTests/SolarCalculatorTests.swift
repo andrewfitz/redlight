@@ -9,6 +9,15 @@ import Foundation
         return f.date(from: iso)!
     }
 
+    @Test func risingIsTheHalfBeforeSolarNoon() {
+        // Nashville (−86.7°): solar noon ≈ 17:55 UTC in late March.
+        #expect(SolarCalculator.isRising(at: date("2025-03-21T14:00:00Z"), longitude: -86.7))
+        #expect(!SolarCalculator.isRising(at: date("2025-03-21T21:00:00Z"), longitude: -86.7))
+        // Solar midnight ≈ 05:55 UTC: rising just after, setting just before.
+        #expect(SolarCalculator.isRising(at: date("2025-03-21T06:30:00Z"), longitude: -86.7))
+        #expect(!SolarCalculator.isRising(at: date("2025-03-21T05:20:00Z"), longitude: -86.7))
+    }
+
     @Test func noonAtEquatorEquinoxIsHigh() {
         let elev = SolarCalculator.elevation(
             at: date("2025-03-20T12:00:00Z"), latitude: 0, longitude: 0)

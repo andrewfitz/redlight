@@ -58,10 +58,14 @@ private final class SunArcCache {
 struct MenuBarView: View {
     @Bindable var manager: DisplayManager
     var launchAtLogin: LaunchAtLogin? = nil
+    var handler: CommandHandler? = nil
 
     @State private var sunCache = SunArcCache()
     @State private var appearance = AppearanceController.shared
     @State private var showingAbout = false
+    @State private var choosingSaveTarget = false
+    @State private var commandError: String?
+    @Environment(\.closeMenu) private var closeMenu
     // Fixed anchor: `.periodic(from: .now, …)` would build a new schedule on every body
     // evaluation and restart the timeline (and its date) on each slider tick.
     @State private var sunArcScheduleStart = Date()
@@ -89,7 +93,14 @@ struct MenuBarView: View {
             HStack {
                 Text("Redlight").font(.headline)
                 Spacer()
-                AppearanceSwitch(isDark: appearance.isDark) { appearance.toggle() }
+                Toggle("Enable Redlight", isOn: Binding(
+                    get: { manager.isOn },
+                    set: { dispatch(.master($0 ? .on : .off)) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .accessibilityLabel("Enable Redlight")
+                AppearanceSwitch(isDark: appearance.isDark) { dispatch(.appearance(.toggle)) }
             }
 
             Divider()
@@ -98,13 +109,13 @@ struct MenuBarView: View {
                 HStack {
                     Toggle(display.name, isOn: Binding(
                         get: { display.isEnabled },
-                        set: { _ in manager.toggle(display.id) }
+                        set: { dispatch(.display(.key(display.persistenceKey), $0 ? .on : .off)) }
                     ))
                     .accessibilityLabel(display.name)
                     Spacer()
                     Toggle("Invert", isOn: Binding(
                         get: { display.isInverted },
-                        set: { _ in manager.toggleInvert(display.id) }
+                        set: { dispatch(.invert(.key(display.persistenceKey), $0 ? .on : .off)) }
                     ))
                     .toggleStyle(.checkbox)
                     .font(.caption)
@@ -133,12 +144,14 @@ struct MenuBarView: View {
                         showBand: manager.adaptiveEnabled,
                         label: "Color",
                         onPreview: { manager.previewIntensity($0) },
-                        onPreviewEnd: { manager.endPreview() }
+                        onPreviewEnd: { manager.endPreview() },
+                        onInteractionBegin: { manager.beginSliderInteraction() },
+                        isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                     )
                     ResetButton(
                         help: "Reset color and its limits to default",
                         isDefault: manager.intensityIsDefault
-                    ) { manager.resetIntensity() }
+                    ) { dispatch(.reset(.color)) }
                 }
             }
 
@@ -155,12 +168,14 @@ struct MenuBarView: View {
                         showBand: manager.adaptiveEnabled,
                         label: "White Point",
                         onPreview: { manager.previewWhitepoint($0) },
-                        onPreviewEnd: { manager.endPreview() }
+                        onPreviewEnd: { manager.endPreview() },
+                        onInteractionBegin: { manager.beginSliderInteraction() },
+                        isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                     )
                     ResetButton(
                         help: "Reset white point and its limits to default",
                         isDefault: manager.whitepointIsDefault
-                    ) { manager.resetWhitepoint() }
+                    ) { dispatch(.reset(.whitepoint)) }
                 }
             }
 
@@ -173,26 +188,36 @@ struct MenuBarView: View {
                     ForEach(Array(manager.presets.enumerated()), id: \.offset) { index, preset in
                         PresetButton(
                             name: preset.name,
-                            isActive: manager.activePresetIndex == index
+                            isActive: !choosingSaveTarget && manager.activePresetIndex == index
                         ) {
-                            manager.applyPreset(index)
+                            guard CommandPreset.allCases.indices.contains(index) else {
+                                commandError = "This preset is unavailable."
+                                return
+                            }
+                            let target = CommandPreset.allCases[index]
+                            if choosingSaveTarget {
+                                if dispatch(.savePreset(target)) { choosingSaveTarget = false }
+                            } else {
+                                dispatch(.preset(target))
+                            }
                         }
                     }
                 }
 
-                Menu {
-                    ForEach(Array(manager.presets.enumerated()), id: \.offset) { index, preset in
-                        Button("Save to \"\(preset.name)\"") {
-                            manager.saveToPreset(index)
-                        }
+                // Inline rather than a pop-up menu: no menu can open while the menu bar
+                // menu is tracking. The preset row itself becomes the list of targets.
+                HStack(spacing: 6) {
+                    Button(choosingSaveTarget ? "Cancel" : "Save to Preset…") {
+                        choosingSaveTarget.toggle()
                     }
-                } label: {
-                    Text("Save to Preset")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    if choosingSaveTarget {
+                        Text("Pick a preset to overwrite")
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .font(.caption)
             }
 
             Divider()
@@ -200,7 +225,10 @@ struct MenuBarView: View {
             // MARK: - Adaptive
 
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("Adaptive", isOn: $manager.adaptiveEnabled)
+                Toggle("Adaptive", isOn: Binding(
+                    get: { manager.adaptiveEnabled },
+                    set: { dispatch(.adaptive($0 ? .on : .off)) }
+                ))
                     .font(.subheadline)
                     .help("Follow real solar elevation. You can still adjust either slider while Adaptive stays on.")
                     .accessibilityLabel("Adaptive solar mode")
@@ -233,8 +261,7 @@ struct MenuBarView: View {
                         )
                         SunArcView(
                             cycle: cycle,
-                            intensities: appliedIntensities(cycle, at: context.date, coord: coord),
-                            intensityLimits: manager.intensityBand
+                            intensities: appliedIntensities(cycle, at: context.date, coord: coord)
                         )
                     }
                 }
@@ -243,9 +270,11 @@ struct MenuBarView: View {
             Divider()
 
             if let launchAtLogin {
-                @Bindable var launchAtLogin = launchAtLogin
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Launch at Login", isOn: $launchAtLogin.isEnabled)
+                    Toggle("Launch at Login", isOn: Binding(
+                        get: { launchAtLogin.isEnabled },
+                        set: { dispatch(.login($0)) }
+                    ))
                         .font(.subheadline)
                         .accessibilityLabel("Launch Redlight at login")
                     if launchAtLogin.requiresApproval {
@@ -263,20 +292,40 @@ struct MenuBarView: View {
                 .onAppear { launchAtLogin.refresh() }
             }
 
+            if let commandError {
+                Text(commandError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Command failed: \(commandError)")
+            }
+
             HStack {
                 Button("About") { showingAbout = true }
                     .accessibilityLabel("About Redlight")
                 if Updater.shared.isAvailable {
-                    Button("Updates…") { Updater.shared.checkForUpdates() }
-                        .accessibilityLabel("Check for Updates")
+                    Button(Updater.shared.hasPendingUpdate ? "Update Available" : "Updates…") {
+                        // Close the menu first; it floats above Sparkle's window.
+                        if dispatch(.update) { closeMenu() }
+                    }
+                    .accessibilityLabel(Updater.shared.hasPendingUpdate
+                                        ? "Update available" : "Check for Updates")
                 }
                 Spacer()
                 Button(manager.isTerminating ? "Quitting…" : "Quit") {
-                    NSApplication.shared.terminate(nil)
+                    dispatch(.quit)
                 }
                 .accessibilityLabel("Quit Redlight")
             }
         }
+    }
+
+    /// The live app always supplies the shared handler. Keeping it optional permits
+    /// isolated view previews without constructing services that change macOS settings.
+    @discardableResult
+    private func dispatch(_ action: PopoverAction) -> Bool {
+        commandError = PopoverCommandDispatch(handler: handler).execute(action)
+        return commandError == nil
     }
 
     /// Applied adaptive intensity at each sample time — the same mapping the live filter
@@ -294,7 +343,8 @@ struct MenuBarView: View {
         let minElev = sunCache.minElevation
         return sunCache.intensities(key: key) {
             cycle.samples.map { sample in
-                manager.adaptiveIntensity(at: sample.elevation, minElevation: minElev)
+                manager.adaptiveIntensity(
+                    at: sample.elevation, minElevation: minElev, rising: sample.rising)
             }
         }
     }
@@ -438,5 +488,21 @@ struct PresetButton: View {
         .buttonStyle(.plain)
         .help(name)
         .accessibilityLabel(name)
+    }
+}
+
+/// Shared by the popover and its tests: failed actions stay visible to the user.
+@MainActor
+struct PopoverCommandDispatch {
+    var handler: CommandHandler?
+
+    func execute(_ action: PopoverAction) -> String? {
+        guard let handler else { return "Redlight controls are unavailable. Reopen the app to try again." }
+        do {
+            _ = try handler.execute(action.command)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 }

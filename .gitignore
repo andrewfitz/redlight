@@ -9,6 +9,8 @@ docs/
 TODO.md
 *.todo
 *.dmg
+__pycache__/
+*.py[cod]
 
 # Serena MCP cache
 .serena/

@@ -27,12 +27,16 @@ final class AppearanceController {
 
     @ObservationIgnored private let getTheme: GetThemeFn?
     @ObservationIgnored private let setTheme: SetThemeFn?
+    @ObservationIgnored private let injectedRead: (() -> Bool)?
+    @ObservationIgnored private let injectedWrite: ((Bool) throws -> Void)?
 
     /// Retained for the app's lifetime; this is a singleton, so it's never
     /// removed (deinit is nonisolated under Swift 6 and can't touch it anyway).
     @ObservationIgnored private var themeObserver: NSObjectProtocol?
 
     private init() {
+        injectedRead = nil
+        injectedWrite = nil
         // Resolve the private symbols once up front; nil just means "use the
         // AppleScript fallback". The handle is deliberately never dlclose'd.
         if let handle = dlopen(
@@ -62,24 +66,47 @@ final class AppearanceController {
         }
     }
 
+    /// Injectable backend for callers that provide their own appearance service.
+    /// It does not install system observers or resolve private framework symbols.
+    init(read: @escaping () -> Bool, write: @escaping (Bool) throws -> Void) {
+        getTheme = nil
+        setTheme = nil
+        injectedRead = read
+        injectedWrite = write
+        isDark = read()
+    }
+
     /// Flips the system appearance. SkyLight first (silent), AppleScript via
     /// System Events as fallback. Never crashes or retries if both fail; the
     /// notification observer reconciles `isDark` with whatever actually stuck.
     func toggle() {
         // Trust SkyLight's own read of the current theme when available; it
         // can't be stale the way a cached UserDefaults snapshot can.
-        let current = getTheme?() ?? isDark
-        let target = !current
+        do {
+            try setDark(!(injectedRead?() ?? getTheme?() ?? isDark))
+        } catch {
+            NSLog("Redlight: appearance change failed: %@", error.localizedDescription)
+        }
+    }
 
-        if let setTheme {
-            setTheme(target)
-            isDark = target
+    /// An explicit state setter is idempotent, unlike scripting a toggle.
+    func setDark(_ target: Bool) throws {
+        let current = injectedRead?() ?? getTheme?() ?? isDark
+        guard current != target else {
+            isDark = current
             return
         }
-
-        if toggleViaAppleScript() {
-            isDark = target
+        if let injectedWrite {
+            try injectedWrite(target)
+        } else if let setTheme {
+            setTheme(target)
+        } else {
+            try setDarkViaAppleScript(target)
         }
+        if let actual = injectedRead?() ?? getTheme?(), actual != target {
+            throw CommandError.system("macOS did not apply the requested appearance.")
+        }
+        isDark = target
     }
 
     private func refresh() {
@@ -98,19 +125,19 @@ final class AppearanceController {
 
     /// Requires `NSAppleEventsUsageDescription` (Info.plist) and the user's
     /// one-time Automation consent. If consent is missing or denied (-1743)
-    /// this logs and returns false — no crash, no retry loop.
-    private func toggleViaAppleScript() -> Bool {
+    /// this throws a command error — no crash, no retry loop.
+    private func setDarkViaAppleScript(_ target: Bool) throws {
         let source = """
             tell application "System Events" to tell appearance preferences \
-            to set dark mode to not dark mode
+            to set dark mode to \(target ? "true" : "false")
             """
-        guard let script = NSAppleScript(source: source) else { return false }
+        guard let script = NSAppleScript(source: source) else {
+            throw CommandError.system("Unable to create the system appearance script.")
+        }
         var error: NSDictionary?
         script.executeAndReturnError(&error)
         if let error {
-            NSLog("Redlight: AppleScript appearance toggle failed: %@", error)
-            return false
+            throw CommandError.system("System appearance change failed: \(error)")
         }
-        return true
     }
 }

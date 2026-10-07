@@ -92,6 +92,20 @@ import CoreGraphics
         #expect(hit(pos(0.17), value: 0.2, lower: 0.2, upper: 0.8) == .lower)
     }
 
+    @Test func tabAboveOrBelowAParkedThumbGrabsTheLimit() {
+        // Thumb parked exactly on the upper limit: the body is the thumb, the tabs that
+        // stick out above and below it are the limit.
+        func hitY(_ x: CGFloat, _ dy: CGFloat) -> BandSliderCore.Handle {
+            BandSliderCore.hitHandle(atX: x, dy: dy, width: width, inset: inset, range: range,
+                                     value: 0.8, lower: 0.2, upper: 0.8, showBand: true)
+        }
+        #expect(hitY(pos(0.8), 0) == .value)
+        #expect(hitY(pos(0.8), -11) == .upper)
+        #expect(hitY(pos(0.8), 11) == .upper)
+        // Top of the thumb but away from any tab is still the thumb.
+        #expect(hitY(pos(0.8) - 8, -7) == .value)
+    }
+
     @Test func distantTrackClickMovesValueInsteadOfBand() {
         #expect(hit(pos(0.1), value: 0.5, lower: 0.0, upper: 1.0) == .value)
         #expect(hit(pos(0.9), value: 0.5, lower: 0.0, upper: 1.0) == .value)

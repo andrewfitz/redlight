@@ -67,10 +67,42 @@ import Testing
         for i in 1..<vals.count { #expect(vals[i - 1] >= vals[i]) }
     }
 
-    @Test func shallowNightNeverReachesDeepRed() {
-        // Sun bottoms out at −10° → deepest sample stays on the twilight leg, not Deep Red.
+    @Test func shortNightStillReachesDeepRedAtItsLowestPoint() {
+        // Sun bottoms out at −10° (high-latitude summer): the night is stretched so its
+        // lowest point is Deep Red, and it still passes Night on the way down.
         let t = SolarCurve.target(elevation: -10, minElevation: -10, presets: presets)
-        #expect(t.intensity < 0.5 && t.intensity > 0.25)
+        #expect(abs(t.intensity - 0.0) < 0.0001)
+        #expect(abs(t.whitepoint - 0.3) < 0.0001)
+        let night = SolarCurve.target(elevation: -7.5, minElevation: -10, presets: presets)
+        #expect(abs(night.intensity - 0.25) < 0.0001)
+        let sunset = SolarCurve.target(elevation: 0, minElevation: -10, presets: presets)
+        #expect(abs(sunset.intensity - 0.5) < 0.0001)
+    }
+
+    @Test func shortNightStretchIsContinuousAtTheFloor() {
+        for e in [-3.0, -9, -15, -20, -23] {
+            let at = SolarCurve.target(elevation: e, minElevation: -24, presets: presets)
+            let near = SolarCurve.target(elevation: e, minElevation: -23.999, presets: presets)
+            #expect(abs(at.intensity - near.intensity) < 0.001)
+        }
+    }
+
+    @Test func morningClearsToDayFourDegreesAfterSunrise() {
+        let morning = SolarCurve.target(elevation: 4, minElevation: -70, rising: true, presets: presets)
+        let evening = SolarCurve.target(elevation: 4, minElevation: -70, rising: false, presets: presets)
+        #expect(morning.intensity == 1.0 && morning.whitepoint == 1.0)
+        #expect(evening.intensity < 1.0)
+        let warm = SolarCurve.target(elevation: 2, minElevation: -70, rising: true, presets: presets)
+        #expect(abs(warm.intensity - 0.7) < 0.0001)
+    }
+
+    @Test func morningMirrorsEveningUpToTheHorizon() {
+        for e in [0.0, -3, -6, -12, -18, -40] {
+            let morning = SolarCurve.target(elevation: e, minElevation: -70, rising: true, presets: presets)
+            let evening = SolarCurve.target(elevation: e, minElevation: -70, rising: false, presets: presets)
+            #expect(morning.intensity == evening.intensity)
+            #expect(morning.whitepoint == evening.whitepoint)
+        }
     }
 
     @Test func phaseLabelsFollowTheSameElevationMarkers() {

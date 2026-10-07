@@ -4,7 +4,11 @@ import Foundation
 /// calendar day, where "now" sits on it, and the time to the next twilight transition.
 /// Pure — depends only on `SolarCalculator` and an injectable `Calendar`.
 struct SunCycle {
-    struct Sample { let t: Double; let elevation: Double }   // t in [0,1] = fraction of local day
+    struct Sample {
+        let t: Double            // fraction of the local day, 0…1
+        let elevation: Double
+        let rising: Bool         // before solar noon (morning side of the Adaptive curve)
+    }
     struct Event { let label: String; let seconds: Double; let elevation: Double }
 
     let samples: [Sample]
@@ -40,7 +44,9 @@ struct SunCycle {
             let t = Double(i) / Double(sampleCount - 1)
             let date = dayStart.addingTimeInterval(t * daySeconds)
             let e = SolarCalculator.elevation(at: date, latitude: latitude, longitude: longitude)
-            pts.append(Sample(t: t, elevation: e))
+            pts.append(Sample(
+                t: t, elevation: e,
+                rising: SolarCalculator.isRising(at: date, longitude: longitude)))
         }
         samples = pts
 

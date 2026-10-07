@@ -6,17 +6,25 @@ enum SolarCalculator {
     static func elevation(at date: Date, latitude: Double, longitude: Double) -> Double {
         let t = julianCentury(date)
         let decl = solarDeclination(t)
-        let eqTime = equationOfTime(t)
-
-        let trueSolarTime = (utcMinutes(date) + eqTime + 4 * longitude)
-            .truncatingRemainder(dividingBy: 1440)
-        var hourAngle = trueSolarTime / 4 - 180
-        if hourAngle < -180 { hourAngle += 360 }
-
-        let latR = rad(latitude), declR = rad(decl), haR = rad(hourAngle)
+        let latR = rad(latitude), declR = rad(decl)
+        let haR = rad(hourAngle(at: date, t: t, longitude: longitude))
         let cosZenith = sin(latR) * sin(declR) + cos(latR) * cos(declR) * cos(haR)
         let zenith = acos(min(1, max(-1, cosZenith)))
         return 90 - deg(zenith)
+    }
+
+    /// Whether the sun is on the rising half of its cycle (solar midnight → solar noon).
+    static func isRising(at date: Date, longitude: Double) -> Bool {
+        hourAngle(at: date, t: julianCentury(date), longitude: longitude) < 0
+    }
+
+    /// Hour angle in degrees, −180…180: negative before solar noon, positive after.
+    private static func hourAngle(at date: Date, t: Double, longitude: Double) -> Double {
+        let trueSolarTime = (utcMinutes(date) + equationOfTime(t) + 4 * longitude)
+            .truncatingRemainder(dividingBy: 1440)
+        var hourAngle = trueSolarTime / 4 - 180
+        if hourAngle < -180 { hourAngle += 360 }
+        return hourAngle
     }
 
     /// Sun elevation in degrees at the night's lowest point (lower culmination):

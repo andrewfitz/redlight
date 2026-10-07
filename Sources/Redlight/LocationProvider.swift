@@ -166,6 +166,8 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
     }
 
     private func systemTimeZoneChanged() {
+        // Foundation caches the system zone; drop it so `.current` reflects the new one.
+        NSTimeZone.resetSystemTimeZone()
         timeZone = .current
         guard isApproximate else { return }
         let fresh = ApproximateLocation.from(timeZone)

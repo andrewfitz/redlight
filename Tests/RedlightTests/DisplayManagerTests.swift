@@ -35,6 +35,7 @@ final class FakeLocationProvider: LocationProviding {
 @MainActor @Suite struct DisplayManagerTests {
     let mock = MockGammaController()
     let fakeLocation = FakeLocationProvider()
+    let defaultsRegistry = TestDefaultsRegistry()
 
     func makeManager(
         displayIDs: [CGDirectDisplayID] = [1],
@@ -63,10 +64,7 @@ final class FakeLocationProvider: LocationProviding {
     }
 
     func freshDefaults() -> UserDefaults {
-        let name = "RedlightTests-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
-        return d
+        defaultsRegistry.makeDefaults()
     }
 
     @Test func neutralEnabledFilterLeavesColorSyncUntouched() {
@@ -1689,6 +1687,85 @@ final class FakeLocationProvider: LocationProviding {
         let manager = makeManager(defaults: d)
         #expect(manager.intensity == 1.0)
         #expect(manager.whitepoint == 0.25)
+    }
+
+    @Test func corruptPresetsAndOffsetsAreSanitizedOnLoad() throws {
+        let d = freshDefaults()
+        var presets = Preset.defaults
+        presets[2].intensity = 3.0
+        presets[3].whitepoint = 0.0
+        d.set(try JSONEncoder().encode(presets), forKey: "redlight.presets")
+        d.set(Double.nan, forKey: "redlight.adaptiveOffsetIntensity")
+        d.set(9.0, forKey: "redlight.adaptiveOffsetWhitepoint")
+        d.set(Double.infinity, forKey: "redlight.pendingAdaptiveIntensity")
+        d.set(-2.0, forKey: "redlight.pendingAdaptiveWhitepoint")
+        let manager = makeManager(defaults: d)
+
+        #expect(manager.presets[2].intensity == 1.0)
+        #expect(manager.presets[3].whitepoint == 0.25)
+        #expect(manager.adaptiveIntensityAdjustment == 0)
+        manager.applyPreset(2)
+        #expect(manager.intensity == 1.0)
+        #expect(mock.applyCalls.allSatisfy { $0.intensity <= 1 && $0.whitepoint >= 0.25 })
+    }
+
+    @Test func hiddenAdaptiveNudgeKeepsResetEnabledWhileAdaptiveIsOff() {
+        let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc, now: { midnight })
+        manager.adaptiveEnabled = true
+        manager.intensity = max(0, manager.intensity - 0.2)
+        #expect(manager.adaptiveIntensityAdjustment != 0)
+
+        manager.adaptiveEnabled = false
+        manager.intensity = 1.0
+        #expect(!manager.intensityIsDefault)
+
+        manager.resetIntensity()
+        #expect(manager.intensityIsDefault)
+        #expect(manager.adaptiveIntensityAdjustment == 0)
+    }
+
+    @Test func toggleReversesFromTheRenderedFrameAfterAStall() {
+        var uptime: TimeInterval = 100
+        let manager = makeManager(displayTransitionDuration: 1, transitionUptime: { uptime })
+        manager.intensity = 0
+        manager.toggle(1)                // fade in 0 → 1
+        uptime += 0.5
+        manager.tickDisplayTransitions() // renders amount 0.5
+        uptime += 0.4                    // run loop stalls; no frame at 0.9
+        mock.applyCalls.removeAll()
+
+        manager.toggle(1)                // fade out must start from 0.5, not ~0.97
+        manager.tickDisplayTransitions()
+
+        let first = try! #require(mock.applyCalls.first)
+        #expect(abs(first.intensity - 0.5) < 0.001)
+    }
+
+    @Test func solarNoonSwitchFadesWhereTheSunStaysLow() {
+        // 64°N in December: the sun peaks near +2.6°, below the evening Day anchor, so the
+        // morning and evening curves disagree at noon. Crossing it must fade, not step.
+        let iso = ISO8601DateFormatter()
+        var clock = iso.date(from: "2025-12-21T11:30:00Z")!   // ~30 min before solar noon at 0°
+        var uptime: TimeInterval = 100
+        let loc = FakeLocationProvider(); loc.coordinate = (64, 0)
+        let manager = makeManager(location: loc, now: { clock }, transitionDuration: 2,
+                                  transitionUptime: { uptime })
+        manager.toggle(1)
+        manager.adaptiveEnabled = true
+        uptime += 3; manager.tickTransitions()
+        let morning = manager.intensity
+
+        clock = iso.date(from: "2025-12-21T12:30:00Z")!
+        mock.applyCalls.removeAll()
+        manager.applyAdaptive()
+        let evening = manager.intensity
+        #expect(evening < morning - 0.05)
+        #expect(mock.applyCalls.allSatisfy { abs(Double($0.intensity) - morning) < 0.001 })
+
+        uptime += 3; manager.tickTransitions()
+        #expect(abs(Double(try! #require(mock.applyCalls.last).intensity) - evening) < 0.001)
     }
 
     @Test func wakeRefreshesLocationAndAppliesAdaptiveOnce() {

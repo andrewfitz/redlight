@@ -5,11 +5,12 @@ import Foundation
 /// (`DisplayManager.applyAdaptive`) and the sun-arc graphic, so both stay in sync.
 enum AdaptiveMapping {
     static func banded(
-        elevation: Double, minElevation: Double, presets: [Preset],
+        elevation: Double, minElevation: Double, rising: Bool = false, presets: [Preset],
         intensityMin: Double, intensityMax: Double,
         whitepointMin: Double, whitepointMax: Double
     ) -> (intensity: Double, whitepoint: Double) {
-        let t = SolarCurve.target(elevation: elevation, minElevation: minElevation, presets: presets)
+        let t = SolarCurve.target(
+            elevation: elevation, minElevation: minElevation, rising: rising, presets: presets)
         guard presets.count >= 5 else { return t }
 
         let iLo = min(intensityMin, intensityMax), iHi = max(intensityMin, intensityMax)

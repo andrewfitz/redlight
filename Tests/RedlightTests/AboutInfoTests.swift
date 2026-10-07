@@ -16,7 +16,7 @@ import Testing
     }
 
     @Test func versionFallsBackWhenBundleKeysAreMissing() {
-        #expect(AboutInfo.version(shortVersion: nil, build: nil) == "1.0")
-        #expect(AboutInfo.version(shortVersion: "", build: "") == "1.0")
+        #expect(AboutInfo.version(shortVersion: nil, build: nil) == "development")
+        #expect(AboutInfo.version(shortVersion: "", build: "") == "development")
     }
 }
