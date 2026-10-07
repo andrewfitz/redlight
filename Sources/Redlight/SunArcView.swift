@@ -1,29 +1,71 @@
 import SwiftUI
 
+/// The curve, sun dot, and guide lines share one linear solar-elevation scale.
+/// Guides stay at their true elevations; crowded guides are omitted rather than shifted.
+struct SunArcGeometry {
+    struct Guide: Equatable {
+        let elevation: Double
+        let y: CGFloat
+        var isHorizon: Bool { elevation == 0 }
+    }
+
+    let top: CGFloat
+    let bottom: CGFloat
+    let upperElevation: Double
+    let lowerElevation: Double
+
+    init(elevations: [Double], height: CGFloat, padding: CGFloat = 6) {
+        let height = max(0, height)
+        top = min(max(0, padding), height / 2)
+        bottom = height - top
+        let finiteElevations = elevations.filter(\.isFinite)
+        upperElevation = max(finiteElevations.max() ?? 10, 5) + 3
+        lowerElevation = min(finiteElevations.min() ?? -18, -18) - 3
+    }
+
+    func y(for elevation: Double) -> CGFloat {
+        let span = max(1, upperElevation - lowerElevation)
+        return top + CGFloat((upperElevation - elevation) / span) * (bottom - top)
+    }
+
+    func guides(
+        elevations: [Double] = SolarCurve.elevationMarkers.map(\.elevation),
+        minimumSeparation: CGFloat = 4
+    ) -> [Guide] {
+        // Always consider the horizon first, then the nearest physical anchors. Sorting
+        // by elevation breaks equally distant ties deterministically.
+        let candidates = Set([0] + elevations.filter(\.isFinite)).sorted {
+            abs($0) == abs($1) ? $0 > $1 : abs($0) < abs($1)
+        }
+        var result: [Guide] = []
+        for elevation in candidates {
+            let guideY = y(for: elevation)
+            guard guideY >= top, guideY <= bottom,
+                  result.allSatisfy({ abs($0.y - guideY) >= max(0, minimumSeparation) })
+            else { continue }
+            result.append(Guide(elevation: elevation, y: guideY))
+        }
+        return result.sorted { $0.y < $1.y }
+    }
+}
+
 /// Clean, flat sun-arc graphic. The smooth elevation curve (x = local time, y = sun
 /// elevation) over an area tinted by the applied adaptive intensity — clear by day, red at
 /// night. The larger dot is the sun right now.
 struct SunArcView: View {
     let cycle: SunCycle
     var intensities: [Double] = []                 // applied intensity per sample (0…1)
-    var intensityLimits: ClosedRange<Double> = 0...1
 
     var body: some View {
         Canvas { ctx, size in
-                let pad: CGFloat = 6
-                let top = pad, bottom = size.height - pad
-                let h = bottom - top
+                let geometry = SunArcGeometry(
+                    elevations: cycle.samples.map(\.elevation), height: size.height)
+                let bottom = geometry.bottom
                 let w = size.width
                 let xPad: CGFloat = 8                       // keep the sun dot off the edges
 
-                // One linear elevation→y scale with margin (smooth, no kink). Polar-safe span.
-                let elevs = cycle.samples.map(\.elevation)
-                let hiE = max(elevs.max() ?? 10, 5) + 3
-                let loE = min(elevs.min() ?? -18, -18) - 3
-                let spanE = max(1, hiE - loE)
-                func y(_ e: Double) -> CGFloat { top + CGFloat((hiE - e) / spanE) * h }
+                func y(_ e: Double) -> CGFloat { geometry.y(for: e) }
                 func x(_ t: Double) -> CGFloat { xPad + CGFloat(t) * (w - 2 * xPad) }
-                let horizonY = y(0)
                 let sx = x(cycle.nowFraction), sy = y(cycle.nowElevation)
 
                 // Smooth curve + the area beneath it.
@@ -47,25 +89,16 @@ struct SunArcView: View {
                     ctx.fill(area, with: .color(.orange.opacity(0.18)))
                 }
 
-                // Intensity band guide lines (top = clear, bottom = full red).
-                func bandY(_ v: Double) -> CGFloat { top + CGFloat(1 - min(1, max(0, v))) * h }
-                for v in [intensityLimits.upperBound, intensityLimits.lowerBound]
-                    where v > 0 && v < 1
-                {
+                // Physical solar-elevation anchors use the exact curve scale. The
+                // horizon wins when adjacent guides would crowd this compact chart.
+                for guide in geometry.guides() {
                     var line = Path()
-                    line.move(to: CGPoint(x: 0, y: bandY(v)))
-                    line.addLine(to: CGPoint(x: w, y: bandY(v)))
-                    ctx.stroke(line, with: .color(.primary.opacity(0.25)),
-                               style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                    line.move(to: CGPoint(x: 0, y: guide.y))
+                    line.addLine(to: CGPoint(x: w, y: guide.y))
+                    // `.primary` adapts to both Light and Dark Mode.
+                    ctx.stroke(line, with: .color(.primary.opacity(guide.isHorizon ? 0.22 : 0.16)),
+                               style: StrokeStyle(lineWidth: 1, dash: guide.isHorizon ? [3, 3] : [2, 3]))
                 }
-
-                // Horizon.
-                var hz = Path()
-                hz.move(to: CGPoint(x: 0, y: horizonY))
-                hz.addLine(to: CGPoint(x: w, y: horizonY))
-                // `.primary` adapts to the popover's appearance; fixed white vanished in Light Mode.
-                ctx.stroke(hz, with: .color(.primary.opacity(0.22)),
-                           style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                 // Curve — single clean stroke.
                 ctx.stroke(curve, with: .color(.orange),

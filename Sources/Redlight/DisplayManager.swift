@@ -111,6 +111,38 @@ final class DisplayManager {
         !fadingDisplayIDs.isEmpty || displays.contains { $0.isEnabled || $0.isInverted }
     }
 
+    /// Logical master state follows connected filter checkboxes, independently of inversion.
+    var isOn: Bool { displays.contains { $0.isEnabled } }
+    var commandIsFading: Bool { outputTransition != nil || !fadingDisplayIDs.isEmpty }
+    /// Commands report endpoints; the render clock and marker previews are transient frames.
+    var commandTargetOutput: OutputPair {
+        OutputPair(intensity: intensity, whitepoint: whitepoint)
+    }
+    var commandElevation: Double? {
+        guard let coordinate else { return nil }
+        return SolarCalculator.elevation(
+            at: now(), latitude: coordinate.latitude, longitude: coordinate.longitude)
+    }
+
+    private(set) var sliderInteractionGeneration: UInt64 = 0
+
+    @discardableResult
+    func beginSliderInteraction() -> UInt64 {
+        guard !isTerminating else { return sliderInteractionGeneration }
+        sliderInteractionGeneration &+= 1
+        return sliderInteractionGeneration
+    }
+
+    func isSliderInteractionCurrent(_ token: UInt64) -> Bool {
+        !isTerminating && token == sliderInteractionGeneration
+    }
+
+    func interruptSliderInteraction() {
+        guard !isTerminating else { return }
+        sliderInteractionGeneration &+= 1
+        endPreview()
+    }
+
     // MARK: - Presets
 
     var presets: [Preset] = Preset.defaults
@@ -204,9 +236,9 @@ final class DisplayManager {
 
     /// Applied sample used by the sun arc. Keeping the offset and hard-band clamp here makes
     /// the graphic follow the exact same adjusted curve as the real display.
-    func adaptiveIntensity(at elevation: Double, minElevation: Double) -> Double {
+    func adaptiveIntensity(at elevation: Double, minElevation: Double, rising: Bool = false) -> Double {
         let banded = AdaptiveMapping.banded(
-            elevation: elevation, minElevation: minElevation, presets: presets,
+            elevation: elevation, minElevation: minElevation, rising: rising, presets: presets,
             intensityMin: adaptiveMin, intensityMax: adaptiveMax,
             whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
         )
@@ -264,8 +296,13 @@ final class DisplayManager {
 
         let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        let rising = SolarCalculator.isRising(at: date, longitude: coord.longitude)
+        // Morning and evening curves differ above the horizon. Where the sun stays below the
+        // Day anchor at noon (high-latitude winter) the switch is a step, so fade across it.
+        if let lastAdaptiveRising, lastAdaptiveRising != rising { animateNextAdaptiveTarget = true }
+        lastAdaptiveRising = rising
         let banded = AdaptiveMapping.banded(
-            elevation: elev, minElevation: minElev, presets: presets,
+            elevation: elev, minElevation: minElev, rising: rising, presets: presets,
             intensityMin: adaptiveMin, intensityMax: adaptiveMax,
             whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
         )
@@ -332,25 +369,25 @@ final class DisplayManager {
         lastCurveIntensity = nil
         lastCurveWhitepoint = nil
         lastLocationRequest = nil
+        lastAdaptiveRising = nil
         adaptiveStatusText = ""
     }
 
     // MARK: - Reset
 
     /// Whether a row still has anything to reset. Under adaptive the live value is the
-    /// curve's to set, not the user's, so only the band and the manual offset count.
+    /// curve's to set, not the user's, so only the band and the manual offset count. With
+    /// Adaptive off the offset still counts: it comes back the next time Adaptive is on.
     var intensityIsDefault: Bool {
-        guard adaptiveMin == Defaults.intensityMin, adaptiveMax == Defaults.intensityMax else { return false }
-        return adaptiveEnabled
-            ? adaptiveIntensityOffset == 0 && pendingAdaptiveIntensity == nil
-            : intensity == Defaults.intensity
+        guard adaptiveMin == Defaults.intensityMin, adaptiveMax == Defaults.intensityMax,
+              adaptiveIntensityOffset == 0, pendingAdaptiveIntensity == nil else { return false }
+        return adaptiveEnabled || intensity == Defaults.intensity
     }
 
     var whitepointIsDefault: Bool {
-        guard adaptiveWpMin == Defaults.whitepointMin, adaptiveWpMax == Defaults.whitepointMax else { return false }
-        return adaptiveEnabled
-            ? adaptiveWhitepointOffset == 0 && pendingAdaptiveWhitepoint == nil
-            : whitepoint == Defaults.whitepoint
+        guard adaptiveWpMin == Defaults.whitepointMin, adaptiveWpMax == Defaults.whitepointMax,
+              adaptiveWhitepointOffset == 0, pendingAdaptiveWhitepoint == nil else { return false }
+        return adaptiveEnabled || whitepoint == Defaults.whitepoint
     }
 
     /// Restore Intensity to factory settings: the band back to its full default range, any
@@ -404,7 +441,10 @@ final class DisplayManager {
     private let getDisplayIDs: () -> [CGDirectDisplayID]
     private let getDisplayName: (CGDirectDisplayID) -> String
     private let getDisplayPersistenceKey: (CGDirectDisplayID) -> String
+    private let getMainDisplayID: () -> CGDirectDisplayID
     private let defaults: UserDefaults
+    @ObservationIgnored private let onMasterStateChange: (Bool) -> Void
+    @ObservationIgnored private let locationPromptActivation: () -> Void
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let location: LocationProviding
     // nonisolated(unsafe): mutated only on the main actor; read in deinit for cleanup.
@@ -443,9 +483,11 @@ final class DisplayManager {
     @ObservationIgnored private var lastCurveIntensity: Double?
     @ObservationIgnored private var lastCurveWhitepoint: Double?
     @ObservationIgnored private var lastLocationRequest: Date?
+    @ObservationIgnored private var lastAdaptiveRising: Bool?
     @ObservationIgnored private var hasActivatedForLocationPrompt = false
     // Presets rarely change; skip re-encoding them on every slider-driven save.
     @ObservationIgnored private var lastSavedPresets: [Preset]?
+    @ObservationIgnored private var lastSavedValues: [String: AnyHashable?] = [:]
     @ObservationIgnored private var isInitialized = false
     @ObservationIgnored private var internalUpdate = false
     @ObservationIgnored private let adaptiveTransitionDuration: TimeInterval
@@ -459,18 +501,24 @@ final class DisplayManager {
         getDisplayPersistenceKey: @escaping (CGDirectDisplayID) -> String = {
             DisplayManager.systemDisplayPersistenceKey(for: $0)
         },
+        getMainDisplayID: @escaping () -> CGDirectDisplayID = { CGMainDisplayID() },
         defaults: UserDefaults = .standard,
         location: LocationProviding = LocationProvider(),
         now: @escaping () -> Date = { Date() },
         adaptiveTransitionDuration: TimeInterval = Defaults.adaptiveFadeDuration,
         displayTransitionDuration: TimeInterval = Defaults.displayFadeDuration,
-        transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        locationPromptActivation: @escaping () -> Void = { NSApplication.shared.activate() },
+        onMasterStateChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.gamma = gamma
         self.getDisplayIDs = getDisplayIDs
         self.getDisplayName = getDisplayName
         self.getDisplayPersistenceKey = getDisplayPersistenceKey
+        self.getMainDisplayID = getMainDisplayID
         self.defaults = defaults
+        self.onMasterStateChange = onMasterStateChange
+        self.locationPromptActivation = locationPromptActivation
         self.location = location
         self.now = now
         self.adaptiveTransitionDuration = max(0, adaptiveTransitionDuration)
@@ -483,12 +531,15 @@ final class DisplayManager {
         self.whitepoint = Self.loadClamped(
             defaults, "redlight.whitepoint", default: Defaults.whitepoint, range: 0.25...1)
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
-        self.adaptiveIntensityOffset = defaults.object(forKey: "redlight.adaptiveOffsetIntensity") as? Double ?? 0
-        self.adaptiveWhitepointOffset = defaults.object(forKey: "redlight.adaptiveOffsetWhitepoint") as? Double ?? 0
-        self.pendingAdaptiveIntensity = defaults.object(
-            forKey: "redlight.pendingAdaptiveIntensity") as? Double
-        self.pendingAdaptiveWhitepoint = defaults.object(
-            forKey: "redlight.pendingAdaptiveWhitepoint") as? Double
+        // Offsets span at most the full slider range; a NaN would poison every target.
+        self.adaptiveIntensityOffset = Self.loadClamped(
+            defaults, "redlight.adaptiveOffsetIntensity", default: 0, range: -1...1)
+        self.adaptiveWhitepointOffset = Self.loadClamped(
+            defaults, "redlight.adaptiveOffsetWhitepoint", default: 0, range: -0.75...0.75)
+        self.pendingAdaptiveIntensity = Self.loadOptionalClamped(
+            defaults, "redlight.pendingAdaptiveIntensity", range: 0...1)
+        self.pendingAdaptiveWhitepoint = Self.loadOptionalClamped(
+            defaults, "redlight.pendingAdaptiveWhitepoint", range: 0.25...1)
         self.adaptiveMin = defaults.object(forKey: "redlight.adaptiveMin") as? Double ?? Defaults.intensityMin
         self.adaptiveMax = defaults.object(forKey: "redlight.adaptiveMax") as? Double ?? Defaults.intensityMax
         self.adaptiveWpMin = defaults.object(forKey: "redlight.adaptiveWpMin") as? Double ?? Defaults.whitepointMin
@@ -523,6 +574,7 @@ final class DisplayManager {
             applyToActiveDisplays()
         }
         startPreparedStartupDisplayTransitions()
+        publishMasterState()
     }
 
     deinit {
@@ -566,6 +618,13 @@ final class DisplayManager {
         return min(range.upperBound, max(range.lowerBound, value))
     }
 
+    private static func loadOptionalClamped(
+        _ defaults: UserDefaults, _ key: String, range: ClosedRange<Double>
+    ) -> Double? {
+        guard let value = defaults.object(forKey: key) as? Double, value.isFinite else { return nil }
+        return min(range.upperBound, max(range.lowerBound, value))
+    }
+
     /// Refresh the one-shot kilometer-accuracy location occasionally while Adaptive stays
     /// enabled. This keeps a traveling Mac on the right solar cycle without continuous GPS.
     private func requestLocationIfNeeded(at date: Date, force: Bool = false) {
@@ -575,12 +634,12 @@ final class DisplayManager {
             (location.coordinate == nil || location.isApproximate) ? 60 : 3_600
         if !force, let elapsed, elapsed >= 0, elapsed < refreshInterval { return }
         lastLocationRequest = date
-        // LSUIElement menu-bar apps otherwise often never surface the permission dialog.
-        // Once per process: the 60 s retry loop must not keep yanking focus from whatever
-        // the user is doing while the prompt sits unanswered.
+        // Allow the launch context to decide whether surfacing the permission dialog should
+        // activate the app. Background command launches inject a no-op. Invoke once so the
+        // retry loop never repeatedly interrupts the user while consent remains unanswered.
         if location.authorization == .notDetermined, !hasActivatedForLocationPrompt {
             hasActivatedForLocationPrompt = true
-            NSApplication.shared.activate()
+            locationPromptActivation()
         }
         location.requestWhenInUse()
     }
@@ -647,15 +706,24 @@ final class DisplayManager {
             applyToActiveDisplays()
         }
         finishTerminationIfReady()
+        if isInitialized { publishMasterState() }
     }
 
     func toggle(_ displayID: CGDirectDisplayID) {
         guard !isTerminating else { return }
         guard let i = displays.firstIndex(where: { $0.id == displayID }) else { return }
+        setEnabled(!displays[i].isEnabled, for: displayID)
+    }
+
+    func setEnabled(_ enabled: Bool, for displayID: CGDirectDisplayID) {
+        guard !isTerminating,
+              let i = displays.firstIndex(where: { $0.id == displayID }),
+              displays[i].isEnabled != enabled else { return }
         let wasEnabled = displays[i].isEnabled
-        let fromAmount = currentDisplayAmount(
-            for: displayID, fallback: wasEnabled ? 1 : 0)
-        displays[i].isEnabled = !wasEnabled
+        // Reverse from the frame on screen, not a wall-clock projection: after a stalled run
+        // loop the projection is ahead of what the user saw and the fade would jump.
+        let fromAmount = displayTransitions[displayID]?.currentAmount ?? (wasEnabled ? 1 : 0)
+        displays[i].isEnabled = enabled
         startDisplayTransition(
             displayID,
             from: fromAmount,
@@ -666,9 +734,58 @@ final class DisplayManager {
     func toggleInvert(_ displayID: CGDirectDisplayID) {
         guard !isTerminating else { return }
         guard let i = displays.firstIndex(where: { $0.id == displayID }) else { return }
-        displays[i].isInverted.toggle()
+        setInverted(!displays[i].isInverted, for: displayID)
+    }
+
+    func setInverted(_ inverted: Bool, for displayID: CGDirectDisplayID) {
+        guard !isTerminating,
+              let i = displays.firstIndex(where: { $0.id == displayID }),
+              displays[i].isInverted != inverted else { return }
+        displays[i].isInverted = inverted
         applyToDisplay(displays[i])
         save()
+    }
+
+    func setAll(on: Bool) {
+        guard !isTerminating else { return }
+        if on {
+            guard !isOn else { return }
+            let remembered = Set(defaults.stringArray(forKey: "redlight.masterEnabledDisplays") ?? [])
+            let restored = displays.filter { remembered.contains($0.persistenceKey) }.map(\.id)
+            let fallback = displays.first { $0.id == getMainDisplayID() } ?? displays.first
+            let targets = restored.isEmpty ? fallback.map { [$0.id] } ?? [] : restored
+            for id in targets { setEnabled(true, for: id) }
+        } else {
+            if isOn {
+                persist(displays.filter(\.isEnabled).map(\.persistenceKey), "redlight.masterEnabledDisplays")
+            }
+            // Clear every stable and legacy enabled flag, including disconnected monitors.
+            // Use persist so its write cache cannot later restore an obsolete true value.
+            for key in defaults.dictionaryRepresentation().keys
+                where key.hasPrefix("redlight.display.") && key.hasSuffix(".enabled") {
+                persist(false, key)
+            }
+            for id in displays.map(\.id) { setEnabled(false, for: id) }
+        }
+        save()
+    }
+
+    func publishMasterState() {
+        guard !isTerminating else { return }
+        publishMasterState(isOn)
+    }
+
+    /// Called after restoring gamma on quit; saved checkbox flags remain available at launch.
+    func publishStoppedState() {
+        publishMasterState(false)
+    }
+
+    private func publishMasterState(_ value: Bool) {
+        guard defaults.object(forKey: "redlight.isOn") == nil
+                || defaults.bool(forKey: "redlight.isOn") != value else { return }
+        defaults.set(value, forKey: "redlight.isOn")
+        defaults.synchronize()
+        onMasterStateChange(value)
     }
 
     func restoreAllDisplays() {
@@ -708,6 +825,7 @@ final class DisplayManager {
         shutdownOutput = rendered
         shutdownCompletion = completion
         isTerminating = true
+        sliderInteractionGeneration &+= 1
         let hasTint = rendered.intensity < 0.999_999 || rendered.whitepoint < 0.999_999
         let startedAt = transitionUptime()
 
@@ -756,7 +874,7 @@ final class DisplayManager {
     // MARK: - Presets
 
     func applyPreset(_ index: Int) {
-        guard presets.indices.contains(index) else { return }
+        guard !isTerminating, presets.indices.contains(index) else { return }
         let rendered = currentRenderedOutput()
         let shouldFade = adaptiveEnabled
         cancelOutputTransition()
@@ -782,7 +900,7 @@ final class DisplayManager {
     }
 
     func saveToPreset(_ index: Int) {
-        guard presets.indices.contains(index) else { return }
+        guard !isTerminating, presets.indices.contains(index) else { return }
         let desiredIntensity = intensity
         let desiredWhitepoint = whitepoint
         presets[index].intensity = desiredIntensity
@@ -798,7 +916,9 @@ final class DisplayManager {
                 let minElev = SolarCalculator.elevationAtSolarMidnight(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let curve = AdaptiveMapping.banded(
-                    elevation: elev, minElevation: minElev, presets: presets,
+                    elevation: elev, minElevation: minElev,
+                    rising: SolarCalculator.isRising(at: date, longitude: coord.longitude),
+                    presets: presets,
                     intensityMin: adaptiveMin, intensityMax: adaptiveMax,
                     whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
                 )
@@ -1202,12 +1322,14 @@ final class DisplayManager {
     /// Temporarily drive the live filter to `v` (a dragged intensity-band marker) without
     /// touching stored state, so the user sees that intensity in real time.
     func previewIntensity(_ v: Double) {
+        guard !isTerminating else { return }
         cancelOutputTransition(.intensity)
         previewIntensityValue = min(1, max(0, v))
         applyToActiveDisplays()
     }
 
     func previewWhitepoint(_ v: Double) {
+        guard !isTerminating else { return }
         cancelOutputTransition(.whitepoint)
         previewWhitepointValue = min(1, max(0.25, v))
         applyToActiveDisplays()
@@ -1216,6 +1338,7 @@ final class DisplayManager {
     /// End any marker preview: flush the coalesced band work so the adaptive value lands
     /// in the (possibly moved) band immediately, then revert the filter to it.
     func endPreview() {
+        guard !isTerminating else { return }
         previewIntensityValue = nil
         previewWhitepointValue = nil
         flushBandRefresh()
@@ -1277,42 +1400,52 @@ final class DisplayManager {
     // MARK: - Persistence
 
     private func save() {
-        defaults.set(intensity, forKey: "redlight.intensity")
-        defaults.set(whitepoint, forKey: "redlight.whitepoint")
+        persist(intensity, "redlight.intensity")
+        persist(whitepoint, "redlight.whitepoint")
         for display in displays {
             let prefix = displayDefaultsPrefix(display.persistenceKey)
-            defaults.set(display.isEnabled, forKey: "\(prefix).enabled")
-            defaults.set(display.isInverted, forKey: "\(prefix).inverted")
+            persist(display.isEnabled, "\(prefix).enabled")
+            persist(display.isInverted, "\(prefix).inverted")
         }
         if lastSavedPresets != presets, let data = try? JSONEncoder().encode(presets) {
             defaults.set(data, forKey: "redlight.presets")
             lastSavedPresets = presets
         }
-        defaults.set(activePresetIndex ?? -1, forKey: "redlight.activePresetIndex")
-        defaults.set(adaptiveEnabled, forKey: "redlight.adaptiveEnabled")
-        defaults.set(adaptiveIntensityOffset, forKey: "redlight.adaptiveOffsetIntensity")
-        defaults.set(adaptiveWhitepointOffset, forKey: "redlight.adaptiveOffsetWhitepoint")
-        if let pendingAdaptiveIntensity {
-            defaults.set(pendingAdaptiveIntensity, forKey: "redlight.pendingAdaptiveIntensity")
-        } else {
-            defaults.removeObject(forKey: "redlight.pendingAdaptiveIntensity")
-        }
-        if let pendingAdaptiveWhitepoint {
-            defaults.set(pendingAdaptiveWhitepoint, forKey: "redlight.pendingAdaptiveWhitepoint")
-        } else {
-            defaults.removeObject(forKey: "redlight.pendingAdaptiveWhitepoint")
-        }
-        defaults.set(adaptiveMin, forKey: "redlight.adaptiveMin")
-        defaults.set(adaptiveMax, forKey: "redlight.adaptiveMax")
-        defaults.set(adaptiveWpMin, forKey: "redlight.adaptiveWpMin")
-        defaults.set(adaptiveWpMax, forKey: "redlight.adaptiveWpMax")
+        persist(activePresetIndex ?? -1, "redlight.activePresetIndex")
+        persist(adaptiveEnabled, "redlight.adaptiveEnabled")
+        persist(adaptiveIntensityOffset, "redlight.adaptiveOffsetIntensity")
+        persist(adaptiveWhitepointOffset, "redlight.adaptiveOffsetWhitepoint")
+        persist(pendingAdaptiveIntensity, "redlight.pendingAdaptiveIntensity")
+        persist(pendingAdaptiveWhitepoint, "redlight.pendingAdaptiveWhitepoint")
+        persist(adaptiveMin, "redlight.adaptiveMin")
+        persist(adaptiveMax, "redlight.adaptiveMax")
+        persist(adaptiveWpMin, "redlight.adaptiveWpMin")
+        persist(adaptiveWpMax, "redlight.adaptiveWpMax")
+        publishMasterState()
+    }
+
+    /// A slider drag calls `save()` on every event; write only the keys whose value moved
+    /// instead of pushing ~20 unchanged keys to cfprefsd each time. `nil` removes the key.
+    private func persist<T: Hashable>(_ value: T?, _ key: String) {
+        let boxed: AnyHashable? = if let value { AnyHashable(value) } else { nil }
+        if let last = lastSavedValues[key], last == boxed { return }
+        if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        lastSavedValues[key] = boxed
     }
 
     private func loadPresets() {
         if let data = defaults.data(forKey: "redlight.presets"),
            let saved = try? JSONDecoder().decode([Preset].self, from: data),
            saved.count == 5 {
-            presets = saved
+            // Presets feed `intensity`/`whitepoint` through internal writes that skip the
+            // didSet clamp, so clamp them here; a non-finite value falls back to the default.
+            presets = zip(saved, Preset.defaults).map { preset, fallback in
+                var p = preset
+                p.intensity = p.intensity.isFinite ? clamp(p.intensity, to: 0...1) : fallback.intensity
+                p.whitepoint = p.whitepoint.isFinite
+                    ? clamp(p.whitepoint, to: 0.25...1) : fallback.whitepoint
+                return p
+            }
             lastSavedPresets = saved
         }
         if defaults.object(forKey: "redlight.activePresetIndex") != nil {

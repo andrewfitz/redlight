@@ -4,6 +4,14 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/Metadata.appintents/extract.actionsdata</key>
+		<data>
+		iITbohfG2Fxis/FHbo2oHt8I/aQ=
+		</data>
+		<key>Resources/Metadata.appintents/version.json</key>
+		<data>
+		yzmPc1Af+6/oWISGSXF+D2Q9ii8=
+		</data>
 		<key>Resources/Redlight.icns</key>
 		<data>
 		mljWNniDyCK2Vi1mZYRbfbhhWKQ=
@@ -19,6 +27,29 @@
 			</data>
 			<key>requirement</key>
 			<string>cdhash H"bac2bd1df66a42fbb8bebca799af3ae24aa17f43" or cdhash H"e1f6116a172f9b8387f6295cabed46fe5b67a73f"</string>
+		</dict>
+		<key>PlugIns/RedlightControl.appex</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			7SEcswgUE1re0hubS/Vo2r93dbA=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"ed211cb30814135aded21b9b4bf568dabf7775b0"</string>
+		</dict>
+		<key>Resources/Metadata.appintents/extract.actionsdata</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			Se0SCbCyOQ0bm+d2jVxlxI79rYaUDCMApMI0LQHdGWY=
+			</data>
+		</dict>
+		<key>Resources/Metadata.appintents/version.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			3UJH1pzYx1CTFQVCAUi1LaeVUzO+KTK4Zv74PjxxOsQ=
+			</data>
 		</dict>
 		<key>Resources/Redlight.icns</key>
 		<dict>

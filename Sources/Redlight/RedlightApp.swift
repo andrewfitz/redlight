@@ -121,12 +121,19 @@ final class TerminationCoordinator {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Reserved by the entry point before recovery or SwiftUI initialization.
+    static var commandServer: CommandServer?
     static var prepareForTermination: TerminationCoordinator.Prepare?
+    static var publishStoppedState: (() -> Void)?
+    /// Set by `RedlightApp.init`; the status item can only be created once AppKit is up.
+    static var makeStatusItem: (() -> StatusItemController)?
 
     private let termination = TerminationCoordinator()
+    private var statusItem: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+        statusItem = Self.makeStatusItem?()
         _ = Updater.shared  // starts Sparkle's scheduled background checks
     }
 
@@ -137,15 +144,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if !ControlHandoff.shared.handle(url: url) {
+                NSLog("Redlight: ignoring an unsupported command URL.")
+            }
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Restore immediately on a normal termination. If the process is killed too
         // abruptly for this callback, DisplaySessionRecovery repairs it next launch.
         CGDisplayRestoreColorSyncSettings()
+        Self.publishStoppedState?()
         DisplaySessionRecovery.finish()
     }
 }
 
-@main
 struct RedlightApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var manager: DisplayManager
@@ -154,26 +169,58 @@ struct RedlightApp: App {
     init() {
         // Must run before DisplayManager enumerates displays and captures gamma tables.
         DisplaySessionRecovery.begin()
-        let manager = DisplayManager()
+        let manager = DisplayManager(
+            locationPromptActivation: {},
+            onMasterStateChange: { _ in reloadRedlightControls() }
+        )
         _manager = State(initialValue: manager)
         _launchAtLogin = State(initialValue: LaunchAtLogin())
+        let launchAtLogin = _launchAtLogin.wrappedValue
+        let handler = CommandHandler(manager: manager, services: CommandServices(
+            appearance: { AppearanceController.shared.isDark },
+            setAppearance: { try AppearanceController.shared.setDark($0) },
+            login: {
+                launchAtLogin.refresh()
+                return Status.Login(enabled: launchAtLogin.isEnabled,
+                                    requiresApproval: launchAtLogin.requiresApproval)
+            },
+            setLogin: { launchAtLogin.isEnabled = $0 },
+            update: { Updater.shared.checkForUpdates() },
+            quit: { NSApplication.shared.terminate(nil) },
+            version: { AboutInfo.version() },
+            canUpdate: { Updater.shared.isAvailable }
+        ))
+        do {
+            guard let server = AppDelegate.commandServer else {
+                throw CommandError.system("The Redlight command port was not reserved before startup.")
+            }
+            try server.installHandler { try handler.execute($0) }
+        } catch {
+            // A failed startup must restore gamma and the recovery marker before exiting.
+            manager.restoreAllDisplays()
+            manager.publishStoppedState()
+            DisplaySessionRecovery.finish()
+            NSLog("Redlight: command server startup failed: %@", error.localizedDescription)
+            exit(2)
+        }
+        IntentBridge.install(execute: { try handler.execute($0) }, snapshot: { handler.snapshot() })
+        let installer = CLIInstaller()
+        installer.installSilentlyIfPossible()
         AppDelegate.prepareForTermination = { completion in
             manager.beginTerminationFade(completion: completion)
+        }
+        AppDelegate.publishStoppedState = { manager.publishStoppedState() }
+        AppDelegate.makeStatusItem = {
+            StatusItemController(isActive: { manager.isAnyActive }) {
+                MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler)
+                    .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }
+            }
         }
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView(manager: manager, launchAtLogin: launchAtLogin)
-        } label: {
-            // Simplified app icon: sun setting behind a monitor. Filled sun = active,
-            // outline arc = inactive. A template image, so macOS tints it to contrast the
-            // menu bar (dark on light, light on dark) — .template preserves that.
-            Image(nsImage: manager.isAnyActive
-                  ? MenuBarIcon.activeImage()
-                  : MenuBarIcon.inactiveImage())
-                .renderingMode(.template)
-        }
-        .menuBarExtraStyle(.window)
+        // The menu bar item and its panel are AppKit (StatusItemController); SwiftUI only
+        // needs a scene to exist. LSUIElement keeps this one out of sight.
+        Settings { EmptyView() }
     }
 }

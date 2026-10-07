@@ -1,7 +1,7 @@
 import Foundation
 
-/// Credits shown by the About page. Version is read from the app bundle so `build.sh`'s
-/// Info.plist stays the single shipping number; the 1.0 fallback covers `swift run`.
+/// Credits shown by the About page. The bundle carries the release version and an
+/// automatically assigned build number; unbundled runs are labeled development.
 enum AboutInfo {
     static let name = "Redlight"
     static let author = "Andrew Fitzgerald"
@@ -12,7 +12,7 @@ enum AboutInfo {
         shortVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
         build: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
     ) -> String {
-        let short = normalized(shortVersion) ?? "1.0"
+        let short = normalized(shortVersion) ?? "development"
         guard let build = normalized(build), build != short else { return short }
         return "\(short) (\(build))"
     }

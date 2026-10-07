@@ -3,7 +3,8 @@ import Foundation
 /// Maps real solar elevation to the adaptive filter target. The named presets line up with
 /// what is happening outdoors: the gentle ramp begins while the sun is still up, reaches
 /// Warm during golden hour, Sunset at the horizon, Night at astronomical dusk, then eases
-/// toward Deep Red until solar midnight. Dawn mirrors dusk automatically.
+/// toward Deep Red until solar midnight. Dawn mirrors dusk below the horizon; after sunrise
+/// the screen clears quickly, reaching Day once the sun is a few degrees up.
 enum SolarCurve {
     struct ElevationMarker: Identifiable, Sendable {
         let label: String
@@ -20,6 +21,16 @@ enum SolarCurve {
     static let nauticalDuskElevation = -12.0
     static let nightElevation = -18.0
 
+    // Morning above-horizon anchors: Day by +4°, roughly 20–35 minutes after sunrise at
+    // mid-latitudes, instead of mirroring the slow evening ramp from +12°.
+    static let morningDayElevation = 4.0
+    static let morningWarmElevation = 2.0
+
+    /// Where a short night's lowest point is mapped. Nights whose sun never sinks this far
+    /// (high-latitude summer) are stretched so solar midnight still reaches Deep Red; at
+    /// −24° the stretch is 1, so the curve is continuous as nights lengthen.
+    static let shortNightFloor = -24.0
+
     static let elevationMarkers: [ElevationMarker] = [
         ElevationMarker(label: "Day", elevation: dayElevation),
         ElevationMarker(label: "Warm", elevation: warmElevation),
@@ -29,10 +40,17 @@ enum SolarCurve {
         ElevationMarker(label: "Night", elevation: nightElevation),
     ]
 
-    static func target(elevation: Double, minElevation: Double, presets: [Preset])
+    /// `rising` selects the morning side of the cycle (solar midnight → solar noon).
+    static func target(elevation: Double, minElevation: Double, rising: Bool = false,
+                       presets: [Preset])
         -> (intensity: Double, whitepoint: Double)
     {
         guard presets.count >= 5 else { return (1.0, 1.0) }
+        var elevation = elevation, minElevation = minElevation
+        if elevation < 0, minElevation < 0, minElevation > shortNightFloor {
+            elevation *= shortNightFloor / minElevation
+            minElevation = shortNightFloor
+        }
         let day = values(presets[0]), warm = values(presets[1]), sunset = values(presets[2])
         let night = values(presets[3]), deep = values(presets[4])
 
@@ -40,6 +58,14 @@ enum SolarCurve {
         // making the physical −6° and −12° boundaries real easing anchors in the curve.
         let civil = lerp(sunset, night, 1.0 / 3.0)
         let nautical = lerp(sunset, night, 2.0 / 3.0)
+
+        if rising, elevation >= sunsetElevation {
+            if elevation >= morningDayElevation { return day }
+            if elevation >= morningWarmElevation {
+                return lerp(day, warm, segment(elevation, from: morningDayElevation, to: morningWarmElevation))
+            }
+            return lerp(warm, sunset, segment(elevation, from: morningWarmElevation, to: sunsetElevation))
+        }
 
         if elevation >= dayElevation {
             return day
