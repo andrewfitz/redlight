@@ -4,6 +4,8 @@ A macOS menu bar app for adjusting screen color and bright whites, with independ
 of each display. Adaptive mode follows the local sun. Use the popover, command line,
 Siri/Shortcuts, or a Control Center toggle.
 
+See the [changelog](CHANGELOG.md) for release history.
+
 <p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing display, Color and White Point sliders, presets, and the Adaptive sun arc" width="333"></p>
 
 ## What it does
@@ -37,7 +39,7 @@ Siri/Shortcuts, or a Control Center toggle.
 
 ## Using it
 
-Click the menu bar icon (a sun setting behind a monitor) to open the popover:
+Click the menu bar icon (a sun above a monitor) to open the popover:
 
 - Toggle each display on/off, or check **Invert** to flip its colors
 - Drag the **Color** slider to control how much blue/green light to remove
@@ -45,7 +47,7 @@ Click the menu bar icon (a sun setting behind a monitor) to open the popover:
 - Click a preset to jump to it; the reset button beside each slider restores its default and clears its band limits
 - Flip on **Adaptive** to let the sun drive the filter automatically, then drag the red bracket markers to set its limits; turn it off to hold the current output as your manual setting
 - Use the header switch to turn the filter off everywhere, then back on for the displays you had enabled
-- Filled sun = a filter is active, outline = inactive
+- The icon's inner screen is 70% opaque with an active filter and 10% opaque when inactive
 
 ## Command line
 
@@ -137,7 +139,7 @@ REDLIGHT_BUILD_OUTPUT_DIR="$PWD/.build/dist" ./build.sh
 ```
 
 Each build automatically advances its build number. The release version comes from the
-repository's [VERSION](VERSION) file; About shows both values, for example `1.3 (42)`.
+repository's [VERSION](VERSION) file; About shows both values, for example `1.3.1 (47)`.
 Update that file when starting a new release, or set `VERSION=1.4` to override it for a build.
 CI can set `BUILD_NUMBER` to a positive
 integer greater than the previous build; lower or repeated overrides are rejected. The
@@ -160,11 +162,19 @@ Adaptive mode adds CoreLocation: it caches an approximate coordinate for offline
 
 ## Releasing
 
+Update [VERSION](VERSION) and add the matching version's notes to
+[CHANGELOG.md](CHANGELOG.md), then run:
+
 ```bash
 VERSION="$(cat VERSION)" Tools/release.sh
 ```
 
-Builds the DMG, generates an EdDSA-signed `appcast.xml` with Sparkle's `generate_appcast`, and publishes both to a GitHub release with `gh`. Installed copies poll `releases/latest/download/appcast.xml`. The signing key must be in the login keychain (Sparkle's `generate_keys`).
+Builds the DMG, generates an EdDSA-signed `appcast.xml` with Sparkle's `generate_appcast`,
+and publishes them with an HTML release-note page to GitHub using `gh`. The selected
+changelog entry supplies both the GitHub release description and the notes shown in
+Sparkle's update dialog. The feed links directly to the hosted HTML asset. Installed copies
+poll `releases/latest/download/appcast.xml`. The signing key must be in the login keychain
+(Sparkle's `generate_keys`).
 
 ## Testing
 
@@ -175,8 +185,8 @@ python3 -m unittest discover -s Tools/tests
 
 Swift tests cover display behavior with mock gamma, commands, parser and transport,
 popover/intent parity, slider interruption, installer safeguards, and solar calculations
-and chart geometry. Python tests cover release versions and concurrent build-number
-allocation. `build.sh` verifies both bundles' metadata, versions, extension entry point,
+and chart geometry. Python tests cover release versions, concurrent build-number
+allocation, and changelog release notes. `build.sh` verifies both bundles' metadata, versions, extension entry point,
 entitlements, and code signatures.
 
 The ownership subprocess tests currently time out under Xcode 27's SwiftPM test helper.

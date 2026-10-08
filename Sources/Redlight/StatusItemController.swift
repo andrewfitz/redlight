@@ -22,11 +22,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(contentItem)
         statusItem.menu = menu
+        statusItem.button?.imageScaling = .scaleProportionallyDown
         statusItem.button?.setAccessibilityLabel("Redlight")
         trackIcon()
     }
 
-    /// Filled sun = a filter is live, outline arc = idle. Re-armed on every change, since
+    /// Screen at 70% opacity = live filter, 10% = idle. Re-armed on every change, since
     /// `withObservationTracking` only reports the first one.
     private func trackIcon() {
         let active = withObservationTracking { isActive() } onChange: { [weak self] in

@@ -6,7 +6,7 @@
 	<dict>
 		<key>Resources/Metadata.appintents/extract.actionsdata</key>
 		<data>
-		iITbohfG2Fxis/FHbo2oHt8I/aQ=
+		qIbEQVr85ABIQonIsBy+MITap28=
 		</data>
 		<key>Resources/Metadata.appintents/version.json</key>
 		<data>
@@ -32,16 +32,16 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			7SEcswgUE1re0hubS/Vo2r93dbA=
+			Zdiuk2HGiispTtH1LolaI9NvgkM=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"ed211cb30814135aded21b9b4bf568dabf7775b0"</string>
+			<string>cdhash H"65d8ae9361c68a2b294ed1f52e895a23d36f8243"</string>
 		</dict>
 		<key>Resources/Metadata.appintents/extract.actionsdata</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			Se0SCbCyOQ0bm+d2jVxlxI79rYaUDCMApMI0LQHdGWY=
+			wo6H2UcbBLr73VeS3x90+ybkLQ2Ov3p8KYsnzTzCUIk=
 			</data>
 		</dict>
 		<key>Resources/Metadata.appintents/version.json</key>
