@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static var commandServer: CommandServer?
     static var prepareForTermination: TerminationCoordinator.Prepare?
     static var publishStoppedState: (() -> Void)?
-    /// Set by `RedlightApp.init`; the status item can only be created once AppKit is up.
+    /// Set during startup; the status item can only be created once AppKit is up.
     static var makeStatusItem: (() -> StatusItemController)?
 
     private let termination = TerminationCoordinator()
@@ -161,21 +161,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct RedlightApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State private var manager: DisplayManager
-    @State private var launchAtLogin: LaunchAtLogin
+/// AppKit owns the accessory app lifecycle as well as its menu bar UI. A placeholder
+/// SwiftUI Settings scene would create a settings window when Sparkle activates the app.
+@MainActor
+enum RedlightApp {
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        application.setActivationPolicy(.accessory)
+        configureServices()
+        withExtendedLifetime(delegate) { application.run() }
+    }
 
-    init() {
+    private static func configureServices() {
         // Must run before DisplayManager enumerates displays and captures gamma tables.
         DisplaySessionRecovery.begin()
         let manager = DisplayManager(
             locationPromptActivation: {},
             onMasterStateChange: { _ in reloadRedlightControls() }
         )
-        _manager = State(initialValue: manager)
-        _launchAtLogin = State(initialValue: LaunchAtLogin())
-        let launchAtLogin = _launchAtLogin.wrappedValue
+        let launchAtLogin = LaunchAtLogin()
         let handler = CommandHandler(manager: manager, services: CommandServices(
             appearance: { AppearanceController.shared.isDark },
             setAppearance: { try AppearanceController.shared.setDark($0) },
@@ -216,11 +222,5 @@ struct RedlightApp: App {
                     .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }
             }
         }
-    }
-
-    var body: some Scene {
-        // The menu bar item and its panel are AppKit (StatusItemController); SwiftUI only
-        // needs a scene to exist. LSUIElement keeps this one out of sight.
-        Settings { EmptyView() }
     }
 }
