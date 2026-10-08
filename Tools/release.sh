@@ -15,6 +15,7 @@ REPO="andrewfitz/redlight"
 OUTPUT_DIR="${REDLIGHT_BUILD_OUTPUT_DIR:-$ROOT}"
 RELEASE_BASENAME="Redlight-$VERSION"
 ASSET_URL_PREFIX="https://github.com/$REPO/releases/download/$TAG/"
+VERSION_HISTORY_URL="https://github.com/$REPO/releases"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/redlight-release.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
@@ -38,12 +39,14 @@ cp "$DMG" "$STAGE/"
 "$SPARKLE_APPCAST_TOOL" \
     --download-url-prefix "$ASSET_URL_PREFIX" \
     --release-notes-url-prefix "$ASSET_URL_PREFIX" \
+    --full-release-notes-url "$VERSION_HISTORY_URL" \
     --link "https://github.com/$REPO/releases/tag/$TAG" \
     -o "$STAGE/appcast.xml" "$STAGE"
 
 python3 "$ROOT/Tools/release-notes.py" verify-appcast --appcast "$STAGE/appcast.xml" \
     --dmg-url "$ASSET_URL_PREFIX$RELEASE_BASENAME.dmg" \
-    --notes-url "$ASSET_URL_PREFIX$RELEASE_BASENAME.html"
+    --notes-url "$ASSET_URL_PREFIX$RELEASE_BASENAME.html" \
+    --history-url "$VERSION_HISTORY_URL"
 
 gh release create "$TAG" "$DMG" "$STAGE/appcast.xml" "$NOTES_HTML" \
     --repo "$REPO" --title "Redlight $VERSION" --notes-file "$NOTES_MARKDOWN" \

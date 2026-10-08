@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 TOOLS = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release_notes", TOOLS / "release-notes.py")
@@ -49,17 +50,38 @@ class ReleaseNotesTests(unittest.TestCase):
     def test_feed_requires_matching_item_and_hosted_notes_link(self):
         with tempfile.TemporaryDirectory() as temporary:
             feed = pathlib.Path(temporary) / "appcast.xml"
-            xml = '<rss xmlns:sparkle="' + notes.SPARKLE_NAMESPACE + '"><channel><item><enclosure url="DMG"/><sparkle:releaseNotesLink>HTML</sparkle:releaseNotesLink></item></channel></rss>'
+            xml = '<rss xmlns:sparkle="' + notes.SPARKLE_NAMESPACE + '"><channel><item><enclosure url="DMG"/><sparkle:releaseNotesLink>HTML</sparkle:releaseNotesLink><sparkle:fullReleaseNotesLink>HISTORY</sparkle:fullReleaseNotesLink></item></channel></rss>'
             feed.write_text(xml)
-            notes.verify_appcast(feed, "DMG", "HTML")
+            notes.verify_appcast(feed, "DMG", "HTML", "HISTORY")
             for dmg, html in (("other", "HTML"), ("DMG", "other")):
                 with self.assertRaises(ValueError):
-                    notes.verify_appcast(feed, dmg, html)
+                    notes.verify_appcast(feed, dmg, html, "HISTORY")
             feed.write_text(xml.replace("<sparkle:releaseNotesLink>HTML</sparkle:releaseNotesLink>", ""))
             with self.assertRaises(ValueError):
-                notes.verify_appcast(feed, "DMG", "HTML")
+                notes.verify_appcast(feed, "DMG", "HTML", "HISTORY")
 
-    def pipeline(self, missing_notes=False, wrong_link=False):
+    def test_old_feed_missing_wrong_or_duplicate_history_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            feed = pathlib.Path(temporary) / "appcast.xml"
+            for history in ("", "<sparkle:fullReleaseNotesLink>HTML</sparkle:fullReleaseNotesLink>",
+                            "<sparkle:fullReleaseNotesLink>HISTORY</sparkle:fullReleaseNotesLink>" * 2):
+                feed.write_text('<rss xmlns:sparkle="' + notes.SPARKLE_NAMESPACE + '"><channel><item><enclosure url="DMG"/><sparkle:releaseNotesLink>HTML</sparkle:releaseNotesLink>' + history + '</item></channel></rss>')
+                with self.assertRaisesRegex(ValueError, "Version History"):
+                    notes.verify_appcast(feed, "DMG", "HTML", "HISTORY")
+
+    def test_feed_verification_preserves_enclosure_signature_and_release_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            feed = pathlib.Path(temporary) / "appcast.xml"
+            xml = '<rss xmlns:sparkle="' + notes.SPARKLE_NAMESPACE + '"><channel><item><sparkle:version>47</sparkle:version><sparkle:shortVersionString>1.3.1</sparkle:shortVersionString><enclosure url="DMG" length="2916185" sparkle:edSignature="signed-dmg-fixture"/><sparkle:releaseNotesLink>HTML</sparkle:releaseNotesLink><sparkle:fullReleaseNotesLink>HISTORY</sparkle:fullReleaseNotesLink></item></channel></rss>'
+            feed.write_text(xml)
+            before = feed.read_bytes()
+            notes.verify_appcast(feed, "DMG", "HTML", "HISTORY")
+            self.assertEqual(feed.read_bytes(), before)
+            tree = ET.parse(feed)
+            self.assertEqual(tree.find("./channel/item/enclosure").get("{" + notes.SPARKLE_NAMESPACE + "}edSignature"), "signed-dmg-fixture")
+            self.assertEqual(tree.find("./channel/item/{" + notes.SPARKLE_NAMESPACE + "}version").text, "47")
+
+    def pipeline(self, missing_notes=False, wrong_link=False, wrong_history=False):
         with tempfile.TemporaryDirectory(prefix="release notes fixture ") as temporary:
             base = pathlib.Path(temporary)
             root = base / "repository with spaces"
@@ -81,11 +103,14 @@ import os,pathlib,sys,xml.etree.ElementTree as ET
 args=sys.argv[1:]
 prefix=args[args.index('--release-notes-url-prefix')+1]
 assert prefix==args[args.index('--download-url-prefix')+1]
+history=args[args.index('--full-release-notes-url')+1]
+assert history=='https://github.com/andrewfitz/redlight/releases'
 stage=pathlib.Path(args[-1]); dmg=next(stage.glob('*.dmg')); html=stage/(dmg.stem+'.html')
 assert '<!DOCTYPE html>' in html.read_text() and '<body>' in html.read_text()
 root=ET.Element('rss'); channel=ET.SubElement(root,'channel'); item=ET.SubElement(channel,'item')
 ET.SubElement(item,'enclosure',url=prefix+dmg.name)
 ET.SubElement(item,'{http://www.andymatuschak.org/xml-namespaces/sparkle}releaseNotesLink').text=prefix+('wrong.html' if os.environ.get('WRONG_NOTES_LINK') else html.name)
+ET.SubElement(item,'{http://www.andymatuschak.org/xml-namespaces/sparkle}fullReleaseNotesLink').text=prefix+html.name if os.environ.get('WRONG_HISTORY_LINK') else history
 ET.ElementTree(root).write(args[args.index('-o')+1])
 ''')
             generator.chmod(0o755)
@@ -109,6 +134,8 @@ for arg in args:
             environment.pop("VERSION", None)
             if wrong_link:
                 environment["WRONG_NOTES_LINK"] = "1"
+            if wrong_history:
+                environment["WRONG_HISTORY_LINK"] = "1"
             result = subprocess.run(["bash", str(root / "Tools/release.sh")], cwd=base, env=environment,
                                     capture_output=True, text=True)
             return result, {path.name: path.read_text() for path in capture.iterdir()}
@@ -119,6 +146,7 @@ for arg in args:
         self.assertIn("Redlight-1.3.1.html", captured)
         self.assertIn("Fixed `window` & updates.", captured["notes.md"])
         self.assertIn("https://github.com/andrewfitz/redlight/releases/download/v1.3.1/Redlight-1.3.1.html", captured["appcast.xml"])
+        self.assertIn("https://github.com/andrewfitz/redlight/releases</", captured["appcast.xml"])
         self.assertIn("abc123", json.loads(captured["gh.json"]))
 
     def test_missing_notes_stop_before_build_and_wrong_feed_stops_before_publish(self):
@@ -127,6 +155,13 @@ for arg in args:
         self.assertNotIn("built", captured)
         result, captured = self.pipeline(wrong_link=True)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("built", captured)
+        self.assertNotIn("gh.json", captured)
+
+    def test_history_download_link_stops_shell_before_publish(self):
+        result, captured = self.pipeline(wrong_history=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Version History", result.stderr)
         self.assertIn("built", captured)
         self.assertNotIn("gh.json", captured)
 
