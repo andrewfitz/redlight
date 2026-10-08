@@ -121,7 +121,7 @@ def markdown_html(markdown: str) -> str:
             + "\n".join(blocks) + "\n</main>\n</body>\n</html>\n")
 
 
-def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str) -> None:
+def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str, history_url: str) -> None:
     root = ET.parse(path).getroot()
     items = [item for item in root.findall("./channel/item")
              if any(enclosure.get("url") == dmg_url for enclosure in item.findall("enclosure"))]
@@ -130,6 +130,9 @@ def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str) -> None:
     links = items[0].findall(f"{{{SPARKLE_NAMESPACE}}}releaseNotesLink")
     if len(links) != 1 or (links[0].text or "").strip() != notes_url:
         raise ValueError("Appcast does not link to the hosted HTML release notes.")
+    history_links = items[0].findall(f"{{{SPARKLE_NAMESPACE}}}fullReleaseNotesLink")
+    if len(history_links) != 1 or (history_links[0].text or "").strip() != history_url:
+        raise ValueError("Appcast does not link Version History to the release history page.")
 
 
 def main() -> None:
@@ -144,6 +147,7 @@ def main() -> None:
     verify.add_argument("--appcast", required=True, type=pathlib.Path)
     verify.add_argument("--dmg-url", required=True)
     verify.add_argument("--notes-url", required=True)
+    verify.add_argument("--history-url", required=True)
     args = parser.parse_args()
     try:
         if args.command == "render":
@@ -152,7 +156,7 @@ def main() -> None:
             args.markdown.write_text(markdown)
             args.html.write_text(html_document)
         else:
-            verify_appcast(args.appcast, args.dmg_url, args.notes_url)
+            verify_appcast(args.appcast, args.dmg_url, args.notes_url, args.history_url)
     except (OSError, ValueError, ET.ParseError) as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

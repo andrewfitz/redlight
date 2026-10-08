@@ -172,8 +172,9 @@ VERSION="$(cat VERSION)" Tools/release.sh
 Builds the DMG, generates an EdDSA-signed `appcast.xml` with Sparkle's `generate_appcast`,
 and publishes them with an HTML release-note page to GitHub using `gh`. The selected
 changelog entry supplies both the GitHub release description and the notes shown in
-Sparkle's update dialog. The feed links directly to the hosted HTML asset. Installed copies
-poll `releases/latest/download/appcast.xml`. The signing key must be in the login keychain
+Sparkle's update dialog. The feed uses the hosted HTML asset for those notes and opens
+the GitHub Releases page for **Version History**. Installed copies poll
+`releases/latest/download/appcast.xml`. The signing key must be in the login keychain
 (Sparkle's `generate_keys`).
 
 ## Testing
