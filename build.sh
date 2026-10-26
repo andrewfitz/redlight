@@ -190,17 +190,20 @@ pathlib.Path(sys.argv[1]).write_bytes(plistlib.dumps({
 }))
 PYINFO
 
-# Sign from the inside out, each Sparkle helper individually, with the hardened runtime
-# that notarization requires.
+# Sign from the inside out, each Sparkle helper individually. Notarization requires the
+# hardened runtime, but its library validation rejects ad-hoc signed frameworks, so a
+# plain ad-hoc build omits it and still launches.
+RUNTIME=()
+if [[ "$SIGN_IDENTITY" != "-" || -n "${NOTARIZE_TEAM:-}" ]]; then RUNTIME=(--options runtime); fi
 SPARKLE="$CONTENTS/Frameworks/Sparkle.framework"
 for component in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Updater.app" \
     "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE"; do
-    codesign --force --options runtime --preserve-metadata=entitlements \
+    codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --preserve-metadata=entitlements \
         --sign "$SIGN_IDENTITY" "$component"
 done
-codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Extensions/RedlightControl/RedlightControl.entitlements" "$EXTENSION"
-codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Resources/Redlight.entitlements" "$APP"
 "$ROOT/Tools/verify-command-control.sh" "$APP"
 # Re-sign with a cloud-managed Developer ID from the Xcode account, notarize, and staple:
