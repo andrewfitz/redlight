@@ -4,7 +4,7 @@ import SwiftUI
 /// A plain AppKit window: SwiftUI's Settings scene would appear whenever Sparkle activates
 /// the app, and a recorder cannot live in the menu, which keeps the keyboard while open.
 @MainActor
-final class ShortcutsWindowController {
+final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     private let store: ShortcutStore
     private let reserved: () -> Set<KeyShortcut>
     private var window: NSWindow?
@@ -12,6 +12,16 @@ final class ShortcutsWindowController {
     init(store: ShortcutStore, reserved: @escaping () -> Set<KeyShortcut> = { KeyShortcut.systemReserved() }) {
         self.store = store
         self.reserved = reserved
+    }
+
+    /// Hotkeys stay unregistered while a recorder listens. Leaving the window (closing it,
+    /// switching apps) must end recording, or every shortcut would stay off.
+    func windowDidResignKey(_ notification: Notification) { stopRecording() }
+    func windowWillClose(_ notification: Notification) { stopRecording() }
+
+    private func stopRecording() {
+        window?.makeFirstResponder(nil)
+        store.isRecording = false
     }
 
     func show() {
@@ -26,6 +36,7 @@ final class ShortcutsWindowController {
                               backing: .buffered, defer: false)
         window.title = "Keyboard Shortcuts"
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.contentView = NSHostingView(rootView: ShortcutsView(store: store, reserved: reserved()))
         window.setContentSize(window.contentView?.fittingSize ?? CGSize(width: 440, height: 480))
         window.center()

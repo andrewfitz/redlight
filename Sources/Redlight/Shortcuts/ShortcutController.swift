@@ -67,6 +67,8 @@ final class ShortcutController {
         if action == .pause {
             pressed ? pausePressed() : pauseReleased()
         } else if action.repeats {
+            // Some macOS versions resend the press while held; the timer already repeats.
+            if pressed, repeatTimer != nil { return }
             pressed ? startRepeating(action) : stopRepeating()
         } else if pressed {
             perform(action)

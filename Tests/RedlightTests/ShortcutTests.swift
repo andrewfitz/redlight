@@ -159,6 +159,27 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(readout.shown.last?.text == "Color 95% · Adaptive limit")
     }
 
+    @Test func aResentPressWhileHeldDoesNotStepTwice() {
+        let (controller, manager) = makeController()
+        controller.handle(id: id(.warmer), pressed: true)
+        controller.handle(id: id(.warmer), pressed: true)
+        #expect(abs(manager.intensity - 0.95) < 1e-9)
+        controller.handle(id: id(.warmer), pressed: false)
+        controller.handle(id: id(.warmer), pressed: true)
+        #expect(abs(manager.intensity - 0.90) < 1e-9)
+        controller.handle(id: id(.warmer), pressed: false)
+    }
+
+    @Test func leavingTheWindowEndsRecordingAndRestoresHotkeys() {
+        let (controller, _) = makeController()
+        let window = ShortcutsWindowController(store: controller.store, reserved: { [] })
+        controller.store.isRecording = true
+        #expect(hotkeys.registered.isEmpty)
+        window.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        #expect(!controller.store.isRecording)
+        #expect(hotkeys.registered.count == 7)
+    }
+
     @Test func tapPausesAndResumesWhileHoldOnlyPeeks() {
         let (controller, manager) = makeController()
         manager.setAll(on: true)
