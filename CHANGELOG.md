@@ -5,7 +5,6 @@
 - Added a Pause button next to the main switch. It suspends the tint for 30 minutes without changing which displays are enabled, keeps Invert on, survives sleep and relaunch, and resumes with a fade. Commands and Control Center report Redlight as off while paused.
 - Added customizable system-wide keyboard shortcuts for on/off, Pause, Warmer/Cooler, White Point, Light/Dark, Adaptive and each preset, assigned in a Keyboard Shortcuts window. Nothing is assigned by default; suggested ⌥⌘ shortcuts are one click away. Tapping the Pause shortcut pauses and holding it shows true colors until release. Steps repeat while held and show a brief readout. No extra permissions are required.
 - Added `redlight color|whitepoint up|down [step]`, `redlight pause` and `redlight resume`. The command protocol is now version 2; an older running app asks to be updated.
-- Fixed local ad-hoc builds crashing at launch when signed with the hardened runtime.
 
 ## 1.4 - 2026-10-25
 
