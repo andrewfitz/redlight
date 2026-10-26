@@ -6,13 +6,14 @@ import Testing
     @Test func everyCommandRoundTripsThroughVersionedRequest() throws {
         var commands: [RedlightCommand] = [.status, .displayList, .color(0), .color(100), .whitepoint(25), .whitepoint(100), .login(true), .login(false), .update, .quit]
         for state in CommandSwitch.allCases {
-            commands += [.master(state), .adaptive(state)]
+            commands += [.master(state), .adaptive(state), .pause(state)]
             for selector: CommandDisplaySelector in [.number(2), .name("Studio Display"), .all, .key("uuid-display-1")] {
                 commands += [.display(selector, state), .invert(selector, state)]
             }
         }
         for channel in CommandChannel.allCases {
-            commands += [.reset(channel), .limits(channel, min: channel == .color ? 0 : 25, max: 100)]
+            commands += [.reset(channel), .limits(channel, min: channel == .color ? 0 : 25, max: 100),
+                         .step(channel, 5), .step(channel, -2.5)]
         }
         for preset in CommandPreset.allCases { commands += [.preset(preset), .savePreset(preset)] }
         for appearance in CommandAppearance.allCases { commands.append(.appearance(appearance)) }
@@ -30,7 +31,8 @@ import Testing
             displays: [.init(key: "uuid", number: 1, name: "Retina", enabled: true, inverted: false)],
             color: .init(set: 30, target: 30), whitepoint: .init(set: 45, target: 45),
             activePreset: .night, adaptive: true, elevation: -14.2, statusLine: "Following the sun",
-            appearance: .dark, login: .init(enabled: true, requiresApproval: false), version: "1.2.3", fading: true
+            appearance: .dark, login: .init(enabled: true, requiresApproval: false), version: "1.2.3", fading: true,
+            pausedUntil: Date(timeIntervalSince1970: 1_800_000_000)
         )
         for reply in [CommandReply.success(status), .failure(.invalidInput("color must be 0 to 100")), .failure(.system("Needs approval"), status: status), .failure(.unreachable("Redlight did not respond"))] {
             let data = try JSONEncoder().encode(reply)
@@ -49,7 +51,7 @@ import Testing
     }
 
     @Test func versionMismatchRequiresUpdateAndSystemExitCode() {
-        for version in [0, 2, -1] {
+        for version in [0, 1, 3, -1] {
             do {
                 try CommandRequest(v: version, command: .status).validateVersion()
                 Issue.record("Accepted protocol version \(version)")
@@ -65,6 +67,15 @@ import Testing
                 #expect(error.exitCode == 2)
             } catch { Issue.record("Unexpected error: \(error)") }
         }
+    }
+
+    @Test func statusFromAnOlderAppDecodesWithoutPause() throws {
+        var object = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(Status(on: true, pausedUntil: Date()))) as? [String: Any])
+        object.removeValue(forKey: "pausedUntil")
+        let decoded = try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.on)
+        #expect(decoded.pausedUntil == nil)
     }
 
     @Test func invalidCommandPayloadIsRejected() {
@@ -86,7 +97,7 @@ import Testing
 
     @Test func everyPopoverDescriptorDispatchesTheActualPayload() {
         let pairs: [(PopoverAction, RedlightCommand)] = [
-            (.master(.toggle), .master(.toggle)),
+            (.master(.toggle), .master(.toggle)), (.pause(.on), .pause(.on)),
             (.reset(.color), .reset(.color)), (.reset(.whitepoint), .reset(.whitepoint)),
             (.preset(.deepRed), .preset(.deepRed)), (.savePreset(.warm), .savePreset(.warm)),
             (.adaptive(.off), .adaptive(.off)),

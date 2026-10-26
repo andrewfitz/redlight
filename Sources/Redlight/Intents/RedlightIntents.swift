@@ -59,7 +59,7 @@ enum RedlightMode: String, AppEnum {
 enum RedlightChannel: String, AppEnum {
     case color, whitepoint
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Level"
-    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [.color: "Color", .whitepoint: "White Point"]
+    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [.color: "Color Temp", .whitepoint: "White Point"]
     var command: CommandChannel { CommandChannel(rawValue: rawValue)! }
 }
 
@@ -132,9 +132,9 @@ struct TurnOffRedlightIntent: AppIntent {
 }
 
 struct SetRedlightColorIntent: AppIntent {
-    static let title: LocalizedStringResource = "Set Redlight Color"
+    static let title: LocalizedStringResource = "Set Redlight Color Temp"
     static let openAppWhenRun = false
-    @Parameter(title: "Color", inclusiveRange: (0, 100)) var value: Double
+    @Parameter(title: "Color Temp", inclusiveRange: (0, 100)) var value: Double
     init() {}
     init(value: Double) { self.value = value }
     @MainActor func perform() async throws -> some IntentResult {
@@ -318,8 +318,8 @@ struct ListRedlightDisplaysIntent: AppIntent {
 func redlightStatusText(_ status: Status) -> String {
     guard status.running else { return "Redlight is not running." }
     let displays = status.displays.map { "\($0.number). \($0.name): \($0.enabled ? "on" : "off"), inversion \($0.inverted ? "on" : "off")" }.joined(separator: "\n")
-    var text = "Redlight \(status.on ? "on" : "off")\nColor: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
-    text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color \(status.limits.color.min)–\(status.limits.color.max)%, White Point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%"
+    var text = "Redlight \(status.on ? "on" : "off")\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
+    text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.min)–\(status.limits.color.max)%, White Point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }
     if !status.statusLine.isEmpty { text += "\n" + status.statusLine }

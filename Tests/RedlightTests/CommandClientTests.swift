@@ -20,7 +20,7 @@ private final class ClientProbe: @unchecked Sendable {
 
 @Suite struct CommandClientTests {
     @Test func stoppedReadAndStopCommandsNeverLaunch() async throws {
-        for command: RedlightCommand in [.status, .master(.off), .quit] {
+        for command: RedlightCommand in [.status, .master(.off), .pause(.on), .quit] {
             let probe = ClientProbe()
             let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
                                        launch: { probe.started() }, send: { probe.sent($0) })
@@ -142,7 +142,7 @@ private final class ClientProbe: @unchecked Sendable {
         var output = ""
         #expect(await RedlightCLI.run(arguments: ["status"], client: client, writeOutput: { output = $0 }) == 0)
         for field in ["Redlight 1.2: on", "42.0% (target 43.0%)", "70.0% (target 71.0%)",
-                      "color 10.0–80.0%", "white point 30.0–90.0%", "Preset: night", "Adaptive: on",
+                      "color temp 10.0–80.0%", "white point 30.0–90.0%", "Preset: night", "Adaptive: on",
                       "fading", "Elevation: -10.5°", "Appearance: dark", "Launch at login: on (approval required)",
                       "Night below horizon", "1: Studio", "invert on"] {
             #expect(output.contains(field))

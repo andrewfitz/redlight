@@ -52,7 +52,7 @@ struct CommandClient: Sendable {
         }
         if !running {
             switch command {
-            case .status, .master(.off), .quit: return .notRunning
+            case .status, .master(.off), .pause(.on), .quit: return .notRunning
             default: break
             }
         }

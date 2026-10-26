@@ -5,6 +5,7 @@
 /// are the documented navigation exceptions, not display-control actions.
 enum PopoverAction: Equatable {
     case master(CommandSwitch)
+    case pause(CommandSwitch)
     case reset(CommandChannel)
     case preset(CommandPreset)
     case savePreset(CommandPreset)
@@ -19,6 +20,7 @@ enum PopoverAction: Equatable {
     var command: RedlightCommand {
         switch self {
         case .master(let state): .master(state)
+        case .pause(let state): .pause(state)
         case .reset(let channel): .reset(channel)
         case .preset(let preset): .preset(preset)
         case .savePreset(let preset): .savePreset(preset)
@@ -35,6 +37,7 @@ enum PopoverAction: Equatable {
     var descriptor: PopoverActionDescriptor {
         switch self {
         case .master: .master
+        case .pause: .pause
         case .reset: .reset
         case .preset: .preset
         case .savePreset: .savePreset
@@ -52,5 +55,5 @@ enum PopoverAction: Equatable {
 /// A finite catalogue avoids pretending that the associated display keys and numeric
 /// payloads are enumerable. Parity tests use real representative actions for every kind.
 enum PopoverActionDescriptor: CaseIterable {
-    case master, reset, preset, savePreset, adaptive, display, invert, appearance, login, update, quit
+    case master, pause, reset, preset, savePreset, adaptive, display, invert, appearance, login, update, quit
 }

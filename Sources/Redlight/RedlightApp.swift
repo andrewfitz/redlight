@@ -127,6 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static var publishStoppedState: (() -> Void)?
     /// Set during startup; the status item can only be created once AppKit is up.
     static var makeStatusItem: (() -> StatusItemController)?
+    /// Retained for the app's lifetime; it owns the registered global hotkeys.
+    static var shortcuts: ShortcutController?
 
     private let termination = TerminationCoordinator()
     private var statusItem: StatusItemController?
@@ -210,6 +212,10 @@ enum RedlightApp {
             exit(2)
         }
         IntentBridge.install(execute: { try handler.execute($0) }, snapshot: { handler.snapshot() })
+        let shortcutStore = ShortcutStore()
+        AppDelegate.shortcuts = ShortcutController(
+            store: shortcutStore, manager: manager, execute: { try handler.execute($0) })
+        let shortcutsWindow = ShortcutsWindowController(store: shortcutStore)
         let installer = CLIInstaller()
         installer.installSilentlyIfPossible()
         AppDelegate.prepareForTermination = { completion in
@@ -218,7 +224,8 @@ enum RedlightApp {
         AppDelegate.publishStoppedState = { manager.publishStoppedState() }
         AppDelegate.makeStatusItem = {
             StatusItemController(isActive: { manager.isAnyActive }) {
-                MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler)
+                MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
+                            openShortcuts: { shortcutsWindow.show() })
                     .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }
             }
         }

@@ -15,8 +15,9 @@ private struct CommandArguments: ParsableArguments {
 enum CLIParser {
     static let help = """
     Usage: redlight <command> [--json]
-      on | off | toggle | status
+      on | off | toggle | status | pause | resume
       color <0-100> | whitepoint <25-100>
+      color <up|down> [step] | whitepoint <up|down> [step]
       reset <color|whitepoint>
       preset [save] <day|warm|sunset|night|deep-red>
       adaptive <on|off|toggle>
@@ -44,7 +45,7 @@ enum CLIParser {
         func level(_ text: String, channel: CommandChannel) throws -> Double {
             let minimum: Double = channel == .color ? 0 : 25
             guard let value = Double(text), value.isFinite, (minimum...100).contains(value) else {
-                throw CommandError.invalidInput("\(channel.rawValue) must be a finite percentage from \(Int(minimum)) to 100.")
+                throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(minimum)) to 100.")
             }
             return value
         }
@@ -53,12 +54,23 @@ enum CLIParser {
         case "on", "off", "toggle":
             try count(0, verb)
             command = .master(try enumeration(verb, valid: CommandSwitch.allCases))
+        case "pause", "resume":
+            try count(0, verb)
+            command = .pause(verb == "pause" ? .on : .off)
         case "status", "update", "quit":
             try count(0, verb)
             command = verb == "status" ? .status : verb == "update" ? .update : .quit
         case "color", "whitepoint":
+            let channel: CommandChannel = verb == "color" ? .color : .whitepoint
+            if let direction = tail.first, direction == "up" || direction == "down" {
+                // Words rather than +5/-5: a leading minus would parse as an option.
+                guard tail.count <= 2 else { throw CommandError.invalidInput("Usage: redlight \(verb) <up|down> [step]") }
+                let amount = try tail.count == 2 ? stepAmount(tail[1]) : 5
+                command = .step(channel, direction == "up" ? amount : -amount)
+                break
+            }
             try count(1, "\(verb) <percentage>")
-            let value = try level(tail[0], channel: verb == "color" ? .color : .whitepoint)
+            let value = try level(tail[0], channel: channel)
             command = verb == "color" ? .color(value) : .whitepoint(value)
         case "reset":
             try count(1, "reset <color|whitepoint>")
@@ -109,6 +121,13 @@ enum CLIParser {
         default: throw CommandError.invalidInput("Unknown command '\(verb)'. \(help)")
         }
         return ParsedCLICommand(command: command, json: json)
+    }
+
+    private static func stepAmount(_ text: String) throws -> Double {
+        guard let value = Double(text), value.isFinite, value > 0, value <= 100 else {
+            throw CommandError.invalidInput("A step must be a percentage greater than 0 and up to 100.")
+        }
+        return value
     }
 
     private static func enumeration<T: RawRepresentable>(_ text: String, valid: [T]) throws -> T where T.RawValue == String {
@@ -173,10 +192,10 @@ enum RedlightCLI {
     private static func describe(_ status: Status) -> String {
         guard status.running else { return "not running" }
         return """
-        Redlight \(status.version): \(status.on ? "on" : "off")
-        Color: \(status.color.set)% (target \(status.color.target)%)
+        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")
+        Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
-        Limits: color \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%
+        Limits: color temp \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%
         Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")
