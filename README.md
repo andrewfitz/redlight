@@ -8,6 +8,22 @@ See the [changelog](CHANGELOG.md) for release history.
 
 <p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing display, Color and White Point sliders, presets, and the Adaptive sun arc" width="333"></p>
 
+## tl;dr
+
+Free open source blue light filter mac app that:
+- goes super red
+- white point reduction
+- multi monitor support / disable
+- ipad sidecar support
+- invert color
+- dark and light mode toggle
+- adaptive circadian rhythm over the day
+- native gpu accelerated fast, efficient & lightweight
+- not janky old archaic code like iris and flux (but props to OGs)
+- menu bar only
+- command center and shortcut support
+- cli controllable (ai agent accessible)
+
 ## What it does
 
 - **Color slider** goes from **normal screen** (100%) to **pure red** (0%), passing through warm orange tones
