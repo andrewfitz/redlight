@@ -59,6 +59,7 @@ struct MenuBarView: View {
     @Bindable var manager: DisplayManager
     var launchAtLogin: LaunchAtLogin? = nil
     var handler: CommandHandler? = nil
+    var openShortcuts: (() -> Void)? = nil
 
     @State private var sunCache = SunArcCache()
     @State private var appearance = AppearanceController.shared
@@ -92,7 +93,16 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Redlight").font(.headline)
+                if let pausedUntil = manager.pausedUntil {
+                    Text("Paused until \(pausedUntil.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
+                PauseButton(isPaused: manager.isPaused) {
+                    dispatch(.pause(manager.isPaused ? .off : .on))
+                }
+                .disabled(!manager.isOn && !manager.isPaused)
                 Toggle("Enable Redlight", isOn: Binding(
                     get: { manager.isOn },
                     set: { dispatch(.master($0 ? .on : .off)) }
@@ -312,6 +322,17 @@ struct MenuBarView: View {
                                         ? "Update available" : "Check for Updates")
                 }
                 Spacer()
+                if let openShortcuts {
+                    Button {
+                        // Close first: the menu keeps the keyboard while it is open.
+                        closeMenu()
+                        openShortcuts()
+                    } label: {
+                        Image(systemName: "keyboard")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Keyboard Shortcuts")
+                }
                 Button(manager.isTerminating ? "Quitting…" : "Quit") {
                     dispatch(.quit)
                 }
@@ -416,6 +437,26 @@ struct ResetButton: View {
         .disabled(isDefault)
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Pause Button
+
+/// Pauses the tint for 30 minutes; shows play while paused so a click resumes.
+struct PauseButton: View {
+    let isPaused: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isPaused ? Color.red : Color.secondary)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
     }
 }
 

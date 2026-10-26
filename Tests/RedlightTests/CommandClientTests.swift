@@ -20,7 +20,7 @@ private final class ClientProbe: @unchecked Sendable {
 
 @Suite struct CommandClientTests {
     @Test func stoppedReadAndStopCommandsNeverLaunch() async throws {
-        for command: RedlightCommand in [.status, .master(.off), .quit] {
+        for command: RedlightCommand in [.status, .master(.off), .pause(.on), .quit] {
             let probe = ClientProbe()
             let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
                                        launch: { probe.started() }, send: { probe.sent($0) })

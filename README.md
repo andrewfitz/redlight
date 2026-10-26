@@ -38,6 +38,8 @@ Free open source blue light filter mac app that:
 - Per-display toggle — control each monitor independently
 - Sidecar iPads use the same Color, White Point, Invert, presets, and Adaptive controls automatically
 - **Light/dark switch** in the popover header flips the system appearance
+- **Pause** button next to the main switch suspends the tint for 30 minutes (Invert stays on); click again to resume early. Pausing survives sleep and relaunch
+- **Keyboard shortcuts** — the keyboard button at the bottom of the popover assigns system-wide shortcuts for on/off, Pause, Warmer/Cooler, Dimmer/Brighter White Point, Light/Dark, Adaptive and each preset. Nothing is assigned until you record a shortcut or choose **Use Suggested Shortcuts** (⌥⌘R on/off, ⌥⌘P Pause, ⌥⌘[ / ⌥⌘] Warmer/Cooler, ⌥⌘- / ⌥⌘= White Point, ⌥⌘A Light/Dark). Tap the Pause shortcut to pause; hold it to see true colors until you let go. Step shortcuts repeat while held and show a brief readout. No Accessibility or Input Monitoring permission is needed
 - Optional **Launch at Login** toggle (off by default, never registered behind your back)
 - **Automatic updates** via Sparkle, checked in the background against GitHub releases, plus an **Updates…** button for a manual check
 - Remembers your settings across launches
@@ -85,6 +87,10 @@ points to the app executable and becomes dangling if you delete the app.
 redlight on
 redlight color 30
 redlight whitepoint 50
+redlight color down 5
+redlight whitepoint up 10
+redlight pause
+redlight resume
 redlight preset night
 redlight preset save night
 redlight adaptive on
@@ -103,10 +109,12 @@ redlight --version
 `redlight --help` lists every command, including resets, updates and quit. Levels are
 percentages matching the popover; display names accept a unique case-insensitive substring.
 Applying a preset turns Adaptive off. A level command while Adaptive is on shifts its
-baseline within the limits. A valid command that changes app state interrupts an active
+baseline within the limits. `color down` is warmer; `up`/`down` steps default to 5 and
+start from the current setting. `pause` suspends the tint for 30 minutes, and `on`,
+`toggle` or `resume` ends a pause; while paused, `status` reports off and when it resumes. A valid command that changes app state interrupts an active
 slider or band-marker drag, so continuing that drag cannot overwrite it.
 
-`status`, `off` and `quit` leave a stopped app stopped. Other commands launch it as needed;
+`status`, `off`, `pause` and `quit` leave a stopped app stopped. Other commands launch it as needed;
 `toggle` on a stopped app turns it on. Only one app copy can own the displays. If an older
 version is already running, quit it before starting this version.
 
