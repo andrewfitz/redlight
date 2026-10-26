@@ -34,6 +34,13 @@ import Testing
         _ = try await TurnOnRedlightIntent().perform()
         _ = try await TurnOffRedlightIntent().perform()
         _ = try await SetRedlightStateIntent(mode: .toggle).perform()
+        _ = try await AdjustRedlightIntent(adjustment: .warmer).perform()
+        _ = try await AdjustRedlightIntent(adjustment: .brighter, amount: 10).perform()
+        _ = try await TurnOnRedlightIntent().perform()
+        _ = try await PauseRedlightIntent().perform()
+        let paused = try await GetRedlightStatusIntent().perform()
+        #expect(paused.value?.contains("paused, 30 min left") == true)
+        _ = try await ResumeRedlightIntent().perform()
         _ = try await SetRedlightColorIntent(value: 55).perform()
         _ = try await SetRedlightWhitepointIntent(value: 65).perform()
         _ = try await ResetRedlightLevelIntent(channel: .color).perform()
@@ -57,7 +64,9 @@ import Testing
         _ = try await UpdateRedlightIntent().perform()
         _ = try await QuitRedlightIntent().perform()
         var expected: [RedlightCommand] = [
-            .master(.on), .master(.off), .master(.toggle), .color(55), .whitepoint(65),
+            .master(.on), .master(.off), .master(.toggle),
+            .step(.color, -5), .step(.whitepoint, 10), .master(.on), .pause(.on), .status, .pause(.off),
+            .color(55), .whitepoint(65),
             .reset(.color), .reset(.whitepoint), .preset(.night), .savePreset(.warm),
             .adaptive(.on), .adaptive(.off), .limits(.color, min: 10, max: 90),
             .limits(.whitepoint, min: 35, max: 95), .display(.key("stable-2"), .on),
@@ -70,12 +79,17 @@ import Testing
         #expect(!gamma.applyCalls.isEmpty)
     }
 
-    @Test func enumsEntitiesAndFourShortcutsMatchCommands() async throws {
+    @Test func enumsEntitiesAndShortcutsMatchCommands() async throws {
         #expect(RedlightPreset.allCases.map(\.rawValue) == CommandPreset.allCases.map(\.rawValue))
         #expect(RedlightMode.allCases.map(\.rawValue) == CommandSwitch.allCases.map(\.rawValue))
         #expect(RedlightChannel.allCases.map(\.rawValue) == CommandChannel.allCases.map(\.rawValue))
         #expect(RedlightAppearance.allCases.map(\.rawValue) == CommandAppearance.allCases.map(\.rawValue))
-        #expect(RedlightShortcuts.appShortcuts.count == 4)
+        // macOS allows at most 10 App Shortcuts per app.
+        #expect(RedlightShortcuts.appShortcuts.count == 7)
+        #expect(RedlightAdjustment.warmer.command(amount: 5) == .step(.color, -5))
+        #expect(RedlightAdjustment.cooler.command(amount: 5) == .step(.color, 5))
+        #expect(RedlightAdjustment.dimmer.command(amount: 2) == .step(.whitepoint, -2))
+        #expect(RedlightAdjustment.brighter.command(amount: 2) == .step(.whitepoint, 2))
         let status = Status(displays: [Status.Display(key: "monitor-uuid", number: 1, name: "Studio Display", enabled: true, inverted: false)])
         IntentBridge.install(execute: { _ in status }, snapshot: { status })
         defer { IntentBridge.uninstall() }

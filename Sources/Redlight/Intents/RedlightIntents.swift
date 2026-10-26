@@ -63,6 +63,23 @@ enum RedlightChannel: String, AppEnum {
     var command: CommandChannel { CommandChannel(rawValue: rawValue)! }
 }
 
+/// Spoken as "Make Redlight warmer". Lower Color Temp is redder, so warmer steps down.
+enum RedlightAdjustment: String, AppEnum {
+    case warmer, cooler, dimmer, brighter
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Adjustment"
+    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .warmer: "warmer", .cooler: "cooler", .dimmer: "dimmer", .brighter: "brighter",
+    ]
+    func command(amount: Double) -> RedlightCommand {
+        switch self {
+        case .warmer: .step(.color, -amount)
+        case .cooler: .step(.color, amount)
+        case .dimmer: .step(.whitepoint, -amount)
+        case .brighter: .step(.whitepoint, amount)
+        }
+    }
+}
+
 enum RedlightAppearance: String, AppEnum {
     case light, dark, toggle
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Appearance"
@@ -127,6 +144,48 @@ struct TurnOffRedlightIntent: AppIntent {
     init() {}
     @MainActor func perform() async throws -> some IntentResult {
         _ = try IntentBridge.execute(.master(.off))
+        return .result()
+    }
+}
+
+struct PauseRedlightIntent: AppIntent {
+    static let title: LocalizedStringResource = "Pause Redlight"
+    static let description = IntentDescription("Suspends the color filter for 30 minutes. Invert stays on.")
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.pause(.on))
+        return .result()
+    }
+}
+
+struct ResumeRedlightIntent: AppIntent {
+    static let title: LocalizedStringResource = "Resume Redlight"
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.pause(.off))
+        return .result()
+    }
+}
+
+struct AdjustRedlightIntent: AppIntent {
+    static let title: LocalizedStringResource = "Adjust Redlight"
+    static let description = IntentDescription(
+        "Makes the filter warmer or cooler (Color Temp), or dimmer or brighter (White Point), from its current setting.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Adjustment", default: .warmer) var adjustment: RedlightAdjustment
+    @Parameter(title: "Amount", default: 5, inclusiveRange: (1, 100)) var amount: Double
+    static var parameterSummary: some ParameterSummary {
+        Summary("Make Redlight \(\.$adjustment) by \(\.$amount)%")
+    }
+    init() {}
+    init(adjustment: RedlightAdjustment, amount: Double = 5) {
+        self.adjustment = adjustment
+        self.amount = amount
+    }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(adjustment.command(amount: amount))
         return .result()
     }
 }
@@ -318,7 +377,11 @@ struct ListRedlightDisplaysIntent: AppIntent {
 func redlightStatusText(_ status: Status) -> String {
     guard status.running else { return "Redlight is not running." }
     let displays = status.displays.map { "\($0.number). \($0.name): \($0.enabled ? "on" : "off"), inversion \($0.inverted ? "on" : "off")" }.joined(separator: "\n")
-    var text = "Redlight \(status.on ? "on" : "off")\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
+    var text = "Redlight \(status.on ? "on" : "off")"
+    if let pausedUntil = status.pausedUntil {
+        text += " (paused, \(DisplayManager.pauseMinutesLeft(until: pausedUntil, now: Date())) min left)"
+    }
+    text += "\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
     text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.min)–\(status.limits.color.max)%, White Point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }
@@ -334,5 +397,8 @@ struct RedlightShortcuts: AppShortcutsProvider {
         AppShortcut(intent: TurnOffRedlightIntent(), phrases: ["Turn off \(.applicationName)"], shortTitle: "Turn Off", systemImageName: "sun.max")
         AppShortcut(intent: SetRedlightPresetIntent(), phrases: ["Set \(.applicationName) to \(\.$preset)"], shortTitle: "Set Preset", systemImageName: "sun.horizon")
         AppShortcut(intent: TurnOnRedlightAdaptiveIntent(), phrases: ["Turn on \(.applicationName) Adaptive"], shortTitle: "Adaptive", systemImageName: "sun.and.horizon")
+        AppShortcut(intent: PauseRedlightIntent(), phrases: ["Pause \(.applicationName)"], shortTitle: "Pause", systemImageName: "pause.fill")
+        AppShortcut(intent: ResumeRedlightIntent(), phrases: ["Resume \(.applicationName)"], shortTitle: "Resume", systemImageName: "play.fill")
+        AppShortcut(intent: AdjustRedlightIntent(), phrases: ["Make \(.applicationName) \(\.$adjustment)"], shortTitle: "Adjust", systemImageName: "thermometer.sun")
     }
 }

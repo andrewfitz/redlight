@@ -5,6 +5,7 @@
 - Added Sidecar support. iPads are filtered automatically with the same Color Temp, White Point, Invert, presets and Adaptive controls, in the Mac's compositor without screen recording or iPad setup. The pointer is tinted too.
 - Added a Pause button next to the main switch. It suspends the tint for 30 minutes with a minutes countdown, keeps Invert on, survives sleep and relaunch, and fades back when time is up. Commands and Control Center report Redlight as off while paused.
 - Added customizable system-wide keyboard shortcuts for on/off, Pause, Warmer/Cooler, White Point, Light/Dark, Adaptive and each preset, in a new Keyboard Shortcuts window. Nothing is assigned by default; suggested ⌥⌘ shortcuts are one click away. Tap the Pause shortcut to pause, or hold it to see true colors until release. Steps repeat while held and show a brief readout. No extra permissions are required.
+- Added Siri and Shortcuts actions to pause, resume, and adjust the filter: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter).
 - Added `redlight color|whitepoint up|down [step]`, `redlight pause` and `redlight resume`. The command protocol is now version 2, so an older running app asks to be updated.
 - Fixed the sliders. Clicking the track moves the value instead of a nearby limit, limits no longer stay grabbed or keep previewing after the mouse is released, and dragging the thumb outward from a limit moves that limit.
 - Renamed the Color slider to Color Temp. The `color` command and JSON fields keep their names.

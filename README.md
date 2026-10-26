@@ -67,6 +67,7 @@ Free open source blue light filter mac app that:
 - **Pause** for 30 minutes from a button beside the main switch
 - **Keyboard shortcuts** for on/off, Pause, Warmer/Cooler, White Point, Light/Dark, Adaptive and each preset
 - **Command line steps and pause**: `redlight color down 5`, `redlight pause`, `redlight resume`
+- **Siri**: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter)
 - **Smoother sliders**: clicking the track moves the value, and limits no longer stick after release
 - **Notarized** releases
 - The Color slider is now called **Color Temp**
@@ -174,12 +175,13 @@ needed in System Settings → Login Items.
 
 ## Siri, Shortcuts and Control Center
 
-Redlight provides Shortcuts app actions for most commands, including display
-selection, preset editing, limits, system appearance and status. These Siri phrases work
-out of the box:
+Redlight provides Shortcuts app actions for its commands, including Pause and Resume,
+Adjust (warmer, cooler, dimmer or brighter by any amount), display selection, preset
+editing, limits, system appearance and status. These Siri phrases work out of the box:
 
-- “Turn on Redlight”
-- “Turn off Redlight”
+- “Turn on Redlight” / “Turn off Redlight”
+- “Pause Redlight” / “Resume Redlight”
+- “Make Redlight warmer” (or cooler, dimmer, brighter), 5% per request
 - “Set Redlight to Night” (or another preset)
 - “Turn on Redlight Adaptive”
 
