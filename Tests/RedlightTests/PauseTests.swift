@@ -56,6 +56,18 @@ private final class Clock {
         #expect(mock.applyCalls.last { $0.displayID == 1 }?.intensity == Float(0.4))
     }
 
+    @Test func countdownRoundsUpToWholeMinutes() {
+        let until = Date(timeIntervalSince1970: 10_000)
+        func left(_ seconds: TimeInterval) -> Int {
+            DisplayManager.pauseMinutesLeft(until: until, now: until.addingTimeInterval(-seconds))
+        }
+        #expect(left(30 * 60) == 30)
+        #expect(left(29 * 60 + 1) == 30)
+        #expect(left(29 * 60) == 29)
+        #expect(left(59) == 1)
+        #expect(left(0) == 1)
+    }
+
     @Test func pauseNeedsAFilterAndMasterOnResumes() {
         let manager = makeManager()
         #expect(!manager.pause())

@@ -188,7 +188,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         uptime.now += 0.1
         controller.handle(id: id(.pause), pressed: false)
         #expect(manager.isPaused)
-        #expect(readout.shown.last?.text.hasPrefix("Paused Until") == true)
+        #expect(readout.shown.last?.text == "Paused · 30 min")
 
         controller.handle(id: id(.pause), pressed: true)
         controller.handle(id: id(.pause), pressed: false)

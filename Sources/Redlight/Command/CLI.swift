@@ -192,7 +192,7 @@ enum RedlightCLI {
     private static func describe(_ status: Status) -> String {
         guard status.running else { return "not running" }
         return """
-        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused until \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
+        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")
         Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
         Limits: color temp \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%

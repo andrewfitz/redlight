@@ -111,7 +111,7 @@ percentages matching the popover; display names accept a unique case-insensitive
 Applying a preset turns Adaptive off. A level command while Adaptive is on shifts its
 baseline within the limits. `color down` (Color Temp) is warmer; `up`/`down` steps default to 5 and
 start from the current setting. `pause` suspends the tint for 30 minutes, and `on`,
-`toggle` or `resume` ends a pause; while paused, `status` reports off and when it resumes. A valid command that changes app state interrupts an active
+`toggle` or `resume` ends a pause; while paused, `status` reports off and the minutes left. A valid command that changes app state interrupts an active
 slider or band-marker drag, so continuing that drag cannot overwrite it.
 
 `status`, `off`, `pause` and `quit` leave a stopped app stopped. Other commands launch it as needed;

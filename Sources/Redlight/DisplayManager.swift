@@ -1379,6 +1379,11 @@ final class DisplayManager {
     private(set) var pausedUntil: Date?
     var isPaused: Bool { pausedUntil != nil }
 
+    /// Whole minutes left, rounded up so the countdown reads 1 until the pause ends.
+    nonisolated static func pauseMinutesLeft(until: Date, now: Date) -> Int {
+        max(1, Int((until.timeIntervalSince(now) / 60).rounded(.up)))
+    }
+
     /// Suspend the tint (not Invert) for `Defaults.pauseDuration`. Requires a filter to pause.
     @discardableResult
     func pause() -> Bool {

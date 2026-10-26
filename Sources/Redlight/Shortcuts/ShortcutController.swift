@@ -187,9 +187,8 @@ final class ShortcutController {
             return
         }
         do {
-            let status = try execute(.pause(.on))
-            let time = status.pausedUntil?.formatted(date: .omitted, time: .shortened) ?? ""
-            readout.show("Paused Until \(time)", level: nil)
+            _ = try execute(.pause(.on))
+            readout.show("Paused · \(Int(DisplayManager.Defaults.pauseDuration / 60)) min", level: nil)
         } catch {
             manager.setPeeking(false)
             readout.show(error.localizedDescription, level: nil)

@@ -94,9 +94,16 @@ struct MenuBarView: View {
             HStack {
                 Text("Redlight").font(.headline)
                 if let pausedUntil = manager.pausedUntil {
-                    Text("Paused until \(pausedUntil.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // Ticks on the pause's own minute boundaries, from when it started.
+                    let start = pausedUntil.addingTimeInterval(-DisplayManager.Defaults.pauseDuration)
+                    TimelineView(.periodic(from: start, by: 60)) { context in
+                        let minutes = DisplayManager.pauseMinutesLeft(until: pausedUntil, now: context.date)
+                        Text("\(minutes) min")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Paused, \(minutes) minutes left")
+                    }
                 }
                 Spacer()
                 PauseButton(isPaused: manager.isPaused) {
