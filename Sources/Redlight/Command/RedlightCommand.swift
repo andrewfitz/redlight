@@ -34,6 +34,9 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     case status
     case color(Double)
     case whitepoint(Double)
+    /// Relative percentage change from the current target, resolved by the running app.
+    case step(CommandChannel, Double)
+    case pause(CommandSwitch)
     case reset(CommandChannel)
     case preset(CommandPreset)
     case savePreset(CommandPreset)
@@ -90,12 +93,13 @@ struct Status: Codable, Sendable, Equatable {
     var login: Login = Login(enabled: false, requiresApproval: false)
     var version: String = ""
     var fading: Bool = false
+    var pausedUntil: Date?
 
     static var notRunning: Status { Status(running: false) }
 
     private enum CodingKeys: String, CodingKey {
         case running, on, displays, color, whitepoint, activePreset, adaptive, elevation
-        case statusLine, limits, appearance, login, version, fading
+        case statusLine, limits, appearance, login, version, fading, pausedUntil
     }
 
     init(
@@ -105,7 +109,8 @@ struct Status: Codable, Sendable, Equatable {
         adaptive: Bool = false, elevation: Double? = nil, statusLine: String = "",
         limits: Limits = Limits(color: Band(min: 0, max: 100), whitepoint: Band(min: 30, max: 100)),
         appearance: CommandAppearance = .light,
-        login: Login = Login(enabled: false, requiresApproval: false), version: String = "", fading: Bool = false
+        login: Login = Login(enabled: false, requiresApproval: false), version: String = "", fading: Bool = false,
+        pausedUntil: Date? = nil
     ) {
         self.running = running
         self.on = on
@@ -121,6 +126,7 @@ struct Status: Codable, Sendable, Equatable {
         self.login = login
         self.version = version
         self.fading = fading
+        self.pausedUntil = pausedUntil
     }
 
     init(from decoder: Decoder) throws {
@@ -140,7 +146,9 @@ struct Status: Codable, Sendable, Equatable {
             appearance: try values.decode(CommandAppearance.self, forKey: .appearance),
             login: try values.decode(Login.self, forKey: .login),
             version: try values.decode(String.self, forKey: .version),
-            fading: try values.decode(Bool.self, forKey: .fading)
+            fading: try values.decode(Bool.self, forKey: .fading),
+            pausedUntil: try values.decodeIfPresent(String.self, forKey: .pausedUntil)
+                .flatMap { ISO8601DateFormatter().date(from: $0) }
         )
     }
 
@@ -161,6 +169,8 @@ struct Status: Codable, Sendable, Equatable {
         try values.encode(login, forKey: .login)
         try values.encode(version, forKey: .version)
         try values.encode(fading, forKey: .fading)
+        try values.encodeIfPresent(
+            pausedUntil.map { ISO8601DateFormatter().string(from: $0) }, forKey: .pausedUntil)
     }
 }
 
@@ -177,7 +187,8 @@ struct CommandError: Error, LocalizedError, Codable, Sendable, Equatable {
 }
 
 struct CommandRequest: Codable, Sendable, Equatable {
-    static let currentVersion = 1
+    /// 2 added `step` and `pause`; an older app answers "update Redlight" instead of failing to decode.
+    static let currentVersion = 2
     var v: Int = currentVersion
     var command: RedlightCommand
 

@@ -76,6 +76,30 @@ private struct CommandFixture {
         }
     }
 
+    @Test func stepsStartFromTheTargetAndPauseReadsAsOff() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.color(40))
+        var status = try f.handler.execute(.step(.color, 5))
+        #expect(abs(status.color.set - 45) < 1e-9)
+        status = try f.handler.execute(.step(.color, 100))
+        #expect(status.color.set == 100)
+        status = try f.handler.execute(.step(.whitepoint, -100))
+        #expect(status.whitepoint.set == 25)
+        expectError(.invalidInput) { _ = try f.handler.execute(.step(.color, 0)) }
+        expectError(.invalidInput) { _ = try f.handler.execute(.step(.color, .nan)) }
+        expectError(.invalidInput) { _ = try f.handler.execute(.pause(.on)) } // nothing to pause
+
+        _ = try f.handler.execute(.master(.on))
+        status = try f.handler.execute(.pause(.toggle))
+        #expect(!status.on)
+        #expect(status.pausedUntil != nil)
+        #expect(f.defaults.bool(forKey: "redlight.isOn") == false) // Control Center sees off
+        status = try f.handler.execute(.master(.toggle))
+        #expect(status.on)
+        #expect(status.pausedUntil == nil)
+        #expect(f.defaults.bool(forKey: "redlight.isOn"))
+    }
+
     @Test func percentagesResetLimitsAndPersistence() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.color(42))

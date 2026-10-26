@@ -38,6 +38,13 @@ final class DisplayManager {
         var startedAt: TimeInterval
     }
 
+    private struct PauseTransition {
+        var from: Double
+        var to: Double
+        var startedAt: TimeInterval
+        var duration: TimeInterval
+    }
+
     /// Factory settings. Single source of truth for both first launch and the reset buttons,
     /// so the two can't drift apart.
     ///
@@ -55,6 +62,8 @@ final class DisplayManager {
         static let whitepointMax = 1.0
         static let adaptiveFadeDuration: TimeInterval = 2.0
         static let displayFadeDuration: TimeInterval = 0.7
+        static let peekFadeDuration: TimeInterval = 0.15
+        static let pauseDuration: TimeInterval = 30 * 60
     }
 
     private(set) var displays: [DisplayInfo] = []
@@ -108,12 +117,17 @@ final class DisplayManager {
     }
 
     var isAnyActive: Bool {
-        !fadingDisplayIDs.isEmpty || displays.contains { $0.isEnabled || $0.isInverted }
+        !fadingDisplayIDs.isEmpty || isPauseFading
+            || displays.contains { ($0.isEnabled && !isPaused) || $0.isInverted }
     }
 
     /// Logical master state follows connected filter checkboxes, independently of inversion.
     var isOn: Bool { displays.contains { $0.isEnabled } }
-    var commandIsFading: Bool { outputTransition != nil || !fadingDisplayIDs.isEmpty }
+    /// A pause keeps the checkboxes but shows no tint, so commands and Control Center see off.
+    var isFiltering: Bool { isOn && !isPaused }
+    var commandIsFading: Bool {
+        outputTransition != nil || !fadingDisplayIDs.isEmpty || pauseTransition != nil
+    }
     /// Commands report endpoints; the render clock and marker previews are transient frames.
     var commandTargetOutput: OutputPair {
         OutputPair(intensity: intensity, whitepoint: whitepoint)
@@ -460,6 +474,14 @@ final class DisplayManager {
     private var fadingDisplayIDs: Set<CGDirectDisplayID> = []
     @ObservationIgnored nonisolated(unsafe) private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var clockObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var pauseTimer: Timer?
+    /// Fraction of the tint shown: 1 normally, 0 while paused or peeking. Invert is not scaled.
+    @ObservationIgnored private var pauseLevel: Double = 1
+    @ObservationIgnored private var pauseTransition: PauseTransition?
+    @ObservationIgnored private var isPeeking = false
+    // Observable only at fade boundaries, like `fadingDisplayIDs`, for the tray icon.
+    private var isPauseFading = false
     @ObservationIgnored private var adaptiveIntensityOffset: Double = 0
     @ObservationIgnored private var adaptiveWhitepointOffset: Double = 0
     // An adaptive slider can be moved before a location-backed solar curve exists. Keep that
@@ -492,6 +514,7 @@ final class DisplayManager {
     @ObservationIgnored private var internalUpdate = false
     @ObservationIgnored private let adaptiveTransitionDuration: TimeInterval
     @ObservationIgnored private let displayTransitionDuration: TimeInterval
+    @ObservationIgnored private let peekTransitionDuration: TimeInterval
     @ObservationIgnored private let transitionUptime: () -> TimeInterval
 
     init(
@@ -507,6 +530,7 @@ final class DisplayManager {
         now: @escaping () -> Date = { Date() },
         adaptiveTransitionDuration: TimeInterval = Defaults.adaptiveFadeDuration,
         displayTransitionDuration: TimeInterval = Defaults.displayFadeDuration,
+        peekTransitionDuration: TimeInterval = Defaults.peekFadeDuration,
         transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         locationPromptActivation: @escaping () -> Void = { NSApplication.shared.activate() },
         onMasterStateChange: @escaping (Bool) -> Void = { _ in }
@@ -523,6 +547,7 @@ final class DisplayManager {
         self.now = now
         self.adaptiveTransitionDuration = max(0, adaptiveTransitionDuration)
         self.displayTransitionDuration = max(0, displayTransitionDuration)
+        self.peekTransitionDuration = max(0, peekTransitionDuration)
         self.transitionUptime = transitionUptime
         // Clamp on load: a hand-edited or corrupt plist must not put the thumb off the
         // track or send >1 into the gamma composer. (Bands are normalized below.)
@@ -548,6 +573,7 @@ final class DisplayManager {
         loadPresets()
         if adaptiveEnabled { activePresetIndex = nil }
         refreshDisplays(apply: false)
+        loadPause()
         startListening()
         location.onChange = { [weak self] in
             MainActor.assumeIsolated {
@@ -574,6 +600,7 @@ final class DisplayManager {
             applyToActiveDisplays()
         }
         startPreparedStartupDisplayTransitions()
+        schedulePauseTimer()
         publishMasterState()
     }
 
@@ -581,8 +608,10 @@ final class DisplayManager {
         adaptiveTimer?.invalidate()
         bandRefreshTimer?.invalidate()
         transitionTimer?.invalidate()
+        pauseTimer?.invalidate()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
     }
 
     /// Enforce band invariants on persisted values (didSets don't run during init).
@@ -731,6 +760,7 @@ final class DisplayManager {
             displayID,
             from: fromAmount,
             to: displays[i].isEnabled ? 1 : 0)
+        if !isOn { endPauseIntoFadeOut() }
         save()
     }
 
@@ -752,6 +782,7 @@ final class DisplayManager {
     func setAll(on: Bool) {
         guard !isTerminating else { return }
         if on {
+            if isPaused { resume(); return }
             guard !isOn else { return }
             let remembered = Set(defaults.stringArray(forKey: "redlight.masterEnabledDisplays") ?? [])
             let restored = displays.filter { remembered.contains($0.persistenceKey) }.map(\.id)
@@ -775,7 +806,7 @@ final class DisplayManager {
 
     func publishMasterState() {
         guard !isTerminating else { return }
-        publishMasterState(isOn)
+        publishMasterState(isFiltering)
     }
 
     /// Called after restoring gamma on quit; saved checkbox flags remain available at launch.
@@ -824,12 +855,16 @@ final class DisplayManager {
         previewWhitepointValue = nil
         cancelOutputTransition()
         cancelAllDisplayTransitions()
+        // Freeze a pause fade where it is; the saved pause still applies at next launch.
+        pauseTransition = nil
+        isPauseFading = false
 
         shutdownOutput = rendered
         shutdownCompletion = completion
         isTerminating = true
         sliderInteractionGeneration &+= 1
-        let hasTint = rendered.intensity < 0.999_999 || rendered.whitepoint < 0.999_999
+        let hasTint = pauseLevel > 0
+            && (rendered.intensity < 0.999_999 || rendered.whitepoint < 0.999_999)
         let startedAt = transitionUptime()
 
         for display in displays {
@@ -860,6 +895,12 @@ final class DisplayManager {
     private func stopRuntimeUpdates() {
         adaptiveTimer?.invalidate()
         adaptiveTimer = nil
+        pauseTimer?.invalidate()
+        pauseTimer = nil
+        if let clockObserver {
+            NotificationCenter.default.removeObserver(clockObserver)
+            self.clockObserver = nil
+        }
         bandRefreshTimer?.invalidate()
         bandRefreshTimer = nil
         pendingBandRefreshChannels.removeAll()
@@ -955,6 +996,14 @@ final class DisplayManager {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshDisplays() }
         }
+
+        clockObserver = NotificationCenter.default.addObserver(
+            forName: .NSSystemClockDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPause() }
+        }
     }
 
     /// Reapply gamma after wake and force a fresh one-shot location request: the laptop may
@@ -962,6 +1011,8 @@ final class DisplayManager {
     /// cannot be snapshotted as the "original" calibration. Kept internal so the
     /// no-double-apply behavior is testable.
     func handleWake() {
+        // A pause that ended during sleep must resume before the filter is reapplied.
+        refreshPause()
         synchronizeTransitionState(at: transitionUptime())
         if !isTerminating { gamma.restoreAll() }
         guard adaptiveEnabled else { applyToActiveDisplays(); return }
@@ -1235,7 +1286,7 @@ final class DisplayManager {
 
     private func startTransitionTimerIfNeeded() {
         guard transitionTimer == nil,
-              outputTransition != nil || !displayTransitions.isEmpty
+              outputTransition != nil || !displayTransitions.isEmpty || pauseTransition != nil
         else { return }
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tickTransitions() }
@@ -1255,6 +1306,7 @@ final class DisplayManager {
                 toProgress: elapsed / adaptiveTransitionDuration)
         }
         let changedDisplayIDs = updateDisplayTransitions(at: timestamp)
+        if updatePauseTransition(at: timestamp) { outputChanged = true }
 
         if outputChanged {
             applyToActiveDisplays()
@@ -1273,11 +1325,12 @@ final class DisplayManager {
             updateOutputTransition(toProgress: elapsed / adaptiveTransitionDuration)
         }
         _ = updateDisplayTransitions(at: timestamp)
+        updatePauseTransition(at: timestamp)
         stopTransitionTimerIfIdle()
     }
 
     private func stopTransitionTimerIfIdle() {
-        guard outputTransition == nil, displayTransitions.isEmpty else { return }
+        guard outputTransition == nil, displayTransitions.isEmpty, pauseTransition == nil else { return }
         transitionTimer?.invalidate()
         transitionTimer = nil
     }
@@ -1306,9 +1359,9 @@ final class DisplayManager {
 
     private func applyToDisplay(_ display: DisplayInfo) {
         let rendered = currentRenderedOutput()
-        let amount = shutdownDisplayAmounts[display.id]
+        let amount = pauseLevel * (shutdownDisplayAmounts[display.id]
             ?? displayTransitions[display.id]?.currentAmount
-            ?? (display.isEnabled ? 1 : 0)
+            ?? (display.isEnabled ? 1 : 0))
         let i = Float(1 + (rendered.intensity - 1) * amount)
         let w = Float(1 + (rendered.whitepoint - 1) * amount)
         if !display.isInverted && i == 1 && w == 1 {
@@ -1318,6 +1371,141 @@ final class DisplayManager {
             gamma.applyFilter(to: display.id, intensity: i, whitepoint: w,
                               invert: display.isInverted)
         }
+    }
+
+    // MARK: - Pause
+
+    /// When an active pause ends; persisted so a relaunch or update stays paused.
+    private(set) var pausedUntil: Date?
+    var isPaused: Bool { pausedUntil != nil }
+
+    /// Suspend the tint (not Invert) for `Defaults.pauseDuration`. Requires a filter to pause.
+    @discardableResult
+    func pause() -> Bool {
+        guard !isTerminating, isOn else { return false }
+        isPeeking = false
+        pausedUntil = now().addingTimeInterval(Defaults.pauseDuration)
+        persistPause()
+        startPauseTransition(to: 0, duration: displayTransitionDuration)
+        publishMasterState()
+        return true
+    }
+
+    func resume() {
+        guard !isTerminating, isPaused else { return }
+        pausedUntil = nil
+        persistPause()
+        startPauseTransition(to: isPeeking ? 0 : 1, duration: displayTransitionDuration)
+        publishMasterState()
+    }
+
+    /// Show the unfiltered screen only while a shortcut is held. Does nothing while paused.
+    func setPeeking(_ peeking: Bool) {
+        guard !isTerminating, isPeeking != peeking, !peeking || isOn else { return }
+        isPeeking = peeking
+        guard !isPaused else { return }
+        startPauseTransition(to: peeking ? 0 : 1, duration: peekTransitionDuration)
+    }
+
+    /// End an expired pause, and cap one that a clock change pushed further out.
+    func refreshPause() {
+        guard let pausedUntil, !isTerminating else { return }
+        let current = now()
+        if pausedUntil <= current { resume(); return }
+        let latest = current.addingTimeInterval(Defaults.pauseDuration)
+        if pausedUntil > latest {
+            self.pausedUntil = latest
+            persistPause()
+        }
+        schedulePauseTimer()
+    }
+
+    private func loadPause() {
+        guard let raw = defaults.object(forKey: "redlight.pausedUntil") as? Double, raw.isFinite
+        else { return }
+        let current = now()
+        let until = Date(timeIntervalSince1970: raw)
+        if until > current, isOn {
+            pausedUntil = min(until, current.addingTimeInterval(Defaults.pauseDuration))
+            pauseLevel = 0
+        }
+        persistPause()
+    }
+
+    private func persistPause() {
+        persist(pausedUntil?.timeIntervalSince1970, "redlight.pausedUntil")
+        schedulePauseTimer()
+    }
+
+    private func schedulePauseTimer() {
+        pauseTimer?.invalidate()
+        pauseTimer = nil
+        guard let pausedUntil, !isTerminating else { return }
+        // Timers do not run during sleep; `handleWake` covers a pause that ended meanwhile.
+        let timer = Timer(fire: pausedUntil, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPause() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pauseTimer = timer
+    }
+
+    /// Turning the last display off ends a pause. Carry the pause level into each display's
+    /// fade-out so a paused filter does not briefly reappear on its way out.
+    private func endPauseIntoFadeOut() {
+        guard isPaused || isPeeking || pauseLevel < 1 || pauseTransition != nil else { return }
+        let level = pauseLevel
+        let shown = displays.map { display in
+            (display.id, level * (displayTransitions[display.id]?.currentAmount
+                ?? (display.isEnabled ? 1 : 0)))
+        }
+        pausedUntil = nil
+        isPeeking = false
+        pauseTransition = nil
+        isPauseFading = false
+        pauseLevel = 1
+        persistPause()
+        for (id, amount) in shown { startDisplayTransition(id, from: amount, to: 0) }
+        publishMasterState()
+    }
+
+    private func startPauseTransition(to target: Double, duration: TimeInterval) {
+        pauseTransition = nil
+        guard duration > 0, pauseLevel != target else {
+            pauseLevel = target
+            if isPauseFading { isPauseFading = false }
+            applyToActiveDisplays()
+            stopTransitionTimerIfIdle()
+            return
+        }
+        pauseTransition = PauseTransition(
+            from: pauseLevel, to: target, startedAt: transitionUptime(), duration: duration)
+        if !isPauseFading { isPauseFading = true }
+        startTransitionTimerIfNeeded()
+    }
+
+    @discardableResult
+    private func updatePauseTransition(at timestamp: TimeInterval) -> Bool {
+        guard let transition = pauseTransition else { return false }
+        return updatePauseTransition(
+            toProgress: max(0, timestamp - transition.startedAt) / transition.duration)
+    }
+
+    private func updatePauseTransition(toProgress rawProgress: Double) -> Bool {
+        guard let transition = pauseTransition else { return false }
+        let progress = min(1, max(0, rawProgress))
+        pauseLevel = transition.from + (transition.to - transition.from) * Self.smoothstep(progress)
+        if progress >= 1 {
+            pauseTransition = nil
+            isPauseFading = false
+        }
+        return true
+    }
+
+    /// Deterministic test hook for the pause and peek fades.
+    func advancePauseTransition(toProgress progress: Double) {
+        guard updatePauseTransition(toProgress: progress) else { return }
+        applyToActiveDisplays()
+        stopTransitionTimerIfIdle()
     }
 
     // MARK: - Band marker live preview

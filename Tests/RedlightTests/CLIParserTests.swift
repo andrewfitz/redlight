@@ -22,6 +22,9 @@ import Testing
             (["appearance", "toggle"], .appearance(.toggle)),
             (["login", "on"], .login(true)), (["login", "off"], .login(false)),
             (["update"], .update), (["quit"], .quit),
+            (["pause"], .pause(.on)), (["resume"], .pause(.off)),
+            (["color", "up"], .step(.color, 5)), (["color", "down", "2.5"], .step(.color, -2.5)),
+            (["whitepoint", "down"], .step(.whitepoint, -5)), (["whitepoint", "up", "10"], .step(.whitepoint, 10)),
         ]
         for (arguments, expected) in examples {
             #expect(try CLIParser.parse(arguments) == ParsedCLICommand(command: expected, json: false))
@@ -49,6 +52,8 @@ import Testing
             ["display", "all", "invert", "yes"], ["display", "", "on"],
             ["display", "all", "wrong", "on"], ["appearance", "system"],
             ["login", "toggle"], ["--version", "extra"],
+            ["pause", "now"], ["resume", "5"], ["color", "up", "0"], ["color", "down", "101"],
+            ["color", "up", "nan"], ["whitepoint", "up", "5", "5"],
         ]
         for args in examples {
             do {

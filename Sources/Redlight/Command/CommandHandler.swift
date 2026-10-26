@@ -44,6 +44,16 @@ final class CommandHandler {
         case .whitepoint(let value):
             try validate(value, channel: .whitepoint)
             addressed = []
+        case .step(_, let delta):
+            guard delta.isFinite, delta != 0, abs(delta) <= 100 else {
+                throw CommandError.invalidInput("A step must be a nonzero percentage up to 100.")
+            }
+            addressed = []
+        case .pause(let state):
+            if state.resolve(current: manager.isPaused), !manager.isPaused, !manager.isOn {
+                throw CommandError.invalidInput("Turn Redlight on before pausing.")
+            }
+            addressed = []
         case .limits(let channel, let min, let max):
             try validate(min, channel: channel)
             try validate(max, channel: channel)
@@ -71,11 +81,22 @@ final class CommandHandler {
         do {
             switch command {
             case .master(let state):
-                manager.setAll(on: state.resolve(current: manager.isOn))
+                // Paused reads as off, so toggling or turning on resumes.
+                manager.setAll(on: state.resolve(current: manager.isFiltering))
             case .color(let value):
                 manager.intensity = value / 100
             case .whitepoint(let value):
                 manager.whitepoint = value / 100
+            case .step(.color, let delta):
+                manager.intensity = Self.stepped(manager.intensity, by: delta, in: 0...1)
+            case .step(.whitepoint, let delta):
+                manager.whitepoint = Self.stepped(manager.whitepoint, by: delta, in: 0.25...1)
+            case .pause(let state):
+                if state.resolve(current: manager.isPaused) {
+                    if !manager.isPaused { manager.pause() }
+                } else {
+                    manager.resume()
+                }
             case .reset(.color):
                 manager.resetIntensity()
             case .reset(.whitepoint):
@@ -142,7 +163,7 @@ final class CommandHandler {
             CommandPreset.allCases.first { $0.index == index }
         }
         return Status(
-            on: manager.isOn,
+            on: manager.isFiltering,
             displays: manager.displays.enumerated().map { index, display in
                 Status.Display(key: display.persistenceKey, number: index + 1, name: display.name,
                                enabled: display.isEnabled, inverted: display.isInverted)
@@ -158,8 +179,15 @@ final class CommandHandler {
                                         max: manager.whitepointBand.upperBound * 100)
             ),
             appearance: services.appearance() ? .dark : .light,
-            login: services.login(), version: services.version(), fading: manager.commandIsFading
+            login: services.login(), version: services.version(), fading: manager.commandIsFading,
+            pausedUntil: manager.pausedUntil
         )
+    }
+
+    /// Steps start from the stored target, not a fade frame, and drop float noise.
+    static func stepped(_ value: Double, by percent: Double, in range: ClosedRange<Double>) -> Double {
+        let next = ((value * 100 + percent) * 1_000).rounded() / 100_000
+        return min(range.upperBound, max(range.lowerBound, next))
     }
 
     private func validate(_ value: Double, channel: CommandChannel) throws {
