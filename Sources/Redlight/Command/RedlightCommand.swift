@@ -12,7 +12,12 @@ enum CommandSwitch: String, Codable, Sendable, CaseIterable {
     }
 }
 
-enum CommandChannel: String, Codable, Sendable, CaseIterable { case color, whitepoint }
+enum CommandChannel: String, Codable, Sendable, CaseIterable {
+    case color, whitepoint
+
+    /// User-facing name; the raw value stays the CLI and wire spelling.
+    var displayName: String { self == .color ? "Color temp" : "White point" }
+}
 enum CommandAppearance: String, Codable, Sendable, CaseIterable { case light, dark, toggle }
 enum CommandPreset: String, Codable, Sendable, CaseIterable {
     case day, warm, sunset, night

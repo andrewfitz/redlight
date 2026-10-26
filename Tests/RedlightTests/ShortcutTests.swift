@@ -149,14 +149,14 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         controller.handle(id: id(.warmer), pressed: true)
         controller.handle(id: id(.warmer), pressed: false)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
-        #expect(readout.shown.last?.text == "Color 95%")
+        #expect(readout.shown.last?.text == "Color Temp 95%")
         #expect(readout.shown.last?.level.map { abs($0 - 0.95) < 1e-9 } == true)
 
         manager.adaptiveEnabled = true
         manager.adaptiveMax = 0.95
         controller.handle(id: id(.cooler), pressed: true)
         controller.handle(id: id(.cooler), pressed: false)
-        #expect(readout.shown.last?.text == "Color 95% · Adaptive limit")
+        #expect(readout.shown.last?.text == "Color Temp 95% · Adaptive limit")
     }
 
     @Test func aResentPressWhileHeldDoesNotStepTwice() {

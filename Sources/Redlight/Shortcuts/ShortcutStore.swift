@@ -27,7 +27,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     /// Step actions repeat while held, like a key in a text field.
     var repeats: Bool { step != nil }
 
-    /// Lower Color is redder, so Warmer steps the value down.
+    /// Lower Color Temp is redder, so Warmer steps the value down.
     var step: (channel: CommandChannel, percent: Double)? {
         switch self {
         case .warmer: (.color, -5)

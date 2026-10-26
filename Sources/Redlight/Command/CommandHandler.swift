@@ -58,7 +58,7 @@ final class CommandHandler {
             try validate(min, channel: channel)
             try validate(max, channel: channel)
             guard min < max else {
-                throw CommandError.invalidInput("\(channel.rawValue) limits require min < max.")
+                throw CommandError.invalidInput("\(channel.displayName) limits require min < max.")
             }
             addressed = []
         case .display(let selector, _), .invert(let selector, _):
@@ -193,7 +193,7 @@ final class CommandHandler {
     private func validate(_ value: Double, channel: CommandChannel) throws {
         let range: ClosedRange<Double> = channel == .color ? 0...100 : 25...100
         guard value.isFinite, range.contains(value) else {
-            throw CommandError.invalidInput("\(channel.rawValue) must be a finite percentage from \(Int(range.lowerBound)) to 100.")
+            throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(range.lowerBound)) to 100.")
         }
     }
 

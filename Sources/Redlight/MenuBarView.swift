@@ -142,7 +142,7 @@ struct MenuBarView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Color")
+                Text("Color Temp")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -152,14 +152,14 @@ struct MenuBarView: View {
                         upperBound: $manager.adaptiveMax,
                         range: 0.0...1.0,
                         showBand: manager.adaptiveEnabled,
-                        label: "Color",
+                        label: "Color Temp",
                         onPreview: { manager.previewIntensity($0) },
                         onPreviewEnd: { manager.endPreview() },
                         onInteractionBegin: { manager.beginSliderInteraction() },
                         isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                     )
                     ResetButton(
-                        help: "Reset color and its limits to default",
+                        help: "Reset color temp and its limits to default",
                         isDefault: manager.intensityIsDefault
                     ) { dispatch(.reset(.color)) }
                 }

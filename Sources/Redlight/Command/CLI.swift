@@ -45,7 +45,7 @@ enum CLIParser {
         func level(_ text: String, channel: CommandChannel) throws -> Double {
             let minimum: Double = channel == .color ? 0 : 25
             guard let value = Double(text), value.isFinite, (minimum...100).contains(value) else {
-                throw CommandError.invalidInput("\(channel.rawValue) must be a finite percentage from \(Int(minimum)) to 100.")
+                throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(minimum)) to 100.")
             }
             return value
         }
@@ -193,9 +193,9 @@ enum RedlightCLI {
         guard status.running else { return "not running" }
         return """
         Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused until \($0.formatted(date: .omitted, time: .shortened))" } ?? "")
-        Color: \(status.color.set)% (target \(status.color.target)%)
+        Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
-        Limits: color \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%
+        Limits: color temp \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%
         Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")

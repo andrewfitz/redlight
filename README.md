@@ -6,7 +6,7 @@ Siri/Shortcuts, or a Control Center toggle.
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing display, Color and White Point sliders, presets, and the Adaptive sun arc" width="333"></p>
+<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing display, Color Temp and White Point sliders, presets, and the Adaptive sun arc" width="333"></p>
 
 ## tl;dr
 
@@ -26,7 +26,7 @@ Free open source blue light filter mac app that:
 
 ## What it does
 
-- **Color slider** goes from **normal screen** (100%) to **pure red** (0%), passing through warm orange tones
+- **Color Temp slider** goes from **normal screen** (100%) to **pure red** (0%), passing through warm orange tones
 - **White Point slider** dims bright areas while leaving darks mostly unchanged — like iOS Reduce White Point but adjustable
 - **Adaptive** mode follows real solar elevation: it begins warming before sunset, follows the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors that back through dawn twilight, and clears to normal within about half an hour of sunrise — set it once and forget it (location stays on your Mac)
 - Adaptive eases into its target over two seconds. Turning it off holds the exact output currently on screen as your manual setting, including during a fade; nudges and all four band limits remain available for next time
@@ -36,7 +36,7 @@ Free open source blue light filter mac app that:
 - **Band limits** — while Adaptive is on, drag the bracket markers on each slider to set a hard min/max the filter can never leave; nudging a slider inside the band shifts the curve's baseline without turning Adaptive off
 - **Invert** colors per display (checkbox next to each display) — flips light and dark beneath the red filter
 - Per-display toggle — control each monitor independently
-- Sidecar iPads use the same Color, White Point, Invert, presets, and Adaptive controls automatically
+- Sidecar iPads use the same Color Temp, White Point, Invert, presets, and Adaptive controls automatically
 - **Light/dark switch** in the popover header flips the system appearance
 - **Pause** button next to the main switch suspends the tint for 30 minutes (Invert stays on); click again to resume early. Pausing survives sleep and relaunch
 - **Keyboard shortcuts** — the keyboard button at the bottom of the popover assigns system-wide shortcuts for on/off, Pause, Warmer/Cooler, Dimmer/Brighter White Point, Light/Dark, Adaptive and each preset. Nothing is assigned until you record a shortcut or choose **Use Suggested Shortcuts** (⌥⌘R on/off, ⌥⌘P Pause, ⌥⌘[ / ⌥⌘] Warmer/Cooler, ⌥⌘- / ⌥⌘= White Point, ⌥⌘A Light/Dark). Tap the Pause shortcut to pause; hold it to see true colors until you let go. Step shortcuts repeat while held and show a brief readout. No Accessibility or Input Monitoring permission is needed
@@ -61,7 +61,7 @@ Free open source blue light filter mac app that:
 Click the menu bar icon (a sun above a monitor) to open the popover:
 
 - Toggle each display on/off, or check **Invert** to flip its colors
-- Drag the **Color** slider to control how much blue/green light to remove
+- Drag the **Color Temp** slider to control how much blue/green light to remove
 - Drag the **White Point** slider to reduce peak brightness without dimming darks
 - Click a preset to jump to it; the reset button beside each slider restores its default and clears its band limits
 - Flip on **Adaptive** to let the sun drive the filter automatically, then drag the red bracket markers to set its limits; turn it off to hold the current output as your manual setting
@@ -109,7 +109,7 @@ redlight --version
 `redlight --help` lists every command, including resets, updates and quit. Levels are
 percentages matching the popover; display names accept a unique case-insensitive substring.
 Applying a preset turns Adaptive off. A level command while Adaptive is on shifts its
-baseline within the limits. `color down` is warmer; `up`/`down` steps default to 5 and
+baseline within the limits. `color down` (Color Temp) is warmer; `up`/`down` steps default to 5 and
 start from the current setting. `pause` suspends the tint for 30 minutes, and `on`,
 `toggle` or `resume` ends a pause; while paused, `status` reports off and when it resumes. A valid command that changes app state interrupts an active
 slider or band-marker drag, so continuing that drag cannot overwrite it.
