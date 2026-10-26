@@ -190,13 +190,24 @@ pathlib.Path(sys.argv[1]).write_bytes(plistlib.dumps({
 }))
 PYINFO
 
-# Sign from the inside out. --deep is limited to Sparkle's bundled helpers for ad-hoc
-# builds; Developer ID distribution should sign each Sparkle helper individually.
-codesign --force --deep --sign "$SIGN_IDENTITY" "$CONTENTS/Frameworks/Sparkle.framework"
-codesign --force --sign "$SIGN_IDENTITY" \
+# Sign from the inside out, each Sparkle helper individually, with the hardened runtime
+# that notarization requires.
+SPARKLE="$CONTENTS/Frameworks/Sparkle.framework"
+for component in "$SPARKLE"/Versions/B/XPCServices/*.xpc "$SPARKLE/Versions/B/Updater.app" \
+    "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE"; do
+    codesign --force --options runtime --preserve-metadata=entitlements \
+        --sign "$SIGN_IDENTITY" "$component"
+done
+codesign --force --options runtime --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Extensions/RedlightControl/RedlightControl.entitlements" "$EXTENSION"
-codesign --force --sign "$SIGN_IDENTITY" "$APP"
+codesign --force --options runtime --sign "$SIGN_IDENTITY" \
+    --entitlements "$ROOT/Resources/Redlight.entitlements" "$APP"
 "$ROOT/Tools/verify-command-control.sh" "$APP"
+# Re-sign with a cloud-managed Developer ID from the Xcode account, notarize, and staple:
+#   NOTARIZE_TEAM=TEAMID ./build.sh
+if [[ -n "${NOTARIZE_TEAM:-}" ]]; then
+    "$ROOT/Tools/notarize.sh" "$APP" "$NOTARIZE_TEAM"
+fi
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/redlight-dmg.XXXXXX")"
 cleanup() { rm -rf "$STAGE"; }
