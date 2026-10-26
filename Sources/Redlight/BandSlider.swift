@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Pure geometry + interaction rules for `BandSlider`, kept UI-free so the clamp and
@@ -35,42 +36,44 @@ enum BandSliderCore {
         return min(hi, max(lo, v))
     }
 
-    /// Which handle a drag starting at (`x`, `dy` from the track's centerline) grabs.
+    /// Which handle a press at (`x`, `dy` from the track's centerline) grabs.
     ///
-    /// Markers are taller than the thumb, so their ends show as tabs above and below it.
-    /// A press in that tab zone, on a tab, always grabs the marker, so a limit stays
-    /// reachable even when the thumb sits right on it.
-    ///
-    /// Otherwise the nearest handle wins, with a deliberate tie-break for the case where
-    /// clamping has parked the thumb exactly on a bracket: grabbing at/inside the band
-    /// prefers the thumb (so it never becomes ungrabbable), grabbing outside the bracket
-    /// prefers the marker (the only handle that can move that way).
+    /// The slider behaves like a normal slider: the thumb, or a click anywhere on the
+    /// track, moves the value. A limit is grabbed only by pressing the marker itself.
+    /// Markers are taller than the thumb, so when the thumb sits on one, the ends that
+    /// show above and below it grab the limit and the thumb's body grabs the thumb.
     static func hitHandle(
         atX x: CGFloat, dy: CGFloat = 0, width: CGFloat, inset: CGFloat,
         range: ClosedRange<Double>,
         value v: Double, lower: Double, upper: Double, showBand: Bool,
-        markerHitRadius: CGFloat = 12, tabZone: CGFloat = 6, tabHitRadius: CGFloat = 6
+        markerHitRadius: CGFloat = 5
     ) -> Handle {
         guard showBand else { return .value }
-        let visibleValue = clampToBand(v, lower: lower, upper: upper)
-        let vX = position(visibleValue, width: width, inset: inset, range: range)
+        let vX = position(clampToBand(v, lower: lower, upper: upper), width: width, inset: inset, range: range)
         let loX = position(lower, width: width, inset: inset, range: range)
         let hiX = position(upper, width: width, inset: inset, range: range)
-        let dV = abs(vX - x), dLo = abs(loX - x), dHi = abs(hiX - x)
-        if abs(dy) >= tabZone, min(dLo, dHi) <= tabHitRadius {
-            return dLo <= dHi ? .lower : .upper
-        }
-        if dV <= dLo && dV <= dHi {
-            // Tied with a coincident marker: outside the bracket means the marker.
-            if dV == dLo && x < loX { return .lower }
-            if dV == dHi && x > hiX { return .upper }
-            return .value
-        }
-        // Brackets have a finite hit target. A click elsewhere on the track behaves like a
-        // normal slider click and moves the value instead of unexpectedly changing a bound.
-        let nearestMarker = min(dLo, dHi)
-        guard nearestMarker <= markerHitRadius else { return .value }
-        return dLo <= dHi ? .lower : .upper
+        let dLo = abs(loX - x), dHi = abs(hiX - x)
+        guard min(dLo, dHi) <= markerHitRadius else { return .value }
+        let marker: Handle = dLo <= dHi ? .lower : .upper
+        let markerX = marker == .lower ? loX : hiX
+        let thumbCoversMarker = abs(markerX - vX) < inset && abs(x - vX) <= inset
+        if thumbCoversMarker && abs(dy) < inset - 1 { return .value }
+        return marker
+    }
+
+    /// A thumb parked on a limit cannot move further out of the band, so a drag that
+    /// starts on it and heads outward moves that limit instead.
+    static func outwardMarker(
+        startX: CGFloat, dx: CGFloat, width: CGFloat, inset: CGFloat,
+        range: ClosedRange<Double>, value v: Double, lower: Double, upper: Double
+    ) -> Handle? {
+        let vX = position(clampToBand(v, lower: lower, upper: upper), width: width, inset: inset, range: range)
+        guard dx != 0, abs(startX - vX) <= inset else { return nil }
+        let loX = position(min(lower, upper), width: width, inset: inset, range: range)
+        let hiX = position(max(lower, upper), width: width, inset: inset, range: range)
+        if dx < 0, abs(vX - loX) < 0.5 { return lower <= upper ? .lower : .upper }
+        if dx > 0, abs(vX - hiX) < 0.5 { return lower <= upper ? .upper : .lower }
+        return nil
     }
 }
 
@@ -102,9 +105,9 @@ struct SliderInteractionGate {
 /// both while dragging and when rendered. Thumb and markers share one value ⇄ pixel
 /// mapping, so a thumb at a bound sits exactly on its bracket.
 ///
-/// A single drag gesture routes to whichever handle (lower marker, upper marker, or thumb)
-/// is nearest where the drag began; ties on a coincident thumb/marker prefer the thumb
-/// inside the band and the marker outside it, so neither can become ungrabbable. While
+/// A press on a marker drags that limit; a press anywhere else drags the thumb or jumps it
+/// to the clicked position. A thumb parked on a limit hands the drag to that limit when
+/// pulled out of the band, so neither handle can become ungrabbable. While
 /// a marker is dragged, `onPreview` fires with its value so the caller can apply it live;
 /// `onPreviewEnd` fires on release so the caller can revert to the real value.
 struct BandSlider: View {
@@ -128,6 +131,14 @@ struct BandSlider: View {
     @State private var interactionGate = SliderInteractionGate()
     /// Handle position minus press position, so a grabbed handle doesn't jump to the pointer.
     @State private var grabOffset: CGFloat = 0
+    /// Identifies the press. Inside a menu, AppKit can swallow the mouse-up, so `onEnded`
+    /// may never run; a new start location means the previous gesture is over.
+    @State private var gestureStart: CGPoint?
+    /// A press on a handle changes nothing until the pointer moves.
+    @State private var hasMoved = false
+    /// Ends the gesture (and any limit preview) when the button is released, even if
+    /// the menu swallowed the mouse-up.
+    @State private var releaseWatch: Timer?
 
     private let thumbSize: CGFloat = 18
     private let markerW: CGFloat = 6
@@ -188,6 +199,7 @@ struct BandSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
+                        if active != nil, gestureStart != g.startLocation { finishInteraction() }
                         if active == nil {
                             let handle = BandSliderCore.hitHandle(
                                 atX: g.startLocation.x, dy: g.startLocation.y - midY,
@@ -198,12 +210,29 @@ struct BandSlider: View {
                             active = handle
                             interactionToken = onInteractionBegin?()
                             interactionGate = SliderInteractionGate()
+                            gestureStart = g.startLocation
+                            watchForRelease()
                             let start = g.startLocation.x
                             switch handle {
-                            case .lower: grabOffset = loX - start
-                            case .upper: grabOffset = hiX - start
-                            // On the thumb: keep the grab point. On the bare track: jump there.
-                            case .value: grabOffset = abs(valX - start) <= inset ? valX - start : 0
+                            case .lower: grabOffset = loX - start; hasMoved = false
+                            case .upper: grabOffset = hiX - start; hasMoved = false
+                            case .value:
+                                // On the thumb: keep the grab point. On the bare track: jump there.
+                                let onThumb = abs(valX - start) <= inset
+                                grabOffset = onThumb ? valX - start : 0
+                                hasMoved = !onThumb
+                            }
+                        }
+                        if !hasMoved {
+                            guard g.translation.width != 0 else { return }
+                            hasMoved = true
+                            if active == .value, let marker = BandSliderCore.outwardMarker(
+                                startX: g.startLocation.x, dx: g.translation.width,
+                                width: w, inset: inset, range: range,
+                                value: value, lower: lowerBound, upper: upperBound
+                            ), showBand {
+                                active = marker
+                                grabOffset = (marker == .lower ? loX : hiX) - g.startLocation.x
                             }
                         }
                         // Preserve the original token until release, including across
@@ -265,6 +294,22 @@ struct BandSlider: View {
         active = nil
         interactionToken = nil
         interactionGate = SliderInteractionGate()
+        gestureStart = nil
+        hasMoved = false
+        releaseWatch?.invalidate()
+        releaseWatch = nil
+    }
+
+    private func watchForRelease() {
+        releaseWatch?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                if NSEvent.pressedMouseButtons & 1 == 0 { finishInteraction() }
+            }
+        }
+        // .common includes the menu's event-tracking run loop mode.
+        RunLoop.main.add(timer, forMode: .common)
+        releaseWatch = timer
     }
 
     private func acceptsInteractionMutation() -> Bool {

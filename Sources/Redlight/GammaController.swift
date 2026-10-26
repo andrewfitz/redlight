@@ -4,6 +4,11 @@ protocol GammaControlling {
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)
     func restore(_ displayID: CGDirectDisplayID)
     func restoreAll()
+    func displaysDidChange()
+}
+
+extension GammaControlling {
+    func displaysDidChange() {}
 }
 
 /// Builds Redlight's transfer table on top of the display's existing ColorSync table.

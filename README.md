@@ -20,6 +20,7 @@ See the [changelog](CHANGELOG.md) for release history.
 - **Band limits** — while Adaptive is on, drag the bracket markers on each slider to set a hard min/max the filter can never leave; nudging a slider inside the band shifts the curve's baseline without turning Adaptive off
 - **Invert** colors per display (checkbox next to each display) — flips light and dark beneath the red filter
 - Per-display toggle — control each monitor independently
+- Sidecar iPads use the same Color, White Point, Invert, presets, and Adaptive controls automatically
 - **Light/dark switch** in the popover header flips the system appearance
 - Optional **Launch at Login** toggle (off by default, never registered behind your back)
 - **Automatic updates** via Sparkle, checked in the background against GitHub releases, plus an **Updates…** button for a manual check
@@ -156,9 +157,29 @@ existing Redlight bundles. Failed build attempts may leave gaps in the sequence.
 
 Uses CoreGraphics gamma table APIs (`CGSetDisplayTransferByTable`) to modify the display lookup table per display at the GPU level. Red channel stays at full brightness while green and blue channels scale down — blue drops faster than green to produce a warm orange-to-red transition instead of purple. The white point slider applies a custom transfer curve that concentrates brightness reduction on highlights while preserving darks.
 
-No overlay windows, no accessibility permissions, no screen capture. Just gamma tables. (The light/dark switch is the one exception: if the private SkyLight call is unavailable it falls back to System Events, which asks for Automation permission once.)
+Physical displays use gamma tables. Sidecar bypasses those tables when transmitting the desktop, so Redlight automatically uses a transparent, click-through WindowServer backdrop on the iPad display instead. Its per-channel cubic curves implement the same color, highlight reduction, and inversion math. There is no screen capture, Accessibility permission, or iPad configuration. Turning the filter off removes the backdrop; quitting removes all backdrops. WindowServer draws the pointer above every window, so while the pointer is on a filtered iPad Redlight hides it and draws the current cursor image beneath the backdrop, tinting it with the desktop. macOS briefly reshows the system pointer when the frontmost app changes, so it can flash untinted for a moment. This fallback uses guarded private Core Animation APIs and has been verified on macOS 27; future OS updates may require adjustments. (The light/dark switch is separate: if its private SkyLight call is unavailable it falls back to System Events, which asks for Automation permission once.)
 
 Adaptive mode adds CoreLocation: it caches an approximate coordinate for offline use, refreshes it occasionally and after wake, and computes the sun's elevation angle locally with a standard NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6°, Sunset at 0°, follows the civil/nautical/astronomical twilight boundaries at −6°/−12°/−18°, and reaches Deep Red at solar midnight. Mornings mirror the night up to sunrise, then reach Day by +4° instead of +12°. Where the sun never sinks to −24° (high-latitude summer), the night is stretched so its lowest point still reaches Deep Red. The popover shows the live elevation on its sun arc. Invert is the innermost layer of the same per-display gamma table (`x → 1 − x`), so it composes with the red filter without extra permissions.
+
+## Sidecar performance checks
+
+With Sidecar connected, run `Tools/benchmark-sidecar.sh`. This compiles an optimized,
+standalone CPU benchmark with an invisible overlay. It reports five samples of 10,000
+calls per workload and their median; it does not measure GPU load, transport latency,
+or overall system performance. An optional first argument selects an older
+`DisplayFilterController.swift` snapshot for comparison.
+
+On the development Mac running macOS 27, the optimization audit measured:
+
+| Workload | Before, ms/10,000 calls | After, ms/10,000 calls |
+| --- | ---: | ---: |
+| Repeated identical window output | 11.40 | 0.60 |
+| Changing window output | 11.56 | 11.37 |
+| Display routing plus changing window output | 253.22 | 12.04 |
+
+The geometry and color-transfer tests remain the correctness gate. Physical display
+gamma tables still reapply normally; routing and compositor caches are invalidated on
+display notifications, restoration, and reconnection.
 
 ## Releasing
 

@@ -495,7 +495,7 @@ final class DisplayManager {
     @ObservationIgnored private let transitionUptime: () -> TimeInterval
 
     init(
-        gamma: GammaControlling = GammaController(),
+        gamma: GammaControlling = DisplayFilterController(),
         getDisplayIDs: @escaping () -> [CGDirectDisplayID] = { DisplayManager.systemDisplayIDs() },
         getDisplayName: @escaping (CGDirectDisplayID) -> String = { DisplayManager.systemDisplayName(for: $0) },
         getDisplayPersistenceKey: @escaping (CGDirectDisplayID) -> String = {
@@ -647,6 +647,9 @@ final class DisplayManager {
     // MARK: - Displays
 
     func refreshDisplays(apply: Bool = true) {
+        // Invalidate cached routing and compositor surfaces even when IDs remain
+        // unchanged (for example, a resolution or backing-scale change).
+        if apply { gamma.displaysDidChange() }
         // Dedupe defensively — a duplicate ID from the system would otherwise both trap
         // the uniquing dictionary and confuse SwiftUI's Identifiable ForEach.
         var seen = Set<CGDirectDisplayID>()

@@ -20,3 +20,6 @@ __pycache__/
 
 # Sparkle EdDSA private key export — never commit
 sparkle-key.txt
+
+# Local build output record (machine-specific paths)
+.redlight-build-info.json

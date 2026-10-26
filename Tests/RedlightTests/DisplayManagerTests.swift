@@ -7,6 +7,7 @@ final class MockGammaController: GammaControlling {
     var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)] = []
     var restoreCalls: [CGDirectDisplayID] = []
     var restoreAllCount = 0
+    var displayChangeCount = 0
 
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
         applyCalls.append((displayID, intensity, whitepoint, invert))
@@ -18,6 +19,10 @@ final class MockGammaController: GammaControlling {
 
     func restoreAll() {
         restoreAllCount += 1
+    }
+
+    func displaysDidChange() {
+        displayChangeCount += 1
     }
 }
 
@@ -65,6 +70,14 @@ final class FakeLocationProvider: LocationProviding {
 
     func freshDefaults() -> UserDefaults {
         defaultsRegistry.makeDefaults()
+    }
+
+    @Test func sameIDScreenRefreshInvalidatesBackendCachesWithoutResettingCalibration() {
+        let manager = makeManager()
+        #expect(mock.displayChangeCount == 0)
+        manager.refreshDisplays()
+        #expect(mock.displayChangeCount == 1)
+        #expect(mock.restoreAllCount == 0)
     }
 
     @Test func neutralEnabledFilterLeavesColorSyncUntouched() {

@@ -86,10 +86,21 @@ import CoreGraphics
         #expect(hit(pos(0.78), value: 0.8, lower: 0.2, upper: 0.8) == .value)
     }
 
-    @Test func markerGrabbableFromOutsideTheBand() {
-        // Grabbing beyond the bracket picks the marker — the only handle that can move there.
-        #expect(hit(pos(0.83), value: 0.8, lower: 0.2, upper: 0.8) == .upper)
-        #expect(hit(pos(0.17), value: 0.2, lower: 0.2, upper: 0.8) == .lower)
+    @Test func parkedThumbHandsAnOutwardDragToItsLimit() {
+        func outward(_ startX: CGFloat, _ dx: CGFloat, value: Double) -> BandSliderCore.Handle? {
+            BandSliderCore.outwardMarker(startX: startX, dx: dx, width: width, inset: inset,
+                                         range: range, value: value, lower: 0.2, upper: 0.8)
+        }
+        // Pressing beside a parked thumb grabs the thumb; pulling it out of the band
+        // can only mean moving the limit it rests on.
+        #expect(hit(pos(0.83), value: 0.8, lower: 0.2, upper: 0.8) == .value)
+        #expect(outward(pos(0.83), 3, value: 0.8) == .upper)
+        #expect(outward(pos(0.8), -3, value: 0.2) == nil) // thumb is elsewhere
+        #expect(outward(pos(0.2), -3, value: 0.2) == .lower)
+        // Inward drags keep moving the value, as do drags of a thumb inside the band.
+        #expect(outward(pos(0.8), -3, value: 0.8) == nil)
+        #expect(outward(pos(0.5), 3, value: 0.5) == nil)
+        #expect(outward(pos(0.8), 0, value: 0.8) == nil)
     }
 
     @Test func tabAboveOrBelowAParkedThumbGrabsTheLimit() {
@@ -109,6 +120,9 @@ import CoreGraphics
     @Test func distantTrackClickMovesValueInsteadOfBand() {
         #expect(hit(pos(0.1), value: 0.5, lower: 0.0, upper: 1.0) == .value)
         #expect(hit(pos(0.9), value: 0.5, lower: 0.0, upper: 1.0) == .value)
+        // Clicks on the track near a limit, but not on its marker, still move the value.
+        #expect(hit(pos(0.24), value: 0.5, lower: 0.2, upper: 0.8) == .value)
+        #expect(hit(pos(0.75), value: 0.5, lower: 0.2, upper: 0.8) == .value)
     }
 
     @Test func hitTestingUsesTheVisibleBandClampedThumb() {

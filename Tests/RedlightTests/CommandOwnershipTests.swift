@@ -43,9 +43,11 @@ private final class OwnershipBundleLocator: NSObject {}
         process.executableURL = host
         process.arguments = ["--testing-library", "swift-testing", "--filter", "OwnershipWorkerSuite.worker"]
         if host.lastPathComponent == "swiftpm-testing-helper" {
-            // The Xcode backend loads a Mach-O test bundle into this helper; simply
-            // relaunching the host runs no tests unless the bundle is supplied again.
-            process.arguments?.append(contentsOf: ["--test-bundle-path", Bundle(for: OwnershipBundleLocator.self).bundlePath])
+            // The helper consumes this leading pair before forwarding the rest
+            // to the test entry point. It dlopens the Mach-O file, not the .xctest
+            // directory. An appended flag silently launches no tests on Xcode 27.
+            let executable = try #require(Bundle(for: OwnershipBundleLocator.self).executableURL)
+            process.arguments?.insert(contentsOf: ["--test-bundle-path", executable.path], at: 0)
         }
         var environment = ProcessInfo.processInfo.environment
         environment["REDLIGHT_OWNERSHIP_WORKER_DIRECTORY"] = directory.path

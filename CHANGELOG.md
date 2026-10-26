@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4 - 2026-10-25
+
+- Added automatic Sidecar filtering through the existing Color, White Point, Invert, presets, and Adaptive controls. The iPad is filtered in the Mac's compositor without screen recording or iPad setup.
+- The pointer is tinted on Sidecar too. Redlight hides the system pointer while it is over a filtered iPad and draws the current cursor beneath the filter.
+- Fixed the Color and White Point sliders. Clicking the track moves the value instead of a nearby limit, limits no longer stay grabbed or keep previewing after the mouse is released in the menu, and dragging the thumb outward from a limit moves that limit.
+- Cached display routing and unchanged Sidecar output to avoid repeated display queries and filter submissions. Display and backing-scale changes invalidate the caches and refresh the compositor surface.
+- Fixed repeated retries when a compositor API is unavailable and cleaned up notification observers when windows are released.
+- Fixed the Xcode 27 process-ownership test worker launcher so the complete test suite can run.
+
 ## 1.3.1 - 2026-10-07
 
 - Fixed an oversized settings window appearing when checking for updates.
