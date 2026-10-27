@@ -6,7 +6,8 @@ the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Contro
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing the Pause button, a monitor and a Sidecar iPad, Color Temp and White Point sliders with Adaptive limits, presets, and the Adaptive sun arc" width="330"></p>
+<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing the Pause button, a monitor and a Sidecar iPad, Color Temp and White Point sliders with Adaptive limits, presets, and the Adaptive sun arc" height="420">
+  <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing the Redlight README" height="420"></p>
 
 ## tl;dr
 
