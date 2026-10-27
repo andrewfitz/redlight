@@ -12,18 +12,20 @@ See the [changelog](CHANGELOG.md) for release history.
 ## tl;dr
 
 Free open source blue light filter mac app that:
-- goes super red
+- goes total red (way past Night Shift limits)
 - white point reduction
 - multi monitor support / disable
 - ipad sidecar support
-- invert color
+- invert color per monitor
 - dark and light mode toggle
-- adaptive circadian rhythm over the day
+- location-aware adaptive circadian rhythm over the day (allow location)
 - native gpu accelerated fast, efficient & lightweight
 - not janky old archaic code like iris and flux (but props to OGs)
 - menu bar only
 - command center and shortcut support
+- assignable keyboard shortcuts
 - cli controllable (ai agent accessible)
+- no tracking data sent fully private
 
 ## What it does
 
