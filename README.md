@@ -235,26 +235,6 @@ bundles, so failed builds may leave gaps.
 - macOS 14 (Sonoma) or later. The Control Center toggle needs macOS 26 or later
 - To build: full Xcode.app with a macOS 26 or later SDK
 
-## How it works
-
-Redlight writes each display's gamma lookup table with CoreGraphics
-(`CGSetDisplayTransferByTable`), so the GPU applies the filter with no overlay. Red stays
-at full brightness while green and blue scale down, blue faster than green, for a warm
-orange-to-red transition. White Point applies a transfer curve that concentrates the
-reduction on highlights and preserves darks. Invert is the innermost layer of the same
-table (`x → 1 − x`). Pause scales only the tint, which is how Invert stays on.
-
-**Sidecar** sends the desktop to the iPad before the gamma tables apply, so Redlight covers
-the iPad display with a transparent, click-through WindowServer backdrop instead. Its
-per-channel curves reproduce the same color, highlight and inversion math, with no screen
-capture, Accessibility permission, or iPad setup. Turning the filter off removes the
-backdrop. macOS draws the pointer above every window, so while the pointer is on a filtered
-iPad, Redlight hides it and draws the current cursor beneath the backdrop. Two side effects:
-the pointer can flash untinted for a moment when the frontmost app changes, and apps cannot
-hide it while you type on the iPad. This path uses guarded private Core Animation and
-SkyLight calls verified on macOS 27; if a future macOS removes them, the iPad or its pointer
-stays unfiltered rather than breaking.
-
 **Adaptive** uses CoreLocation to get an approximate coordinate, caches it for offline use,
 refreshes it occasionally and after wake, and computes the sun's elevation locally with the
 NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6° and Sunset at
@@ -262,32 +242,6 @@ NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6° an
 and reaches Deep Red at solar midnight. Mornings mirror the night up to sunrise, then reach
 Day by +4°. Where the sun never sinks to −24° (high-latitude summer), the night is stretched
 so its lowest point still reaches Deep Red.
-
-**Keyboard shortcuts** use Carbon's `RegisterEventHotKey`, which receives only the
-registered combinations and needs no permissions. Shortcuts, CLI commands, Siri actions
-and popover controls all run through one command layer, so they behave identically.
-
-The **light/dark switch** uses a private SkyLight call. If it is unavailable, Redlight falls
-back to System Events, which asks for Automation permission once.
-
-## Sidecar performance checks
-
-With Sidecar connected, run `Tools/benchmark-sidecar.sh`. It compiles an optimized,
-standalone CPU benchmark with an invisible overlay and reports five samples of 10,000
-calls per workload and their median. It does not measure GPU load, transport latency,
-or overall system performance. An optional first argument selects an older
-`DisplayFilterController.swift` for comparison.
-
-On the development Mac running macOS 27, the optimization audit measured:
-
-| Workload | Before, ms/10,000 calls | After, ms/10,000 calls |
-| --- | ---: | ---: |
-| Repeated identical window output | 11.40 | 0.60 |
-| Changing window output | 11.56 | 11.37 |
-| Display routing plus changing window output | 253.22 | 12.04 |
-
-The geometry and color-transfer tests remain the correctness gate. Physical displays still
-reapply their gamma tables normally, and the caches are cleared whenever displays change.
 
 ## Testing
 
