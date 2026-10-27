@@ -206,8 +206,7 @@ codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN_IDENTITY" \
 codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT/Resources/Redlight.entitlements" "$APP"
 "$ROOT/Tools/verify-command-control.sh" "$APP"
-# Re-sign with a cloud-managed Developer ID from the Xcode account, notarize, and staple:
-#   NOTARIZE_TEAM=TEAMID ./build.sh
+# Optional: notarize and staple with the given team (NOTARIZE_TEAM=<team id>).
 if [[ -n "${NOTARIZE_TEAM:-}" ]]; then
     "$ROOT/Tools/notarize.sh" "$APP" "$NOTARIZE_TEAM"
 fi

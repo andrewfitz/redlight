@@ -9,17 +9,23 @@ docs/
 TODO.md
 *.todo
 *.dmg
+/Redlight.app/
 __pycache__/
 *.py[cod]
 
 # Serena MCP cache
 .serena/
 
-# Serena MCP cache
-.serena/
-
-# Sparkle EdDSA private key export — never commit
-sparkle-key.txt
+# Key exports and signing material — never commit
+sparkle-key*.txt
+*.p12
+*.p8
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.provisionprofile
+.env
 
 # Local build output record (machine-specific paths)
 .redlight-build-info.json

@@ -63,7 +63,6 @@ Free open source blue light filter mac app that:
 - Remembers your settings across launches
 - Optional **Launch at Login**, off by default and never registered behind your back
 - **Automatic updates** through Sparkle, plus an **Updates…** button
-- Signed with a Developer ID and notarized by Apple, so it opens without Gatekeeper warnings
 
 ## New in 1.4
 
@@ -74,7 +73,6 @@ Free open source blue light filter mac app that:
 - **Siri**: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter)
 - **Smoother sliders**: clicking the track moves the value, and limits no longer stick after release
 - **Fixed values under Adaptive**: drag a slider's brackets together to pin it, all the way to 0 or 100%
-- **Notarized** releases
 - The Color slider is now called **Color Temp**
 
 ## Using it
@@ -201,9 +199,8 @@ for next time.
 Download the latest `Redlight-<version>.dmg` from [Releases](../../releases), open it, and
 drag **Redlight** to `/Applications`. Installed copies update themselves.
 
-From 1.4, releases are notarized by Apple, so they open
-normally. Releases before 1.4 were not notarized: right-click the app and choose **Open**,
-or allow it under **System Settings → Privacy & Security**.
+If macOS blocks an older release from opening, right-click the app and choose **Open**, or
+allow it under **System Settings → Privacy & Security**.
 
 Adaptive asks for Location access the first time you turn it on. The light/dark switch may
 ask once for permission to control System Events.
@@ -223,9 +220,7 @@ running copy before replacing it in `/Applications`. To keep build artifacts els
 REDLIGHT_BUILD_OUTPUT_DIR="$PWD/.build/dist" ./build.sh
 ```
 
-Local builds are signed ad hoc and run on your own Mac. macOS ties Location and Automation
-permission to the signature, so an ad-hoc build asks again after each rebuild; set
-`SIGN_IDENTITY` to a stable signing identity to avoid that.
+A local build may ask again for Location and Automation permission after each rebuild.
 
 Each build advances its build number automatically. The release version comes from the
 [VERSION](VERSION) file, and About shows both, for example `1.4 (58)`. Set `VERSION=1.5`
@@ -293,30 +288,6 @@ On the development Mac running macOS 27, the optimization audit measured:
 
 The geometry and color-transfer tests remain the correctness gate. Physical displays still
 reapply their gamma tables normally, and the caches are cleared whenever displays change.
-
-## Releasing
-
-Update [VERSION](VERSION) and add that version's notes to [CHANGELOG.md](CHANGELOG.md),
-then run:
-
-```bash
-NOTARIZE_TEAM=TEAMID VERSION="$(cat VERSION)" Tools/release.sh
-```
-
-This builds the app with the hardened runtime, re-signs it with the team's Developer ID
-through Xcode, notarizes and staples it, then packages the DMG. It signs `appcast.xml` for
-Sparkle and publishes the DMG, appcast and an HTML release-notes page to GitHub with `gh`.
-The changelog entry supplies both the GitHub description and the notes in Sparkle's update
-dialog. Installed copies poll `releases/latest/download/appcast.xml`.
-
-You need:
-
-- Xcode signed in to the release team, with Developer ID access. No local certificate is required
-- Sparkle's EdDSA private key in the login Keychain. Import a backup with Sparkle's `generate_keys -f <file>`, and keep that backup safe: without it, installed copies reject new updates
-- The GitHub CLI signed in with permission to create releases
-
-Apple usually notarizes in a few minutes, but a team's first submissions can take hours.
-The script waits up to four hours.
 
 ## Testing
 
