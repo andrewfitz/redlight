@@ -6,7 +6,7 @@ the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Contro
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing display, Color Temp and White Point sliders, presets, and the Adaptive sun arc" width="333"></p>
+<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing the Pause button, a monitor and a Sidecar iPad, Color Temp and White Point sliders with Adaptive limits, presets, and the Adaptive sun arc" width="330"></p>
 
 ## tl;dr
 
