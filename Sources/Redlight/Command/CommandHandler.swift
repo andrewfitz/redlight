@@ -57,8 +57,8 @@ final class CommandHandler {
         case .limits(let channel, let min, let max):
             try validate(min, channel: channel)
             try validate(max, channel: channel)
-            guard min < max else {
-                throw CommandError.invalidInput("\(channel.displayName) limits require min < max.")
+            guard min <= max else {
+                throw CommandError.invalidInput("\(channel.displayName) limits require min ≤ max.")
             }
             addressed = []
         case .display(let selector, _), .invert(let selector, _):

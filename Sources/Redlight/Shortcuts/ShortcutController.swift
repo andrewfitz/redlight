@@ -109,7 +109,8 @@ final class ShortcutController {
             let after = channel == .color ? manager.intensity : manager.whitepoint
             let value = channel == .color ? status.color.set : status.whitepoint.set
             var text = "\(channel == .color ? "Color Temp" : "White Point") \(Int(value.rounded()))%"
-            if after == before, manager.adaptiveEnabled { text += " · Adaptive limit" }
+            let pinned = channel == .color ? manager.isIntensityPinned : manager.isWhitepointPinned
+            if after == before, manager.adaptiveEnabled, !pinned { text += " · Adaptive limit" }
             if status.pausedUntil != nil { text += " · Paused" } else if !status.on { text += " · Off" }
             let floor = channel == .color ? 0.0 : 25.0
             readout.show(text, level: (value - floor) / (100 - floor))

@@ -8,6 +8,7 @@
 - Added Siri and Shortcuts actions to pause, resume, and adjust the filter: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter).
 - Added `redlight color|whitepoint up|down [step]`, `redlight pause` and `redlight resume`. The command protocol is now version 2, so an older running app asks to be updated.
 - Fixed the sliders. Clicking the track moves the value instead of a nearby limit, limits no longer stay grabbed or keep previewing after the mouse is released, and dragging the thumb outward from a limit moves that limit.
+- Added fixed values under Adaptive. A slider's limits can now meet, anywhere including 0 or 100%, to pin it while the other slider keeps following the sun. Moving a pinned slider, from the menu, a shortcut, Siri or the command line, moves the pin. `redlight limits` accepts equal limits, and status shows “fixed at”.
 - Renamed the Color slider to Color Temp. The `color` command and JSON fields keep their names.
 - Releases are now notarized by Apple, so they open without Gatekeeper warnings.
 

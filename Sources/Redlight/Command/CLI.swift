@@ -91,7 +91,7 @@ enum CLIParser {
             let channel = try enumeration(tail[0], valid: CommandChannel.allCases)
             let minimum = try level(tail[1], channel: channel)
             let maximum = try level(tail[2], channel: channel)
-            guard minimum < maximum else { throw CommandError.invalidInput("Limits require min < max.") }
+            guard minimum <= maximum else { throw CommandError.invalidInput("Limits require min ≤ max.") }
             command = .limits(channel, min: minimum, max: maximum)
         case "display":
             if tail == ["list"] { command = .displayList; break }
@@ -195,7 +195,7 @@ enum RedlightCLI {
         Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")
         Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
-        Limits: color temp \(status.limits.color.min)–\(status.limits.color.max)%, white point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%
+        Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
         Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")

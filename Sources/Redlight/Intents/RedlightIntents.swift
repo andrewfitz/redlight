@@ -382,7 +382,7 @@ func redlightStatusText(_ status: Status) -> String {
         text += " (paused, \(DisplayManager.pauseMinutesLeft(until: pausedUntil, now: Date())) min left)"
     }
     text += "\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
-    text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.min)–\(status.limits.color.max)%, White Point \(status.limits.whitepoint.min)–\(status.limits.whitepoint.max)%"
+    text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }
     if !status.statusLine.isEmpty { text += "\n" + status.statusLine }

@@ -72,7 +72,18 @@ final class DisplayManager {
             // Internal (adaptive/preset) writes apply + save once at their call site.
             guard isInitialized, !internalUpdate else { return }
             cancelOutputTransition(.intensity)
-            if adaptiveEnabled {
+            if adaptiveEnabled, isIntensityPinned {
+                // A pinned band is a fixed value, so a manual change moves the pin. It
+                // replaces any earlier nudge, which would otherwise return on un-pinning.
+                let pin = clamp(intensity, to: 0...1)
+                setInternal {
+                    adaptiveMin = pin
+                    adaptiveMax = pin
+                    if intensity != pin { intensity = pin }
+                }
+                adaptiveIntensityOffset = 0
+                pendingAdaptiveIntensity = nil
+            } else if adaptiveEnabled {
                 // While adaptive: the band is a hard limit on a manual nudge…
                 let clamped = clamp(intensity, to: intensityBand)
                 if clamped != intensity { setInternal { intensity = clamped } }
@@ -98,7 +109,16 @@ final class DisplayManager {
         didSet {
             guard isInitialized, !internalUpdate else { return }
             cancelOutputTransition(.whitepoint)
-            if adaptiveEnabled {
+            if adaptiveEnabled, isWhitepointPinned {
+                let pin = clamp(whitepoint, to: 0.25...1)
+                setInternal {
+                    adaptiveWpMin = pin
+                    adaptiveWpMax = pin
+                    if whitepoint != pin { whitepoint = pin }
+                }
+                adaptiveWhitepointOffset = 0
+                pendingAdaptiveWhitepoint = nil
+            } else if adaptiveEnabled {
                 let clamped = clamp(whitepoint, to: whitepointBand)
                 if clamped != whitepoint { setInternal { whitepoint = clamped } }
                 if let curve = lastCurveWhitepoint {
@@ -246,6 +266,11 @@ final class DisplayManager {
     var whitepointBand: ClosedRange<Double> {
         min(adaptiveWpMin, adaptiveWpMax)...max(adaptiveWpMin, adaptiveWpMax)
     }
+    /// Equal limits pin a channel to one value: adaptive leaves it alone, and a manual
+    /// change moves the pin instead of nudging against the curve.
+    var isIntensityPinned: Bool { adaptiveMin == adaptiveMax }
+    var isWhitepointPinned: Bool { adaptiveWpMin == adaptiveWpMax }
+
     var adaptiveIntensityAdjustment: Double { adaptiveIntensityOffset }
 
     /// Applied sample used by the sun arc. Keeping the offset and hard-band clamp here makes
