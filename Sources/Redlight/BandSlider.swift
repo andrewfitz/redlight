@@ -30,10 +30,10 @@ enum BandSliderCore {
         return range.lowerBound + f * (range.upperBound - range.lowerBound)
     }
 
-    /// Clamp a live value into the band (lo/hi order normalized).
     /// Equal limits pin the value: the band is a single point.
     static func isPinned(lower: Double, upper: Double) -> Bool { lower == upper }
 
+    /// Clamp a live value into the band (lo/hi order normalized).
     static func clampToBand(_ v: Double, lower: Double, upper: Double) -> Double {
         let lo = min(lower, upper), hi = max(lower, upper)
         return min(hi, max(lo, v))

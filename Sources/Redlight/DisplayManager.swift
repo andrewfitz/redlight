@@ -73,7 +73,8 @@ final class DisplayManager {
             guard isInitialized, !internalUpdate else { return }
             cancelOutputTransition(.intensity)
             if adaptiveEnabled, isIntensityPinned {
-                // A pinned band is a fixed value, so a manual change moves the pin.
+                // A pinned band is a fixed value, so a manual change moves the pin. It
+                // replaces any earlier nudge, which would otherwise return on un-pinning.
                 let pin = clamp(intensity, to: 0...1)
                 setInternal {
                     adaptiveMin = pin
@@ -223,7 +224,6 @@ final class DisplayManager {
             let v = clamp(adaptiveMin, to: 0...1)
             if v != adaptiveMin { setInternal { adaptiveMin = v } }
             if v > adaptiveMax { setInternal { adaptiveMax = v } }
-            if isIntensityPinned { dropAdaptiveIntensityNudge() }
             scheduleBandRefresh(.intensity)
         }
     }
@@ -233,7 +233,6 @@ final class DisplayManager {
             let v = clamp(adaptiveMax, to: 0...1)
             if v != adaptiveMax { setInternal { adaptiveMax = v } }
             if v < adaptiveMin { setInternal { adaptiveMin = v } }
-            if isIntensityPinned { dropAdaptiveIntensityNudge() }
             scheduleBandRefresh(.intensity)
         }
     }
@@ -244,7 +243,6 @@ final class DisplayManager {
             let v = clamp(adaptiveWpMin, to: 0.25...1)
             if v != adaptiveWpMin { setInternal { adaptiveWpMin = v } }
             if v > adaptiveWpMax { setInternal { adaptiveWpMax = v } }
-            if isWhitepointPinned { dropAdaptiveWhitepointNudge() }
             scheduleBandRefresh(.whitepoint)
         }
     }
@@ -254,7 +252,6 @@ final class DisplayManager {
             let v = clamp(adaptiveWpMax, to: 0.25...1)
             if v != adaptiveWpMax { setInternal { adaptiveWpMax = v } }
             if v < adaptiveWpMin { setInternal { adaptiveWpMin = v } }
-            if isWhitepointPinned { dropAdaptiveWhitepointNudge() }
             scheduleBandRefresh(.whitepoint)
         }
     }
@@ -273,17 +270,6 @@ final class DisplayManager {
     /// change moves the pin instead of nudging against the curve.
     var isIntensityPinned: Bool { adaptiveMin == adaptiveMax }
     var isWhitepointPinned: Bool { adaptiveWpMin == adaptiveWpMax }
-
-    /// A nudge is hidden while its channel is pinned. Drop it, or pulling the limits
-    /// apart later would bring back a stale offset and make the value jump.
-    private func dropAdaptiveIntensityNudge() {
-        adaptiveIntensityOffset = 0
-        pendingAdaptiveIntensity = nil
-    }
-    private func dropAdaptiveWhitepointNudge() {
-        adaptiveWhitepointOffset = 0
-        pendingAdaptiveWhitepoint = nil
-    }
 
     var adaptiveIntensityAdjustment: Double { adaptiveIntensityOffset }
 

@@ -829,16 +829,23 @@ final class FakeLocationProvider: LocationProviding {
         let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
         let manager = makeManager(location: loc, now: { noon })
         manager.adaptiveEnabled = true
-        manager.intensity = 0.3                 // a nudge, then pin over it
+        manager.intensity = 0.7                 // a nudge, then pin over it
+        let nudge = manager.adaptiveIntensityAdjustment
+        #expect(nudge < 0)
         manager.adaptiveWpMin = 1.0
         #expect(manager.isWhitepointPinned)
         manager.adaptiveMax = 0.6
         manager.adaptiveMin = 0.6
         #expect(manager.isIntensityPinned)
-        #expect(manager.adaptiveIntensityAdjustment == 0)
         manager.flushBandRefresh()
         #expect(abs(manager.intensity - 0.6) < 1e-9)
         #expect(manager.whitepoint == 1.0)
+
+        // Merely touching the limits together keeps the nudge.
+        manager.adaptiveMin = 0.2
+        manager.flushBandRefresh()
+        #expect(manager.adaptiveIntensityAdjustment == nudge)
+        manager.adaptiveMin = 0.6
 
         // Moving a pinned value moves the pin, to either end of the range.
         manager.intensity = 0.0
@@ -848,7 +855,7 @@ final class FakeLocationProvider: LocationProviding {
         #expect(manager.whitepointBand == 0.25...0.25)
         #expect(manager.adaptiveIntensityAdjustment == 0)
 
-        // Pulling the limits apart resumes the curve without a stale nudge.
+        // Moving the pin replaced the nudge, so pulling the limits apart resumes the curve.
         manager.adaptiveMax = 1.0
         manager.flushBandRefresh()
         #expect(!manager.isIntensityPinned)
