@@ -313,7 +313,7 @@ You need:
 - The GitHub CLI signed in with permission to create releases
 
 Apple usually notarizes in a few minutes, but a team's first submissions can take hours.
-The script waits up to an hour.
+The script waits up to four hours.
 
 ## Testing
 

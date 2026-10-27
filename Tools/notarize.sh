@@ -44,7 +44,7 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$WORK/upload" \
     || { cat "$WORK/upload.log" >&2; exit 1; }
 
 # The upload returns before Apple's verdict; the stapled export succeeds once accepted.
-for attempt in $(seq 1 240); do
+for attempt in $(seq 1 960); do
     if xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE" \
         -exportPath "$WORK/notarized" >"$WORK/notary.log" 2>&1; then
         break
@@ -54,9 +54,9 @@ for attempt in $(seq 1 240); do
         echo "error: notarization failed; see the Xcode Organizer for Apple's log." >&2
         exit 1
     fi
-    if (( attempt == 240 )); then
+    if (( attempt == 960 )); then
         cat "$WORK/notary.log" >&2
-        echo "error: notarization did not finish within an hour." >&2
+        echo "error: notarization did not finish within four hours." >&2
         exit 1
     fi
     sleep 15
