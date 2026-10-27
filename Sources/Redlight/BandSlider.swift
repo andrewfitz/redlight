@@ -31,6 +31,9 @@ enum BandSliderCore {
     }
 
     /// Clamp a live value into the band (lo/hi order normalized).
+    /// Equal limits pin the value: the band is a single point.
+    static func isPinned(lower: Double, upper: Double) -> Bool { lower == upper }
+
     static func clampToBand(_ v: Double, lower: Double, upper: Double) -> Double {
         let lo = min(lower, upper), hi = max(lower, upper)
         return min(hi, max(lo, v))
@@ -67,6 +70,8 @@ enum BandSliderCore {
         startX: CGFloat, dx: CGFloat, width: CGFloat, inset: CGFloat,
         range: ClosedRange<Double>, value v: Double, lower: Double, upper: Double
     ) -> Handle? {
+        // A pinned thumb moves the pin; its markers' tips pull the limits apart.
+        guard !isPinned(lower: lower, upper: upper) else { return nil }
         let vX = position(clampToBand(v, lower: lower, upper: upper), width: width, inset: inset, range: range)
         guard dx != 0, abs(startX - vX) <= inset else { return nil }
         let loX = position(min(lower, upper), width: width, inset: inset, range: range)
@@ -74,6 +79,21 @@ enum BandSliderCore {
         if dx < 0, abs(vX - loX) < 0.5 { return lower <= upper ? .lower : .upper }
         if dx > 0, abs(vX - hiX) < 0.5 { return lower <= upper ? .upper : .lower }
         return nil
+    }
+
+    /// Markers on the same spot look like one, so the drag direction picks the limit:
+    /// left moves the minimum, right the maximum. Otherwise a pair stacked at the floor
+    /// would always grab the minimum, which cannot move right past the maximum.
+    static func stackedMarker(
+        _ grabbed: Handle, dx: CGFloat, width: CGFloat, inset: CGFloat,
+        range: ClosedRange<Double>, lower: Double, upper: Double
+    ) -> Handle {
+        guard grabbed != .value, dx != 0 else { return grabbed }
+        let loX = position(lower, width: width, inset: inset, range: range)
+        let hiX = position(upper, width: width, inset: inset, range: range)
+        guard abs(loX - hiX) < 0.5 else { return grabbed }
+        let leftward: Handle = lower <= upper ? .lower : .upper
+        return dx < 0 ? leftward : (leftward == .lower ? .upper : .lower)
     }
 }
 
@@ -107,7 +127,11 @@ struct SliderInteractionGate {
 ///
 /// A press on a marker drags that limit; a press anywhere else drags the thumb or jumps it
 /// to the clicked position. A thumb parked on a limit hands the drag to that limit when
-/// pulled out of the band, so neither handle can become ungrabbable. While
+/// pulled out of the band, so neither handle can become ungrabbable.
+///
+/// Equal limits pin the value. A pinned slider acts like a plain one: the thumb writes
+/// any value and the owner moves the pin with it, and the markers' tips (above and below
+/// the thumb) pull the limits apart again. While
 /// a marker is dragged, `onPreview` fires with its value so the caller can apply it live;
 /// `onPreviewEnd` fires on release so the caller can revert to the real value.
 struct BandSlider: View {
@@ -117,7 +141,6 @@ struct BandSlider: View {
     var range: ClosedRange<Double> = 0...1
     var showBand: Bool
     var label: String = "Value"
-    var minGap: Double = 0.05
     var onPreview: ((Double) -> Void)? = nil
     var onPreviewEnd: (() -> Void)? = nil
     /// Called when a drag starts; returns a token for that drag.
@@ -168,7 +191,8 @@ struct BandSlider: View {
             let trackRight = pos(range.upperBound, w)
             // Value fill starts at the left bracket when a band is shown (stays within the
             // band); otherwise it runs to the track's left end like a normal slider.
-            let fillLeft: CGFloat = showBand ? loX : trackLeft
+            // A pinned band is a plain value, so it fills like a normal slider.
+            let fillLeft: CGFloat = showBand && !isPinned ? loX : trackLeft
 
             ZStack {
                 Capsule()
@@ -233,6 +257,10 @@ struct BandSlider: View {
                             ), showBand {
                                 active = marker
                                 grabOffset = (marker == .lower ? loX : hiX) - g.startLocation.x
+                            } else if let grabbed = active {
+                                active = BandSliderCore.stackedMarker(
+                                    grabbed, dx: g.translation.width, width: w, inset: inset,
+                                    range: range, lower: lowerBound, upper: upperBound)
                             }
                         }
                         // Preserve the original token until release, including across
@@ -241,17 +269,18 @@ struct BandSlider: View {
                         let x = g.location.x + grabOffset
                         switch active ?? .value {
                         case .lower:
-                            let v = min(val(x, w), upperBound - minGap)
+                            let v = min(val(x, w), upperBound)
                             lowerBound = max(range.lowerBound, v)
                             onPreview?(lowerBound)
                         case .upper:
-                            let v = max(val(x, w), lowerBound + minGap)
+                            let v = max(val(x, w), lowerBound)
                             upperBound = min(range.upperBound, v)
                             onPreview?(upperBound)
                         case .value:
-                            // Hard limit: the thumb can never land outside the band.
+                            // Hard limit: the thumb can never land outside the band, unless
+                            // the band is a pin, which moves with it.
                             let v = val(x, w)
-                            value = showBand
+                            value = showBand && !isPinned
                                 ? BandSliderCore.clampToBand(v, lower: lowerBound, upper: upperBound)
                                 : v
                         }
@@ -267,7 +296,8 @@ struct BandSlider: View {
             VStack {
                 Slider(value: accessibleValue, in: range) { Text(label) }
                     .accessibilityLabel("\(label) current value")
-                    .accessibilityValue(Self.percentLabel(value))
+                    .accessibilityValue(isPinned
+                        ? "\(Self.percentLabel(value)), fixed" : Self.percentLabel(value))
                 if showBand {
                     Slider(value: accessibleLowerBound, in: range) {
                         Text("\(label) adaptive minimum")
@@ -325,6 +355,10 @@ struct BandSlider: View {
         BandSliderCore.value(atX: px, width: w, inset: inset, range: range)
     }
 
+    private var isPinned: Bool {
+        showBand && BandSliderCore.isPinned(lower: lowerBound, upper: upperBound)
+    }
+
     private static func percentLabel(_ value: Double) -> String {
         "\(Int((value * 100).rounded())) percent"
     }
@@ -345,7 +379,7 @@ struct BandSlider: View {
             set: { newValue in
                 performAccessibilityEdit {
                     let ranged = min(range.upperBound, max(range.lowerBound, newValue))
-                    value = showBand
+                    value = showBand && !isPinned
                         ? BandSliderCore.clampToBand(
                             ranged, lower: lowerBound, upper: upperBound)
                         : ranged
@@ -359,8 +393,7 @@ struct BandSlider: View {
             get: { lowerBound },
             set: { newValue in
                 performAccessibilityEdit {
-                    let ceiling = max(range.lowerBound, upperBound - minGap)
-                    lowerBound = min(max(range.lowerBound, newValue), ceiling)
+                    lowerBound = min(max(range.lowerBound, newValue), upperBound)
                 }
             }
         )
@@ -371,8 +404,7 @@ struct BandSlider: View {
             get: { upperBound },
             set: { newValue in
                 performAccessibilityEdit {
-                    let floor = min(range.upperBound, lowerBound + minGap)
-                    upperBound = max(min(range.upperBound, newValue), floor)
+                    upperBound = max(min(range.upperBound, newValue), lowerBound)
                 }
             }
         )

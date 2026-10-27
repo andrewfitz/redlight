@@ -125,6 +125,37 @@ import CoreGraphics
         #expect(hit(pos(0.75), value: 0.5, lower: 0.2, upper: 0.8) == .value)
     }
 
+    @Test func pinnedThumbMovesThePinInsteadOfSplittingIt() {
+        #expect(BandSliderCore.isPinned(lower: 0.6, upper: 0.6))
+        #expect(!BandSliderCore.isPinned(lower: 0.6, upper: 0.61))
+        // The thumb's body on a pin is still the thumb, and dragging it either way never
+        // hands off to a limit.
+        #expect(hit(pos(0.6), value: 0.6, lower: 0.6, upper: 0.6) == .value)
+        for dx: CGFloat in [-3, 3] {
+            #expect(BandSliderCore.outwardMarker(startX: pos(0.6), dx: dx, width: width, inset: inset,
+                                                 range: range, value: 0.6, lower: 0.6, upper: 0.6) == nil)
+        }
+    }
+
+    @Test func stackedMarkersFollowTheDragDirection() {
+        func stacked(_ grabbed: BandSliderCore.Handle, _ dx: CGFloat, _ lower: Double, _ upper: Double)
+            -> BandSliderCore.Handle
+        {
+            BandSliderCore.stackedMarker(grabbed, dx: dx, width: width, inset: inset,
+                                         range: range, lower: lower, upper: upper)
+        }
+        // A pin at the floor grabs the minimum, which could never move right.
+        #expect(BandSliderCore.hitHandle(atX: pos(0), dy: -11, width: width, inset: inset, range: range,
+                                         value: 0, lower: 0, upper: 0, showBand: true) == .lower)
+        #expect(stacked(.lower, 3, 0, 0) == .upper)
+        #expect(stacked(.lower, -3, 1, 1) == .lower)
+        #expect(stacked(.upper, -3, 0.5, 0.5) == .lower)
+        // Separate markers and the thumb keep what was grabbed.
+        #expect(stacked(.lower, 3, 0.2, 0.8) == .lower)
+        #expect(stacked(.value, 3, 0.5, 0.5) == .value)
+        #expect(stacked(.lower, 0, 0.5, 0.5) == .lower)
+    }
+
     @Test func hitTestingUsesTheVisibleBandClampedThumb() {
         // Location may still be resolving when Adaptive turns on, leaving the raw model
         // value outside the saved band. The rendered thumb at 0.8 must remain the thumb.

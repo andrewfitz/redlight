@@ -74,6 +74,8 @@ struct Status: Codable, Sendable, Equatable {
     struct Band: Codable, Sendable, Equatable {
         var min: Double
         var max: Double
+        /// "10.0–80.0%", or "fixed at 60.0%" when equal limits pin the value.
+        var text: String { min == max ? "fixed at \(min)%" : "\(min)–\(max)%" }
     }
     struct Limits: Codable, Sendable, Equatable {
         var color: Band

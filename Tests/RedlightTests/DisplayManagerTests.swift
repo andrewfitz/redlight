@@ -824,6 +824,47 @@ final class FakeLocationProvider: LocationProviding {
         #expect(manager.whitepointBand == 0.5...0.9)
     }
 
+    @Test func equalLimitsPinAChannelWhileTheOtherAdapts() {
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+        manager.intensity = 0.3                 // a nudge, then pin over it
+        manager.adaptiveWpMin = 1.0
+        #expect(manager.isWhitepointPinned)
+        manager.adaptiveMax = 0.6
+        manager.adaptiveMin = 0.6
+        #expect(manager.isIntensityPinned)
+        #expect(manager.adaptiveIntensityAdjustment == 0)
+        manager.flushBandRefresh()
+        #expect(abs(manager.intensity - 0.6) < 1e-9)
+        #expect(manager.whitepoint == 1.0)
+
+        // Moving a pinned value moves the pin, to either end of the range.
+        manager.intensity = 0.0
+        #expect(manager.intensityBand == 0.0...0.0)
+        #expect(manager.intensity == 0.0)
+        manager.whitepoint = 0.25
+        #expect(manager.whitepointBand == 0.25...0.25)
+        #expect(manager.adaptiveIntensityAdjustment == 0)
+
+        // Pulling the limits apart resumes the curve without a stale nudge.
+        manager.adaptiveMax = 1.0
+        manager.flushBandRefresh()
+        #expect(!manager.isIntensityPinned)
+        #expect(manager.adaptiveIntensityAdjustment == 0)
+        #expect(abs(manager.intensity - 1.0) < 1e-9)  // noon is the top of the band
+    }
+
+    @Test func pinOnlyMovesWithTheValueWhileAdaptiveIsOn() {
+        let manager = makeManager()
+        manager.adaptiveMin = 0.5
+        manager.adaptiveMax = 0.5
+        manager.intensity = 0.8
+        #expect(manager.intensityBand == 0.5...0.5)
+        #expect(manager.intensity == 0.8)
+    }
+
     @Test func adaptiveEnableFadesAndDisableHoldsExactCurrentFrame() throws {
         let defaults = freshDefaults()
         let loc = FakeLocationProvider(); loc.coordinate = (0, 0)

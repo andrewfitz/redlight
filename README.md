@@ -38,6 +38,7 @@ Free open source blue light filter mac app that:
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
 - The **sun arc** graphs today's solar elevation, the sun's position, and the filter level Adaptive applies
 - **Band limits**: drag the red bracket markers on each slider to set a hard minimum and maximum. Moving a slider inside the band shifts the curve without turning Adaptive off
+- **Fixed values**: drag one bracket onto the other to pin that slider, so Adaptive leaves it alone while the other one keeps following the sun. Moving a pinned slider moves the pin; drag a bracket tip (above or below the knob) to pull the limits apart again
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
 
 **Displays**
@@ -69,6 +70,7 @@ Free open source blue light filter mac app that:
 - **Command line steps and pause**: `redlight color down 5`, `redlight pause`, `redlight resume`
 - **Siri**: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter)
 - **Smoother sliders**: clicking the track moves the value, and limits no longer stick after release
+- **Fixed values under Adaptive**: drag a slider's brackets together to pin it, all the way to 0 or 100%
 - **Notarized** releases
 - The Color slider is now called **Color Temp**
 
@@ -147,6 +149,7 @@ redlight preset save night
 redlight adaptive on
 redlight limits color 10 80
 redlight limits whitepoint 30 90
+redlight limits whitepoint 100 100   # pin White Point: Adaptive only changes Color Temp
 redlight display list
 redlight display 2 on
 redlight display "Studio" invert toggle

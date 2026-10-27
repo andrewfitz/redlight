@@ -119,12 +119,26 @@ private struct CommandFixture {
         #expect(f.manager.whitepointIsDefault)
     }
 
+    @Test func equalLimitsPinAChannelAndStepsMoveThePin() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.adaptive(.on))
+        _ = try f.handler.execute(.limits(.whitepoint, min: 100, max: 100))
+        #expect(f.manager.isWhitepointPinned)
+        #expect(f.handler.snapshot().limits.whitepoint.text == "fixed at 100.0%")
+        _ = try f.handler.execute(.step(.whitepoint, -5))
+        #expect(f.manager.whitepointBand == 0.95...0.95)
+        #expect(f.manager.whitepoint == 0.95)
+        _ = try f.handler.execute(.whitepoint(60))
+        #expect(f.manager.whitepointBand == 0.6...0.6)
+        #expect(f.defaults.double(forKey: "redlight.adaptiveWpMax") == 0.6)
+    }
+
     @Test func rejectsAllInvalidRangesBeforeInterruptingOrPersisting() {
         let f = makeFixture()
         let commands: [RedlightCommand] = [
             .color(-1), .color(101), .color(.nan), .color(.infinity),
             .whitepoint(24.9), .whitepoint(101), .whitepoint(-.infinity),
-            .limits(.color, min: 20, max: 20), .limits(.color, min: 80, max: 10),
+            .limits(.color, min: 80, max: 10),
             .limits(.color, min: -.infinity, max: 100),
             .limits(.whitepoint, min: 24, max: 100), .limits(.whitepoint, min: 25, max: .nan)
         ]
