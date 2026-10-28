@@ -80,6 +80,65 @@ final class FakeLocationProvider: LocationProviding {
         #expect(mock.restoreAllCount == 0)
     }
 
+    @Test func displayOnlyWakeResetsImmediatelyAndAfterSettlingWithLatestSettings() throws {
+        let manager = makeManager()
+        manager.intensity = 0.4
+        manager.toggle(1)
+        mock.restoreAllCount = 0
+        manager.handleDisplayWake()
+        #expect(mock.restoreAllCount == 1)
+        manager.intensity = 0.7
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 2)
+        #expect(abs(try #require(mock.applyCalls.last).intensity - 0.7) < 0.0001)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 2)
+    }
+
+    @Test func sameIDHardwareModeChangesCoalesceIntoOneRecovery() {
+        let manager = makeManager()
+        manager.handleDisplayReconfiguration(.setModeFlag)
+        manager.handleDisplayReconfiguration(.enabledFlag)
+        #expect(mock.restoreAllCount == 0)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 1)
+        #expect(mock.displayChangeCount == 1)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 1)
+    }
+
+    @Test func shutdownCancelsPendingDisplayRecovery() {
+        let manager = makeManager()
+        manager.handleDisplayWake()
+        manager.restoreAllDisplays()
+        let resets = mock.restoreAllCount
+        mock.applyCalls.removeAll()
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == resets)
+        #expect(mock.applyCalls.isEmpty)
+    }
+
+    @Test func desktopChangesAndBeginConfigurationDoNotScheduleRecovery() {
+        let manager = makeManager()
+        manager.handleDisplayReconfiguration([.beginConfigurationFlag, .setModeFlag])
+        manager.handleDisplayReconfiguration(.movedFlag)
+        manager.refreshDisplays()
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 0)
+    }
+
+    @Test func disablingDuringWakeRecoveryDoesNotReenableFilter() {
+        let manager = makeManager()
+        manager.intensity = 0.4
+        manager.toggle(1)
+        manager.handleDisplayWake()
+        manager.toggle(1)
+        mock.applyCalls.removeAll()
+        manager.completeDisplayRecovery()
+        #expect(mock.applyCalls.isEmpty)
+        #expect(!manager.displays[0].isEnabled)
+    }
+
     @Test func neutralEnabledFilterLeavesColorSyncUntouched() {
         let manager = makeManager()
         mock.applyCalls.removeAll()

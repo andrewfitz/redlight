@@ -498,6 +498,9 @@ final class DisplayManager {
     // fade-out without invalidating SwiftUI on every 60 Hz gamma frame.
     private var fadingDisplayIDs: Set<CGDirectDisplayID> = []
     @ObservationIgnored nonisolated(unsafe) private var wakeObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var displayWakeObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var displayRecoveryTimer: Timer?
+    @ObservationIgnored private var displayReconfigurationObserver: DisplayReconfigurationObserver?
     @ObservationIgnored nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var clockObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var pauseTimer: Timer?
@@ -634,6 +637,8 @@ final class DisplayManager {
         bandRefreshTimer?.invalidate()
         transitionTimer?.invalidate()
         pauseTimer?.invalidate()
+        displayRecoveryTimer?.invalidate()
+        if let displayWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(displayWakeObserver) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
@@ -710,14 +715,12 @@ final class DisplayManager {
         let ids = getDisplayIDs().filter { seen.insert($0).inserted }
         let currentIDs = Set(ids)
         let previousIDs = Set(displays.map(\.id))
-        // The screen-parameters notification also fires for Dock show/hide, resolution
-        // changes and window minimize. Only a real add/remove can reset the GPU LUT and
-        // ColorSync profile (a panel power-cycle removes and re-adds its display), so only
-        // then ColorSync-restore everything, drop captures, and recapture on the re-apply
-        // below — the same path Quit uses. Anywhere else this would be a visible flicker.
+        // Screen-parameter notifications also include harmless desktop changes. Hardware
+        // mode changes and display-only wake have their own recovery triggers below.
         let topologyChanged = previousIDs != currentIDs
         if apply, !isTerminating, topologyChanged {
             gamma.restoreAll()
+            scheduleDisplayRecovery()
         } else {
             // Forget a disconnected display's captured gamma table. If the same CoreGraphics
             // ID is reused when it reconnects, GammaController must snapshot its fresh
@@ -918,6 +921,13 @@ final class DisplayManager {
     }
 
     private func stopRuntimeUpdates() {
+        displayRecoveryTimer?.invalidate()
+        displayRecoveryTimer = nil
+        displayReconfigurationObserver = nil
+        if let displayWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(displayWakeObserver)
+            self.displayWakeObserver = nil
+        }
         adaptiveTimer?.invalidate()
         adaptiveTimer = nil
         pauseTimer?.invalidate()
@@ -1004,6 +1014,15 @@ final class DisplayManager {
     // MARK: - System Events
 
     private func startListening() {
+        displayReconfigurationObserver = DisplayReconfigurationObserver { [weak self] flags in
+            self?.handleDisplayReconfiguration(flags)
+        }
+        displayWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleDisplayWake() }
+        }
+
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -1036,6 +1055,8 @@ final class DisplayManager {
     /// cannot be snapshotted as the "original" calibration. Kept internal so the
     /// no-double-apply behavior is testable.
     func handleWake() {
+        guard !isTerminating else { return }
+        scheduleDisplayRecovery()
         // A pause that ended during sleep must resume before the filter is reapplied.
         refreshPause()
         synchronizeTransitionState(at: transitionUptime())
@@ -1044,6 +1065,47 @@ final class DisplayManager {
         requestLocationIfNeeded(at: now(), force: true)
         if location.coordinate == nil { applyToActiveDisplays() }
         applyAdaptive()
+    }
+
+    /// A panel can wake or retrain its link without changing its Core Graphics ID.
+    func handleDisplayWake() {
+        guard !isTerminating else { return }
+        refreshPause()
+        gamma.restoreAll()
+        refreshDisplays()
+        scheduleDisplayRecovery()
+    }
+
+    func handleDisplayReconfiguration(_ flags: CGDisplayChangeSummaryFlags) {
+        guard !isTerminating, !flags.contains(.beginConfigurationFlag) else { return }
+        let hardwareChanges: CGDisplayChangeSummaryFlags = [
+            .setModeFlag, .addFlag, .removeFlag, .enabledFlag, .disabledFlag,
+            .mirrorFlag, .unMirrorFlag,
+        ]
+        guard !flags.intersection(hardwareChanges).isEmpty else { return }
+        scheduleDisplayRecovery()
+    }
+
+    private func scheduleDisplayRecovery() {
+        guard !isTerminating else { return }
+        displayRecoveryTimer?.invalidate()
+        // Coalesce link-training events. Reset ColorSync again after the connection
+        // settles, before capturing calibration, instead of layering onto a stale LUT.
+        let timer = Timer(timeInterval: 2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.completeDisplayRecovery() }
+        }
+        displayRecoveryTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Internal hook lets regression tests finish recovery without sleeping.
+    func completeDisplayRecovery() {
+        guard displayRecoveryTimer != nil else { return }
+        displayRecoveryTimer?.invalidate()
+        displayRecoveryTimer = nil
+        guard !isTerminating else { return }
+        gamma.restoreAll()
+        refreshDisplays()
     }
 
     // MARK: - Output transition

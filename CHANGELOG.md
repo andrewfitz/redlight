@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.1 - 2026-10-27
+
+- Improved recovery when an external monitor wakes or reconnects, addressing excessive red tint and a screen split between tinted and clear halves. Redlight now handles display-only wake and hardware mode changes even when the display ID stays the same, and resets color calibration again after the connection settles.
+- Wake recovery respects changes made while the monitor reconnects, including turning the filter off.
+
 ## 1.4 - 2026-10-26
 
 - Added Sidecar support. iPads are filtered automatically with the same Color Temp, White Point, Invert, presets and Adaptive controls, in the Mac's compositor without screen recording or iPad setup. The pointer is tinted too.
