@@ -1,7 +1,8 @@
 # Redlight
 
-A macOS menu bar app that warms screen color and dims bright whites, with independent control
-of each display, including Sidecar iPads. Adaptive mode follows the local sun. Control it from
+A Mac app that filters and blocks blue light from your screen and reduce brightness without PWM, based on circadian rhythm time of day. Modern alternative to Flux and Iris and Night Shift.
+
+A new macOS menu bar app with independent control of each display, including Sidecar iPads. Adaptive mode follows the local sun. Control it from
 the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Control Center.
 
 See the [changelog](CHANGELOG.md) for release history.
@@ -12,20 +13,19 @@ See the [changelog](CHANGELOG.md) for release history.
 ## tl;dr
 
 Free open source blue light filter mac app that:
-- goes total red (way past Night Shift limits)
+- goes total red (way past night shift limits)
 - white point reduction
-- multi monitor support / disable
+- multi monitor support / disable and invert
 - ipad sidecar support
-- invert color per monitor
 - dark and light mode toggle
 - location-aware adaptive circadian rhythm over the day (allow location)
-- native gpu accelerated fast, efficient & lightweight
-- not janky old archaic code like iris and flux (but props to OGs)
-- menu bar only
+- native hardware gpu accelerated: fast, efficient & lightweight
+- modern and elegant, not janky old archaic code
+- set and forget as a menu/task bar
 - command center and shortcut support
 - assignable keyboard shortcuts
-- cli controllable (ai agent accessible)
-- no tracking data sent fully private
+- cli & command line controllable (ai agent accessible)
+- no tracking data sent, fully private
 
 ## What it does
 
