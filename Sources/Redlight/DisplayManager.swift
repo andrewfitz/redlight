@@ -38,6 +38,16 @@ final class DisplayManager {
         var startedAt: TimeInterval
     }
 
+    /// The next named solar event for one coordinate, as an absolute date so the countdown
+    /// can tick without rescanning. A nil event means the scan found nothing ahead.
+    private struct SolarEventCache {
+        var latitude: Double
+        var longitude: Double
+        var scannedAt: Date
+        var event: (label: String, date: Date)?
+        var validUntil: Date
+    }
+
     private struct PauseTransition {
         var from: Double
         var to: Double
@@ -64,6 +74,7 @@ final class DisplayManager {
         static let displayFadeDuration: TimeInterval = 0.7
         static let peekFadeDuration: TimeInterval = 0.15
         static let pauseDuration: TimeInterval = 30 * 60
+        static let pauseLengthRange: ClosedRange<TimeInterval> = 60...86_400
     }
 
     private(set) var displays: [DisplayInfo] = []
@@ -138,7 +149,7 @@ final class DisplayManager {
 
     var isAnyActive: Bool {
         !fadingDisplayIDs.isEmpty || isPauseFading
-            || displays.contains { ($0.isEnabled && !isPaused) || $0.isInverted }
+            || displays.contains { ($0.isEnabled && !isPaused && suspendedForApp == nil) || $0.isInverted }
     }
 
     /// Logical master state follows connected filter checkboxes, independently of inversion.
@@ -192,6 +203,7 @@ final class DisplayManager {
             if adaptiveEnabled {
                 activePresetIndex = nil
                 animateNextAdaptiveTarget = true
+                solarEventCache = nil
                 requestLocationIfNeeded(at: now(), force: true)
                 // Keep the exact current manual output while location resolves. Once a
                 // target exists, `applyAdaptive` fades smoothly from this held pair.
@@ -256,8 +268,13 @@ final class DisplayManager {
         }
     }
     private(set) var adaptiveStatusText: String = ""
+    private(set) var nextSolarEventText: String?
     /// Last known location, set while adaptive resolves it — drives the sun-arc graphic.
     private(set) var coordinate: (latitude: Double, longitude: Double)?
+    /// The provider's manual coordinate, mirrored so the popover can observe it.
+    private(set) var manualLocation: (latitude: Double, longitude: Double)?
+    var isLocationApproximate: Bool { location.isApproximate }
+    var hasLocation: Bool { location.coordinate != nil }
 
     /// The band as hard limits, lo/hi order normalized.
     var intensityBand: ClosedRange<Double> {
@@ -273,15 +290,46 @@ final class DisplayManager {
 
     var adaptiveIntensityAdjustment: Double { adaptiveIntensityOffset }
 
+    /// "Deepest by": Adaptive reaches the deepest end of its band by this local time. Nil is off.
+    private(set) var bedtime: Bedtime?
+
+    /// Set or clear the bedtime. An active curve fades to the new target over the usual
+    /// Adaptive fade; the 5 s tick then advances the ramp, so no timer of its own is needed.
+    func setBedtime(_ bedtime: Bedtime?) {
+        guard !isTerminating, bedtime != self.bedtime else { return }
+        self.bedtime = bedtime
+        if adaptiveEnabled {
+            animateNextAdaptiveTarget = true
+            applyAdaptive()
+        }
+        save()
+    }
+
     /// Applied sample used by the sun arc. Keeping the offset and hard-band clamp here makes
-    /// the graphic follow the exact same adjusted curve as the real display.
-    func adaptiveIntensity(at elevation: Double, minElevation: Double, rising: Bool = false) -> Double {
-        let banded = AdaptiveMapping.banded(
+    /// the graphic follow the exact same adjusted curve as the real display. Pass the sample's
+    /// time to include the bedtime floor.
+    func adaptiveIntensity(
+        at elevation: Double, minElevation: Double, rising: Bool = false,
+        time: (date: Date, longitude: Double)? = nil
+    ) -> Double {
+        let curve = adaptiveCurve(
+            elevation: elevation, minElevation: minElevation, rising: rising, time: time)
+        return clamp(curve.intensity + adaptiveIntensityOffset, to: intensityBand)
+    }
+
+    /// The one banded curve, bedtime floor included, behind the live target, the sun arc and
+    /// the Save to Preset rebase.
+    private func adaptiveCurve(
+        elevation: Double, minElevation: Double, rising: Bool, time: (date: Date, longitude: Double)?
+    ) -> AdaptiveMapping.Target {
+        let weights = time.map {
+            BedtimeRamp.weights(at: $0.date, bedtime: bedtime, longitude: $0.longitude, calendar: calendar)
+        } ?? .inactive
+        return AdaptiveMapping.target(
             elevation: elevation, minElevation: minElevation, rising: rising, presets: presets,
             intensityMin: adaptiveMin, intensityMax: adaptiveMax,
-            whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
+            whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax, bedtime: weights
         )
-        return clamp(banded.intensity + adaptiveIntensityOffset, to: intensityBand)
     }
 
     func applyAdaptive() {
@@ -329,6 +377,7 @@ final class DisplayManager {
         guard let coord = location.coordinate else {
             coordinate = nil
             adaptiveStatusText = location.authorization == .denied ? "Location needed" : "Locating…"
+            if nextSolarEventText != nil { nextSolarEventText = nil }
             return nil
         }
         if coordinate == nil || coordinate! != coord { coordinate = coord }   // avoid spurious invalidation
@@ -340,11 +389,9 @@ final class DisplayManager {
         // Day anchor at noon (high-latitude winter) the switch is a step, so fade across it.
         if let lastAdaptiveRising, lastAdaptiveRising != rising { animateNextAdaptiveTarget = true }
         lastAdaptiveRising = rising
-        let banded = AdaptiveMapping.banded(
-            elevation: elev, minElevation: minElev, rising: rising, presets: presets,
-            intensityMin: adaptiveMin, intensityMax: adaptiveMax,
-            whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
-        )
+        let banded = adaptiveCurve(
+            elevation: elev, minElevation: minElev, rising: rising,
+            time: (date: date, longitude: coord.longitude))
 
         // If the user moved a slider while Core Location was still resolving, preserve the
         // requested value and derive its curve-relative offset only now that a real baseline
@@ -370,13 +417,61 @@ final class DisplayManager {
             whitepoint: clamp(banded.whitepoint + adaptiveWhitepointOffset, to: whitepointBand))
 
         let elevationText = Self.formatElevation(elev)
+        // The floor, not the sun, set the curve (before the manual offset).
+        let floored = banded.bedtime ? " · bedtime" : ""
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0)
             ? " · adjusted" : ""
-        let source = location.isApproximate ? " · time zone"
+        let source = location.manualCoordinate != nil ? " · manual"
+            : location.isApproximate ? " · time zone"
             : location.authorization == .denied ? " · last known" : ""
-        let status = "Following the sun · \(elevationText)\(adjusted)\(source)"
+        let status = "Following the sun · \(elevationText)\(floored)\(adjusted)\(source)"
         if status != adaptiveStatusText { adaptiveStatusText = status }   // avoid 5 s-tick invalidation
+        updateNextSolarEvent(at: date, coordinate: coord)
         return target
+    }
+
+    /// Keep the popover countdown current from the cached event. The scan behind it is ~720
+    /// elevation evaluations, so it reruns only once the event has passed, the coordinate
+    /// moves, the clock is set back, or Adaptive turns on (which clears the cache).
+    private func updateNextSolarEvent(
+        at date: Date, coordinate coord: (latitude: Double, longitude: Double)
+    ) {
+        let cache: SolarEventCache
+        if let cached = solarEventCache, cached.latitude == coord.latitude,
+           cached.longitude == coord.longitude, date >= cached.scannedAt, date < cached.validUntil {
+            cache = cached
+        } else {
+            let event = nextSolarEvent(date, coord.latitude, coord.longitude)
+                .map { (label: $0.label, date: date.addingTimeInterval($0.seconds)) }
+            cache = SolarEventCache(
+                latitude: coord.latitude, longitude: coord.longitude, scannedAt: date,
+                event: event,
+                // Nothing crosses within the scan's 24 h horizon (polar day or night).
+                validUntil: event?.date ?? date.addingTimeInterval(86_400))
+            solarEventCache = cache
+        }
+        let text = cache.event.map {
+            Self.describeNextSolarEvent($0.label, in: $0.date.timeIntervalSince(date))
+        }
+        if text != nextSolarEventText { nextSolarEventText = text }   // minute granularity
+    }
+
+    /// Popover countdown such as "Sunset in 1 h 12 m". Whole minutes, rounded down; the
+    /// final minute reads "under a minute".
+    nonisolated static func describeNextSolarEvent(_ label: String, in seconds: TimeInterval) -> String {
+        let name = label.prefix(1).uppercased() + label.dropFirst()
+        let minutes = seconds.isFinite ? Int(min(max(0, seconds), 7 * 86_400) / 60) : 0
+        let duration = switch minutes {
+        case 0: "under a minute"
+        case ..<60: "\(minutes) m"
+        default: hoursText(minutes)
+        }
+        return "\(name) in \(duration)"
+    }
+
+    /// "1 h 12 m" or "2 h". Callers word anything under an hour themselves.
+    nonisolated private static func hoursText(_ minutes: Int) -> String {
+        minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) m"
     }
 
     private static func formatElevation(_ elevation: Double) -> String {
@@ -410,6 +505,22 @@ final class DisplayManager {
         lastLocationRequest = nil
         lastAdaptiveRising = nil
         adaptiveStatusText = ""
+        solarEventCache = nil
+        if nextSolarEventText != nil { nextSolarEventText = nil }
+    }
+
+    /// Follow the user's coordinate, or nil to return to automatic location. The provider
+    /// reports the change, so an active curve fades to the new target as for a better fix.
+    func setManualLocation(_ coordinate: (latitude: Double, longitude: Double)?) {
+        guard !isTerminating else { return }
+        // Back to automatic: the curve update the provider triggers asks for a fresh fix
+        // now instead of waiting out the hourly retry.
+        if coordinate == nil { lastLocationRequest = nil }
+        location.setManualCoordinate(coordinate)
+        manualLocation = location.manualCoordinate
+        if coordinate == nil, adaptiveEnabled, lastLocationRequest == nil {
+            requestLocationIfNeeded(at: now(), force: true)
+        }
     }
 
     // MARK: - Reset
@@ -485,6 +596,9 @@ final class DisplayManager {
     @ObservationIgnored private let onMasterStateChange: (Bool) -> Void
     @ObservationIgnored private let locationPromptActivation: () -> Void
     @ObservationIgnored private let now: () -> Date
+    /// Reads the bedtime as local wall-clock time; autoupdating follows time-zone changes.
+    @ObservationIgnored private let calendar: Calendar
+    @ObservationIgnored private let nextSolarEvent: (Date, Double, Double) -> SunCycle.Event?
     @ObservationIgnored private let location: LocationProviding
     // nonisolated(unsafe): mutated only on the main actor; read in deinit for cleanup.
     @ObservationIgnored nonisolated(unsafe) private var adaptiveTimer: Timer?
@@ -504,7 +618,8 @@ final class DisplayManager {
     @ObservationIgnored nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var clockObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var pauseTimer: Timer?
-    /// Fraction of the tint shown: 1 normally, 0 while paused or peeking. Invert is not scaled.
+    /// Fraction of the tint shown: 1 normally, 0 while paused, peeking or suspended for an app.
+    /// Invert is not scaled.
     @ObservationIgnored private var pauseLevel: Double = 1
     @ObservationIgnored private var pauseTransition: PauseTransition?
     @ObservationIgnored private var isPeeking = false
@@ -519,7 +634,7 @@ final class DisplayManager {
     // Transient live-preview overrides while a band marker is being dragged.
     @ObservationIgnored private var previewIntensityValue: Double?
     @ObservationIgnored private var previewWhitepointValue: Double?
-    // Transient rendered-output overrides used only by the Adaptive toggle crossfade.
+    // Transient rendered-output overrides used by the Adaptive and preset crossfades.
     @ObservationIgnored private var transitionIntensityValue: Double?
     @ObservationIgnored private var transitionWhitepointValue: Double?
     @ObservationIgnored private var outputTransition: OutputTransition?
@@ -534,6 +649,7 @@ final class DisplayManager {
     @ObservationIgnored private var lastCurveWhitepoint: Double?
     @ObservationIgnored private var lastLocationRequest: Date?
     @ObservationIgnored private var lastAdaptiveRising: Bool?
+    @ObservationIgnored private var solarEventCache: SolarEventCache?
     @ObservationIgnored private var hasActivatedForLocationPrompt = false
     // Presets rarely change; skip re-encoding them on every slider-driven save.
     @ObservationIgnored private var lastSavedPresets: [Preset]?
@@ -556,10 +672,16 @@ final class DisplayManager {
         defaults: UserDefaults = .standard,
         location: LocationProviding = LocationProvider(),
         now: @escaping () -> Date = { Date() },
+        calendar: Calendar = .autoupdatingCurrent,
+        nextSolarEvent: @escaping (Date, Double, Double) -> SunCycle.Event? = {
+            SunCycle.findNextEvent(
+                now: $0, latitude: $1, longitude: $2, thresholds: SunCycle.twilightThresholds)
+        },
         adaptiveTransitionDuration: TimeInterval = Defaults.adaptiveFadeDuration,
         displayTransitionDuration: TimeInterval = Defaults.displayFadeDuration,
         peekTransitionDuration: TimeInterval = Defaults.peekFadeDuration,
         transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        suspendedForApp: String? = nil,
         locationPromptActivation: @escaping () -> Void = { NSApplication.shared.activate() },
         onMasterStateChange: @escaping (Bool) -> Void = { _ in }
     ) {
@@ -572,7 +694,10 @@ final class DisplayManager {
         self.onMasterStateChange = onMasterStateChange
         self.locationPromptActivation = locationPromptActivation
         self.location = location
+        self.manualLocation = location.manualCoordinate
         self.now = now
+        self.calendar = calendar
+        self.nextSolarEvent = nextSolarEvent
         self.adaptiveTransitionDuration = max(0, adaptiveTransitionDuration)
         self.displayTransitionDuration = max(0, displayTransitionDuration)
         self.peekTransitionDuration = max(0, peekTransitionDuration)
@@ -598,20 +723,20 @@ final class DisplayManager {
         self.adaptiveWpMin = defaults.object(forKey: "redlight.adaptiveWpMin") as? Double ?? Defaults.whitepointMin
         self.adaptiveWpMax = defaults.object(forKey: "redlight.adaptiveWpMax") as? Double ?? Defaults.whitepointMax
         normalizeBands()
+        // Minutes after midnight; anything else (wrong type, out of range) reads as off.
+        self.bedtime = (defaults.object(forKey: "redlight.adaptiveBedtime") as? Int)
+            .flatMap { Bedtime(minuteOfDay: $0) }
         loadPresets()
         if adaptiveEnabled { activePresetIndex = nil }
         refreshDisplays(apply: false)
         loadPause()
-        startListening()
-        location.onChange = { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.adaptiveEnabled else { return }
-                // A better fix (time-zone city → precise, or a move while asleep) can
-                // shift the target several degrees. Fade there rather than step.
-                self.animateNextAdaptiveTarget = true
-                self.applyAdaptive()
-            }
+        // The app in front at launch is known before the first frame, so a chosen one starts
+        // hidden like a saved pause instead of fading in and straight back out.
+        if let suspendedForApp {
+            self.suspendedForApp = suspendedForApp
+            pauseLevel = 0
         }
+        startListening()
         isInitialized = true
         prepareStartupDisplayTransitions()
         if adaptiveEnabled {
@@ -626,6 +751,19 @@ final class DisplayManager {
             startAdaptiveTimer()
         } else {
             applyToActiveDisplays()
+        }
+        // Subscribe only after the launch target is on screen. Core Location can hand back
+        // its last known fix from inside the request above; fading to it would start from
+        // the persisted pair, which may be hours old, during the launch fade-in. The
+        // target just applied already used that fix.
+        location.onChange = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.adaptiveEnabled else { return }
+                // A better fix (time-zone city → precise, or a move while asleep) can
+                // shift the target several degrees. Fade there rather than step.
+                self.animateNextAdaptiveTarget = true
+                self.applyAdaptive()
+            }
         }
         startPreparedStartupDisplayTransitions()
         schedulePauseTimer()
@@ -687,10 +825,13 @@ final class DisplayManager {
     /// Refresh the one-shot kilometer-accuracy location occasionally while Adaptive stays
     /// enabled. This keeps a traveling Mac on the right solar cycle without continuous GPS.
     private func requestLocationIfNeeded(at date: Date, force: Bool = false) {
-        guard location.authorization != .denied else { return }
+        // A manual coordinate needs neither a fix nor the permission prompt.
+        guard location.manualCoordinate == nil, location.authorization != .denied else { return }
         let elapsed = lastLocationRequest.map { date.timeIntervalSince($0) }
-        let refreshInterval: TimeInterval =
-            (location.coordinate == nil || location.isApproximate) ? 60 : 3_600
+        // Hourly even without a precise fix: a Mac that cannot get one (ethernet-only
+        // desktop) would otherwise wake the location hardware every minute, forever.
+        // Launch, wake and turning Adaptive on still ask immediately.
+        let refreshInterval: TimeInterval = 3_600
         if !force, let elapsed, elapsed >= 0, elapsed < refreshInterval { return }
         lastLocationRequest = date
         // Allow the launch context to decide whether surfacing the permission dialog should
@@ -810,7 +951,12 @@ final class DisplayManager {
     func setAll(on: Bool) {
         guard !isTerminating else { return }
         if on {
-            if isPaused { resume(); return }
+            if isPaused {
+                resume()
+                // A pause can outlive its displays (the only enabled monitor was
+                // unplugged). Resuming alone would leave Redlight off, so carry on.
+                if isOn { return }
+            }
             guard !isOn else { return }
             let remembered = Set(defaults.stringArray(forKey: "redlight.masterEnabledDisplays") ?? [])
             let restored = displays.filter { remembered.contains($0.persistenceKey) }.map(\.id)
@@ -954,10 +1100,10 @@ final class DisplayManager {
 
     func applyPreset(_ index: Int) {
         guard !isTerminating, presets.indices.contains(index) else { return }
+        // Fade from the frame on screen, including one caught mid-fade. The model lands on
+        // the preset at once; only the render clock eases there, as with Adaptive.
         let rendered = currentRenderedOutput()
-        let shouldFade = adaptiveEnabled
-        cancelOutputTransition()
-        if shouldFade {
+        if adaptiveEnabled {
             setInternal { adaptiveEnabled = false }   // didSet skipped; cleanup + single save below
             animateNextAdaptiveTarget = false
             stopAdaptiveTracking()
@@ -968,13 +1114,9 @@ final class DisplayManager {
             whitepoint = preset.whitepoint
         }
         activePresetIndex = index
-        if shouldFade {
-            startOutputTransition(
-                from: rendered,
-                to: OutputPair(intensity: preset.intensity, whitepoint: preset.whitepoint))
-        } else {
-            applyToActiveDisplays()
-        }
+        startOutputTransition(
+            from: rendered,
+            to: OutputPair(intensity: preset.intensity, whitepoint: preset.whitepoint))
         save()
     }
 
@@ -994,13 +1136,10 @@ final class DisplayManager {
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let minElev = SolarCalculator.elevationAtSolarMidnight(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
-                let curve = AdaptiveMapping.banded(
+                let curve = adaptiveCurve(
                     elevation: elev, minElevation: minElev,
                     rising: SolarCalculator.isRising(at: date, longitude: coord.longitude),
-                    presets: presets,
-                    intensityMin: adaptiveMin, intensityMax: adaptiveMax,
-                    whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax
-                )
+                    time: (date: date, longitude: coord.longitude))
                 adaptiveIntensityOffset = desiredIntensity - curve.intensity
                 adaptiveWhitepointOffset = desiredWhitepoint - curve.whitepoint
             }
@@ -1465,20 +1604,59 @@ final class DisplayManager {
     /// When an active pause ends; persisted so a relaunch or update stays paused.
     private(set) var pausedUntil: Date?
     var isPaused: Bool { pausedUntil != nil }
+    /// The current pause's total length, persisted beside `pausedUntil`. It anchors the
+    /// countdown's schedule and caps a pause that a clock change pushed further out.
+    private(set) var pauseLength: TimeInterval = Defaults.pauseDuration
 
     /// Whole minutes left, rounded up so the countdown reads 1 until the pause ends.
+    /// The CLI and Siri status say "N min left" at any length, so scripts parse one form.
     nonisolated static func pauseMinutesLeft(until: Date, now: Date) -> Int {
         max(1, Int((until.timeIntervalSince(now) / 60).rounded(.up)))
     }
 
-    /// Suspend the tint (not Invert) for `Defaults.pauseDuration`. Requires a filter to pause.
+    /// Popover countdown: "30 min" under an hour, then "1 h 12 m", from the same rounded-up
+    /// minutes as `pauseMinutesLeft`.
+    nonisolated static func pauseCountdownText(until: Date, now: Date) -> String {
+        durationText(minutes: pauseMinutesLeft(until: until, now: now))
+    }
+
+    /// The countdown spelled out for VoiceOver, which would read "h" and "m" as letters.
+    nonisolated static func pauseCountdownAccessibilityText(until: Date, now: Date) -> String {
+        let minutes = pauseMinutesLeft(until: until, now: now)
+        func count(_ n: Int, _ unit: String) -> String { "\(n) \(unit)\(n == 1 ? "" : "s")" }
+        let parts = [minutes / 60 > 0 ? count(minutes / 60, "hour") : nil,
+                     minutes % 60 > 0 ? count(minutes % 60, "minute") : nil].compactMap { $0 }
+        return "Paused, \(parts.joined(separator: " ")) left"
+    }
+
+    /// A pause length in the same words, such as "30 min" or "2 h".
+    nonisolated static func pauseLengthText(_ seconds: TimeInterval) -> String {
+        durationText(minutes: seconds.isFinite ? max(1, Int((seconds / 60).rounded())) : 1)
+    }
+
+    nonisolated private static func durationText(minutes: Int) -> String {
+        minutes < 60 ? "\(minutes) min" : hoursText(minutes)
+    }
+
+    /// Time to the next sunrise at the current coordinate (manual, fix or time zone); nil
+    /// without a coordinate or when the sun does not rise within 24 hours.
+    func secondsUntilSunrise() -> TimeInterval? {
+        guard let coord = location.coordinate else { return nil }
+        let date = now()
+        return SunCycle.nextSunrise(after: date, latitude: coord.latitude, longitude: coord.longitude)
+            .map { $0.timeIntervalSince(date) }
+    }
+
+    /// Suspend the tint (not Invert) for `duration`, clamped to one minute through one day.
+    /// Replaces a pause already running. Requires a filter to pause.
     @discardableResult
-    func pause() -> Bool {
+    func pause(for duration: TimeInterval = Defaults.pauseDuration) -> Bool {
         guard !isTerminating, isOn else { return false }
         isPeeking = false
-        pausedUntil = now().addingTimeInterval(Defaults.pauseDuration)
+        pauseLength = duration.isFinite ? clamp(duration, to: Defaults.pauseLengthRange) : Defaults.pauseDuration
+        pausedUntil = now().addingTimeInterval(pauseLength)
         persistPause()
-        startPauseTransition(to: 0, duration: displayTransitionDuration)
+        startPauseTransition(to: pauseTarget, duration: displayTransitionDuration)
         publishMasterState()
         return true
     }
@@ -1487,16 +1665,56 @@ final class DisplayManager {
         guard !isTerminating, isPaused else { return }
         pausedUntil = nil
         persistPause()
-        startPauseTransition(to: isPeeking ? 0 : 1, duration: displayTransitionDuration)
+        startPauseTransition(to: pauseTarget, duration: displayTransitionDuration)
         publishMasterState()
     }
 
-    /// Show the unfiltered screen only while a shortcut is held. Does nothing while paused.
+    /// The name of the chosen app in front, which hides the tint (not Invert) like a pause.
+    /// Unlike a pause it is untimed, not saved, and not off: `isOn`, `isFiltering` and the
+    /// published master state ignore it, and turning the master off and on keeps it.
+    private(set) var suspendedForApp: String?
+
+    /// The level every pause, peek and app suspension edge fades to: 0 while any of them
+    /// hides the tint, so ending one never shows the filter while another still applies.
+    private var pauseTarget: Double {
+        isPaused || isPeeking || suspendedForApp != nil ? 0 : 1
+    }
+
+    /// Needs no filter: a suspension that starts while off still applies when turned on.
+    func setSuspendedForApp(_ name: String?) {
+        guard !isTerminating, suspendedForApp != name else { return }
+        let target = pauseTarget
+        suspendedForApp = name
+        // Switching between two chosen apps, or a pause or peek already hiding the tint,
+        // leaves the level (and any fade in progress) alone.
+        guard pauseTarget != target else { return }
+        // Ending it while off, perhaps mid fade-out: fold the hidden level into that fade-out,
+        // as `endPauseIntoFadeOut` does, so the tint cannot come back on its way out.
+        if !isOn, pauseTarget == 1 {
+            let level = pauseLevel
+            let shown = displayTransitions.map { ($0.key, level * $0.value.currentAmount) }
+            pauseTransition = nil
+            if isPauseFading { isPauseFading = false }
+            pauseLevel = 1
+            for (id, amount) in shown { startDisplayTransition(id, from: amount, to: 0) }
+            applyToActiveDisplays()
+            stopTransitionTimerIfIdle()
+            return
+        }
+        // While off nothing is tinted, so snap: a fade would flicker the menu bar icon and
+        // could leave a falling level to meet a turn-on's rising one.
+        let tinted = isOn || !fadingDisplayIDs.isEmpty
+        startPauseTransition(to: pauseTarget, duration: tinted ? displayTransitionDuration : 0)
+    }
+
+    /// Show the unfiltered screen only while a shortcut is held. Does nothing while paused
+    /// or suspended for an app.
     func setPeeking(_ peeking: Bool) {
         guard !isTerminating, isPeeking != peeking, !peeking || isOn else { return }
+        let target = pauseTarget
         isPeeking = peeking
-        guard !isPaused else { return }
-        startPauseTransition(to: peeking ? 0 : 1, duration: peekTransitionDuration)
+        guard pauseTarget != target else { return }
+        startPauseTransition(to: pauseTarget, duration: peekTransitionDuration)
     }
 
     /// End an expired pause, and cap one that a clock change pushed further out.
@@ -1504,7 +1722,7 @@ final class DisplayManager {
         guard let pausedUntil, !isTerminating else { return }
         let current = now()
         if pausedUntil <= current { resume(); return }
-        let latest = current.addingTimeInterval(Defaults.pauseDuration)
+        let latest = current.addingTimeInterval(pauseLength)
         if pausedUntil > latest {
             self.pausedUntil = latest
             persistPause()
@@ -1518,14 +1736,24 @@ final class DisplayManager {
         let current = now()
         let until = Date(timeIntervalSince1970: raw)
         if until > current, isOn {
-            pausedUntil = min(until, current.addingTimeInterval(Defaults.pauseDuration))
+            pauseLength = Self.loadPauseLength(defaults)
+            pausedUntil = min(until, current.addingTimeInterval(pauseLength))
             pauseLevel = 0
         }
         persistPause()
     }
 
+    /// A pause saved before lengths were stored was always the default, so a missing (or
+    /// corrupt) length keeps the 30-minute cap.
+    private static func loadPauseLength(_ defaults: UserDefaults) -> TimeInterval {
+        guard let value = defaults.object(forKey: "redlight.pauseLength") as? Double, value.isFinite,
+              Defaults.pauseLengthRange.contains(value) else { return Defaults.pauseDuration }
+        return value
+    }
+
     private func persistPause() {
         persist(pausedUntil?.timeIntervalSince1970, "redlight.pausedUntil")
+        persist(pausedUntil == nil ? nil : pauseLength, "redlight.pauseLength")
         schedulePauseTimer()
     }
 
@@ -1542,9 +1770,18 @@ final class DisplayManager {
     }
 
     /// Turning the last display off ends a pause. Carry the pause level into each display's
-    /// fade-out so a paused filter does not briefly reappear on its way out.
+    /// fade-out so a paused filter does not briefly reappear on its way out. An app
+    /// suspension outlives off, so its level stays at (or keeps fading to) 0 and scales the
+    /// fade-out as usual; turning on again while the app is in front then stays untinted.
     private func endPauseIntoFadeOut() {
         guard isPaused || isPeeking || pauseLevel < 1 || pauseTransition != nil else { return }
+        if suspendedForApp != nil {
+            pausedUntil = nil
+            isPeeking = false
+            persistPause()
+            publishMasterState()
+            return
+        }
         let level = pauseLevel
         let shown = displays.map { display in
             (display.id, level * (displayTransitions[display.id]?.currentAmount
@@ -1622,10 +1859,14 @@ final class DisplayManager {
     /// in the (possibly moved) band immediately, then revert the filter to it.
     func endPreview() {
         guard !isTerminating else { return }
+        // Every command and every popover close ends up here. With no preview showing the
+        // rendered output is unchanged, so skip the gamma write; a pending band change
+        // still applies itself in the flush.
+        let wasPreviewing = previewIntensityValue != nil || previewWhitepointValue != nil
         previewIntensityValue = nil
         previewWhitepointValue = nil
         flushBandRefresh()
-        applyToActiveDisplays()
+        if wasPreviewing { applyToActiveDisplays() }
     }
 
     // MARK: - Band change coalescing
@@ -1704,6 +1945,7 @@ final class DisplayManager {
         persist(adaptiveMax, "redlight.adaptiveMax")
         persist(adaptiveWpMin, "redlight.adaptiveWpMin")
         persist(adaptiveWpMax, "redlight.adaptiveWpMax")
+        persist(bedtime?.minuteOfDay, "redlight.adaptiveBedtime")
         publishMasterState()
     }
 
@@ -1763,8 +2005,10 @@ final class DisplayManager {
         CGGetActiveDisplayList(0, nil, &count)
         guard count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        CGGetActiveDisplayList(count, &ids, &count)
-        return ids
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        // A display removed between the two calls leaves zeroed slots; drop them rather
+        // than list a phantom display 0.
+        return Array(ids.prefix(Int(count)))
     }
 
     nonisolated static func systemDisplayName(for id: CGDirectDisplayID) -> String {

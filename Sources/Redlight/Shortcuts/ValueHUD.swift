@@ -12,14 +12,26 @@ protocol ValueReadout: AnyObject {
 @MainActor
 final class ValueHUD: ValueReadout {
     private var panel: NSPanel?
+    private var host: NSHostingView<ValueHUDView>?
     private var hideTask: Task<Void, Never>?
 
     func show(_ text: String, level: Double?) {
         let panel = panel ?? makePanel()
         self.panel = panel
-        let host = NSHostingView(rootView: ValueHUDView(text: text, level: level))
-        let size = host.fittingSize
-        panel.contentView = host
+        // A held step shortcut calls this at the key repeat rate. Building a hosting view
+        // costs well over a millisecond each time; updating the existing one does not.
+        let view = ValueHUDView(text: text, level: level)
+        let host: NSHostingView<ValueHUDView>
+        if let existing = self.host {
+            existing.rootView = view
+            host = existing
+        } else {
+            host = NSHostingView(rootView: view)
+            self.host = host
+            panel.contentView = host
+        }
+        let fitting = host.fittingSize
+        let size = CGSize(width: fitting.width.rounded(.up), height: fitting.height.rounded(.up))
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
             ?? NSScreen.main
         if let visible = screen?.visibleFrame {

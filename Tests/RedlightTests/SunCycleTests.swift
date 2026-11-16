@@ -63,6 +63,30 @@ import Foundation
         #expect(c.nowElevation < -18)
     }
 
+    @Test func nextSunriseSkipsTheSunsetAhead() throws {
+        // Equator, mid-afternoon: the first horizon crossing is sunset, not sunrise.
+        let now = date("2025-03-20T15:00:00Z")
+        #expect(SunCycle.findNextEvent(now: now, latitude: 0, longitude: 0, thresholds: [0])?.label == "sunset")
+        let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: 0, longitude: 0))
+        #expect(sunrise.timeIntervalSince(now) > 12 * 3_600)
+        #expect(sunrise.timeIntervalSince(now) < 24 * 3_600)
+        #expect(abs(SolarCalculator.elevation(at: sunrise, latitude: 0, longitude: 0)) < 0.5)
+        #expect(SolarCalculator.elevation(at: sunrise.addingTimeInterval(-600), latitude: 0, longitude: 0) < 0)
+        #expect(SolarCalculator.elevation(at: sunrise.addingTimeInterval(600), latitude: 0, longitude: 0) > 0)
+    }
+
+    @Test func nextSunriseBeforeDawnIsThatMorning() throws {
+        let now = date("2025-03-20T03:00:00Z")
+        let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: 0, longitude: 0))
+        #expect(sunrise.timeIntervalSince(now) > 2 * 3_600)
+        #expect(sunrise.timeIntervalSince(now) < 4 * 3_600)
+    }
+
+    @Test func polarDayAndNightHaveNoSunrise() {
+        #expect(SunCycle.nextSunrise(after: date("2025-06-21T12:00:00Z"), latitude: 89.9, longitude: 0) == nil)
+        #expect(SunCycle.nextSunrise(after: date("2025-12-21T12:00:00Z"), latitude: 89.9, longitude: 0) == nil)
+    }
+
     @Test func degenerateSampleCountDoesNotCrash() {
         // sampleCount < 2 used to divide by zero (t = i / (sampleCount − 1)).
         let c = SunCycle(now: date("2025-03-20T15:00:00Z"),
@@ -96,5 +120,16 @@ import Foundation
             #expect(crossings[0] < cycle.nowFraction)
             #expect(crossings[1] > cycle.nowFraction)
         }
+    }
+
+    @Test func nextSunriseIsFoundJustAfterALaterAutumnSunrise() throws {
+        // 65°N in October: each sunrise is minutes later than the last, so a minute after
+        // one sunrise the next is more than 24 hours away.
+        let start = Date(timeIntervalSince1970: 1_790_812_800)   // 2026-10-01 00:00 UTC
+        let first = try #require(SunCycle.nextSunrise(after: start, latitude: 65, longitude: 0))
+        let after = first.addingTimeInterval(60)
+        let second = try #require(SunCycle.nextSunrise(after: after, latitude: 65, longitude: 0))
+        let gap = second.timeIntervalSince(after)
+        #expect(gap > 86_400 - 60 && gap < 90_000)
     }
 }

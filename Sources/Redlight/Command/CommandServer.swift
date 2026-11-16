@@ -74,7 +74,7 @@ final class CommandServer {
 
     private func encode(_ reply: CommandReply) -> Data {
         // These wire values contain only finite validated scalars and strings.
-        (try? JSONEncoder().encode(reply)) ?? Data("{\"v\":1,\"ok\":false,\"error\":{\"code\":\"system\",\"message\":\"Unable to encode command reply.\"}}".utf8)
+        (try? JSONEncoder().encode(reply)) ?? Data("{\"v\":\(CommandRequest.currentVersion),\"ok\":false,\"error\":{\"code\":\"system\",\"message\":\"Unable to encode command reply.\"}}".utf8)
     }
 
     deinit {

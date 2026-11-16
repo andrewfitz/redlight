@@ -16,14 +16,18 @@ enum CLIParser {
     static let help = """
     Usage: redlight <command> [--json]
       on | off | toggle | status | pause | resume
+      pause [minutes|until sunrise]
       color <0-100> | whitepoint <25-100>
       color <up|down> [step] | whitepoint <up|down> [step]
       reset <color|whitepoint>
       preset [save] <day|warm|sunset|night|deep-red>
       adaptive <on|off|toggle>
+      adaptive bedtime <HH:MM|off>
+      location <latitude> <longitude> | location auto
       limits <color|whitepoint> <min> <max>
       display list
       display <number|name|all> [invert] <on|off|toggle>
+      apps list | apps clear | apps <add|remove> <bundle-id>
       appearance <light|dark|toggle>
       login <on|off> | update | quit
     Use --json for machine-readable output, --help for help, --version for version.
@@ -55,6 +59,10 @@ enum CLIParser {
             try count(0, verb)
             command = .master(try enumeration(verb, valid: CommandSwitch.allCases))
         case "pause", "resume":
+            if verb == "pause", !tail.isEmpty {
+                command = .pauseFor(try pauseLength(tail))
+                break
+            }
             try count(0, verb)
             command = .pause(verb == "pause" ? .on : .off)
         case "status", "update", "quit":
@@ -84,8 +92,20 @@ enum CLIParser {
                 command = .preset(try enumeration(tail[0], valid: CommandPreset.allCases))
             }
         case "adaptive":
+            if tail.first == "bedtime" {
+                try count(2, "adaptive bedtime <HH:MM|off>")
+                if tail[1] == "off" { command = .bedtime(.off); break }
+                let bedtime = try Bedtime.parse(tail[1])
+                command = .bedtime(.at(hour: bedtime.hour, minute: bedtime.minute))
+                break
+            }
             try count(1, "adaptive <on|off|toggle>")
             command = .adaptive(try enumeration(tail[0], valid: CommandSwitch.allCases))
+        case "location":
+            if tail == ["auto"] { command = .location(.automatic); break }
+            try count(2, "location <latitude> <longitude>, or location auto")
+            let coordinate = try ManualLocation.parse(latitude: tail[0], longitude: tail[1])
+            command = .location(.manual(latitude: coordinate.latitude, longitude: coordinate.longitude))
         case "limits":
             try count(3, "limits <color|whitepoint> <min> <max>")
             let channel = try enumeration(tail[0], valid: CommandChannel.allCases)
@@ -111,6 +131,19 @@ enum CLIParser {
             }
             let state = try enumeration(tail.last!, valid: CommandSwitch.allCases)
             command = tail.count == 3 ? .invert(selector, state) : .display(selector, state)
+        case "apps":
+            let usage = "apps list | apps clear | apps <add|remove> <bundle-id>"
+            switch tail.first {
+            case "list", "clear":
+                try count(1, usage)
+                command = tail[0] == "list" ? .appsList : .apps(.clear)
+            case "add", "remove":
+                try count(2, usage)
+                let bundleID = try AppBundleID.validate(tail[1])
+                command = .apps(tail[0] == "add" ? .add(bundleID) : .remove(bundleID))
+            default:
+                throw CommandError.invalidInput("Usage: redlight \(usage)")
+            }
         case "appearance":
             try count(1, "appearance <light|dark|toggle>")
             command = .appearance(try enumeration(tail[0], valid: CommandAppearance.allCases))
@@ -121,6 +154,16 @@ enum CLIParser {
         default: throw CommandError.invalidInput("Unknown command '\(verb)'. \(help)")
         }
         return ParsedCLICommand(command: command, json: json)
+    }
+
+    /// Whole minutes keep `pause 90` unambiguous; "until sunrise" is two words.
+    private static func pauseLength(_ tail: [String]) throws -> CommandPauseLength {
+        if tail == ["until", "sunrise"] { return .untilSunrise }
+        guard tail.count == 1, let minutes = Int(tail[0]), CommandPauseLength.minuteRange.contains(minutes) else {
+            throw CommandError.invalidInput(
+                "Usage: redlight pause [minutes|until sunrise]; minutes must be a whole number from 1 to 1440.")
+        }
+        return .minutes(minutes)
     }
 
     private static func stepAmount(_ text: String) throws -> Double {
@@ -155,6 +198,8 @@ enum RedlightCLI {
                 writeOutput(status.displays.map {
                     "\($0.number): \($0.name) — \($0.enabled ? "on" : "off"), invert \($0.inverted ? "on" : "off")"
                 }.joined(separator: "\n"))
+            } else if parsed.command == .appsList, !status.apps.isEmpty {
+                writeOutput(status.apps.joined(separator: "\n"))
             }
             return 0
         } catch CLIInformation.help {
@@ -192,11 +237,11 @@ enum RedlightCLI {
     private static func describe(_ status: Status) -> String {
         guard status.running else { return "not running" }
         return """
-        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")
+        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")\(status.suspendedFor.map { "; suspended for \($0)" } ?? "")
         Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
         Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
-        Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.fading ? "; fading" : "")
+        Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")
         \(status.statusLine)

@@ -8,6 +8,7 @@ struct SunCycle {
         let t: Double            // fraction of the local day, 0…1
         let elevation: Double
         let rising: Bool         // before solar noon (morning side of the Adaptive curve)
+        let date: Date           // the sample's instant, for the Adaptive bedtime floor
     }
     struct Event { let label: String; let seconds: Double; let elevation: Double }
 
@@ -25,9 +26,15 @@ struct SunCycle {
     private let latitude: Double
     private let longitude: Double
 
-    /// Every physical elevation anchor that can change the Adaptive curve. The next-event
-    /// countdown uses this same set.
+    /// Every physical elevation anchor that can change the Adaptive curve. `nextEvent` uses
+    /// this same set.
     static let thresholds: [Double] = SolarCurve.elevationMarkers.map(\.elevation)
+    /// The named horizon and twilight crossings only. The +12° and +6° curve anchors have
+    /// no everyday name, so a "next event" shown to the user skips them.
+    static let twilightThresholds: [Double] = [
+        SolarCurve.sunsetElevation, SolarCurve.civilDuskElevation,
+        SolarCurve.nauticalDuskElevation, SolarCurve.nightElevation,
+    ]
 
     init(now: Date, latitude: Double, longitude: Double,
          calendar: Calendar = .current, sampleCount: Int = 73) {
@@ -46,7 +53,7 @@ struct SunCycle {
             let e = SolarCalculator.elevation(at: date, latitude: latitude, longitude: longitude)
             pts.append(Sample(
                 t: t, elevation: e,
-                rising: SolarCalculator.isRising(at: date, longitude: longitude)))
+                rising: SolarCalculator.isRising(at: date, longitude: longitude), date: date))
         }
         samples = pts
 
@@ -86,12 +93,24 @@ struct SunCycle {
         return result
     }
 
-    /// Forward-scan `[now, now+24h]` in 2-min steps for the next crossing of any threshold,
+    /// The next upward horizon crossing, or nil in polar day or night. It looks 25 hours
+    /// ahead: in autumn tomorrow's sunrise is later than today's, so just after sunrise the
+    /// next one is more than 24 hours away.
+    /// A horizon-only scan would return the sunset first during the day, so it is rising-only.
+    static func nextSunrise(after now: Date, latitude: Double, longitude: Double) -> Date? {
+        findNextEvent(now: now, latitude: latitude, longitude: longitude,
+                      thresholds: [SolarCurve.sunsetElevation], rising: true, horizon: 90_000)
+            .map { now.addingTimeInterval($0.seconds) }
+    }
+
+    /// Forward-scan `[now, now+horizon]` (24 h by default) in 2-min steps for the next crossing of any threshold,
     /// then bisect to ~2 s. When several thresholds flip within one step, the earliest in
-    /// time wins. Direction is read across the step.
-    private static func findNextEvent(now: Date, latitude: Double, longitude: Double) -> Event? {
+    /// time wins. Direction is read across the step; `rising` keeps only one direction.
+    static func findNextEvent(
+        now: Date, latitude: Double, longitude: Double, thresholds: [Double] = SunCycle.thresholds,
+        rising: Bool? = nil, horizon: Double = 86_400
+    ) -> Event? {
         let step: Double = 120
-        let horizon: Double = 86_400
         func elev(_ offset: Double) -> Double {
             SolarCalculator.elevation(at: now.addingTimeInterval(offset),
                                       latitude: latitude, longitude: longitude)
@@ -113,7 +132,7 @@ struct SunCycle {
         while offset <= horizon {
             let cur = elev(offset)
             var best: (thr: Double, at: Double)?
-            for thr in thresholds where (prev - thr) * (cur - thr) < 0 {
+            for thr in thresholds where (prev - thr) * (cur - thr) < 0 && rising.map({ $0 == (cur > prev) }) ?? true {
                 let at = crossing(thr, prevOffset, offset)
                 if best == nil || at < best!.at { best = (thr, at) }
             }

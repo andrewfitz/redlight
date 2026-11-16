@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.5 - 2026-11-15
+
+- Added Pause for apps. Choose apps in the popover, or with `redlight apps add|remove|list|clear <bundle-id>`, and the tint fades out while one of them is in front and back when you switch away. Invert stays on. Redlight still counts as on; the header and `status` show “suspended for” and the app's name.
+- Added pause lengths. The chevron beside the Pause button offers 30 minutes, 1 hour, 2 hours and Until sunrise, and `redlight pause <minutes>` and `redlight pause until sunrise` accept anything from 1 minute to 24 hours. Plain Pause is still 30 minutes. Long pauses count down in hours and minutes in the popover.
+- Added a bedtime for Adaptive. **Deepest by**, or `redlight adaptive bedtime <HH:MM|off>`, ramps the filter to the deepest end of your limits over the two hours before the chosen time and holds it until solar midnight. It only ever makes the evening redder, and mornings are unchanged. The sun arc and status line show it.
+- Added manual location. Enter a latitude and longitude under Adaptive, or run `redlight location <latitude> <longitude>`, and Redlight stops using Location Services and no longer asks for permission. `redlight location auto` switches back.
+- Added a next solar event countdown, such as “Sunset in 1 h 12 m”, under the Adaptive status.
+- Presets now fade over two seconds whether or not Adaptive was on, instead of jumping.
+- Added Shortcuts actions for pause length, pause until sunrise, bedtime, location and pause for apps.
+- The command protocol is now version 3, so an older running app asks to be updated. `status --json` adds optional `locationSource`, `bedtime`, `suspendedFor` and `apps` fields.
+- Adaptive now retries for a precise location once an hour instead of once a minute.
+- Fixed the main switch doing nothing when a pause outlived its only enabled display.
+- Fixed a brief fade from a stale value at launch when a location arrived immediately.
+- Fixed Use Suggested Shortcuts leaving the same combination on two actions.
+- Fixed a held Warmer/Cooler shortcut stopping its repeat when you rolled onto another step key.
+- Reduced work when closing the popover, showing the shortcut readout, opening Keyboard Shortcuts and answering `status`.
+
 ## 1.4.1 - 2026-10-27
 
 - Improved recovery when an external monitor wakes or reconnects, addressing excessive red tint and a screen split between tinted and clear halves. Redlight now handles display-only wake and hardware mode changes even when the display ID stays the same, and resets color calibration again after the connection settles.

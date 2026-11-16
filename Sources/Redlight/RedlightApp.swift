@@ -54,21 +54,34 @@ final class LaunchAtLogin {
     private(set) var requiresApproval: Bool
     @ObservationIgnored private let service: SMAppService
     @ObservationIgnored private var isSyncing = false
+    @ObservationIgnored private var lastRefresh: TimeInterval
 
     init(service: SMAppService = .mainApp) {
         self.service = service
         let status = service.status
         isEnabled = Self.isRegistered(status)
         requiresApproval = status == .requiresApproval
+        lastRefresh = ProcessInfo.processInfo.systemUptime
     }
 
     /// Re-sync with the system (login items can also change in System Settings).
-    func refresh() {
+    ///
+    /// `SMAppService.status` is a synchronous XPC round trip of about a millisecond.
+    /// Every command reply includes it, including each repeat of a held shortcut, so
+    /// those callers pass a `maxAge` and reuse a reading that recent.
+    func refresh(maxAge: TimeInterval = 0) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if maxAge > 0, now - lastRefresh < maxAge { return }
+        lastRefresh = now
         isSyncing = true
         defer { isSyncing = false }
         let status = service.status
-        isEnabled = Self.isRegistered(status)
-        requiresApproval = status == .requiresApproval
+        // @Observable notifies on every write, equal or not; an open popover would
+        // otherwise re-render on each command.
+        let registered = Self.isRegistered(status)
+        if isEnabled != registered { isEnabled = registered }
+        let needsApproval = status == .requiresApproval
+        if requiresApproval != needsApproval { requiresApproval = needsApproval }
     }
 
     func openSystemSettings() {
@@ -179,16 +192,21 @@ enum RedlightApp {
     private static func configureServices() {
         // Must run before DisplayManager enumerates displays and captures gamma tables.
         DisplaySessionRecovery.begin()
+        // Decided before the manager exists, so a chosen app already in front at launch
+        // starts the tint hidden instead of fading it in and back out.
+        let appSuspension = AppSuspensionController()
         let manager = DisplayManager(
+            suspendedForApp: appSuspension.suspendedFor,
             locationPromptActivation: {},
             onMasterStateChange: { _ in reloadRedlightControls() }
         )
+        appSuspension.onChange = { [weak manager] in manager?.setSuspendedForApp($0) }
         let launchAtLogin = LaunchAtLogin()
         let handler = CommandHandler(manager: manager, services: CommandServices(
             appearance: { AppearanceController.shared.isDark },
             setAppearance: { try AppearanceController.shared.setDark($0) },
             login: {
-                launchAtLogin.refresh()
+                launchAtLogin.refresh(maxAge: 1)
                 return Status.Login(enabled: launchAtLogin.isEnabled,
                                     requiresApproval: launchAtLogin.requiresApproval)
             },
@@ -196,7 +214,9 @@ enum RedlightApp {
             update: { Updater.shared.checkForUpdates() },
             quit: { NSApplication.shared.terminate(nil) },
             version: { AboutInfo.version() },
-            canUpdate: { Updater.shared.isAvailable }
+            canUpdate: { Updater.shared.isAvailable },
+            apps: { appSuspension.bundleIDs },
+            changeApps: { try appSuspension.apply($0) }
         ))
         do {
             guard let server = AppDelegate.commandServer else {
@@ -225,7 +245,7 @@ enum RedlightApp {
         AppDelegate.makeStatusItem = {
             StatusItemController(isActive: { manager.isAnyActive }) {
                 MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
-                            openShortcuts: { shortcutsWindow.show() })
+                            openShortcuts: { shortcutsWindow.show() }, apps: appSuspension)
                     .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }
             }
         }

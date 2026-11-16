@@ -124,7 +124,12 @@ final class ShortcutStore {
 
     func useSuggested() {
         for action in ShortcutAction.allCases {
-            if let suggested = action.suggested { shortcuts[action] = suggested }
+            guard let suggested = action.suggested else { continue }
+            // As in `set`: a combination belongs to one action, so take it from another.
+            for (owner, shortcut) in shortcuts where shortcut == suggested && owner != action {
+                shortcuts[owner] = nil
+            }
+            shortcuts[action] = suggested
         }
         commit()
     }

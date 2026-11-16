@@ -10,20 +10,32 @@ import Testing
         let defaults = UserDefaults(suiteName: domain)!
         defer { defaults.removePersistentDomain(forName: domain); IntentBridge.uninstall() }
         let gamma = MockGammaController()
+        // A fixed clock, and the equator at local solar noon for it: the next sunrise is
+        // always about 18 hours ahead, never at the edge of the 24-hour search. The clock
+        // starts at the real time because the status intent counts down from `Date()`.
+        let start = Date()
+        let utcHours = start.timeIntervalSince1970.truncatingRemainder(dividingBy: 86_400) / 3_600
+        let longitude = (12 - utcHours) * 15
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 0, longitude: longitude < -180 ? longitude + 360 : longitude)
         let manager = DisplayManager(
             gamma: gamma, getDisplayIDs: { [1, 2] }, getDisplayName: { "Display \($0)" },
             getDisplayPersistenceKey: { "stable-\($0)" }, defaults: defaults,
-            location: FakeLocationProvider(), adaptiveTransitionDuration: 0, displayTransitionDuration: 0
+            location: location, now: { start }, adaptiveTransitionDuration: 0, displayTransitionDuration: 0
         )
         var dark = false
         var login = false
         var updated = false
         var quit = false
+        let apps = AppSuspensionController(source: FakeAppSource(frontmost: .photoshop), defaults: defaults,
+                                           ownBundleID: "com.redlight.app", ownProcessID: 999)
+        apps.onChange = { manager.setSuspendedForApp($0) }
         let services = CommandServices(
             appearance: { dark }, setAppearance: { dark = $0 },
             login: { Status.Login(enabled: login, requiresApproval: false) }, setLogin: { login = $0 },
             update: { updated = true }, quit: { quit = true }, version: { "test-version" },
-            deferAction: { $0() }
+            deferAction: { $0() },
+            apps: { apps.bundleIDs }, changeApps: { try apps.apply($0) }
         )
         let handler = CommandHandler(manager: manager, services: services)
         var received: [RedlightCommand] = []
@@ -41,6 +53,33 @@ import Testing
         let paused = try await GetRedlightStatusIntent().perform()
         #expect(paused.value?.contains("paused, 30 min left") == true)
         _ = try await ResumeRedlightIntent().perform()
+        _ = try await PauseRedlightIntent(minutes: 90).perform()
+        let longPause = try await GetRedlightStatusIntent().perform()
+        #expect(longPause.value?.contains("paused, 90 min left") == true)
+        _ = try await PauseRedlightUntilSunriseIntent().perform()
+        #expect(manager.isPaused)
+        #expect(manager.pauseLength > 16 * 3_600 && manager.pauseLength < 20 * 3_600)
+        _ = try await ResumeRedlightIntent().perform()
+        _ = try await SetRedlightLocationIntent(latitude: 51.5, longitude: -0.13).perform()
+        #expect(location.manualCoordinate?.latitude == 51.5)
+        _ = try await UseAutomaticRedlightLocationIntent().perform()
+        #expect(location.manualCoordinate == nil)
+        _ = try await SetRedlightBedtimeIntent(hour: 22, minute: 30).perform()
+        #expect(manager.bedtime == Bedtime(hour: 22, minute: 30))
+        let bedtimeStatus = try await GetRedlightStatusIntent().perform()
+        #expect(bedtimeStatus.value?.contains("Bedtime: 22:30") == true)
+        _ = try await TurnOffRedlightBedtimeIntent().perform()
+        #expect(manager.bedtime == nil)
+        _ = try await PauseRedlightForAppIntent(bundleID: "com.adobe.Photoshop").perform()
+        #expect(manager.suspendedForApp == "Photoshop")
+        let suspendedStatus = try await GetRedlightStatusIntent().perform()
+        #expect(suspendedStatus.value?.contains("suspended for Photoshop") == true)
+        #expect(try await ListRedlightPauseAppsIntent().perform().value == ["com.adobe.Photoshop"])
+        _ = try await StopPausingRedlightForAppIntent(bundleID: "com.adobe.Photoshop").perform()
+        #expect(manager.suspendedForApp == nil)
+        _ = try await PauseRedlightForAppIntent(bundleID: "com.apple.Photos").perform()
+        _ = try await ClearRedlightPauseAppsIntent().perform()
+        #expect(apps.bundleIDs.isEmpty)
         _ = try await SetRedlightColorIntent(value: 55).perform()
         _ = try await SetRedlightWhitepointIntent(value: 65).perform()
         _ = try await ResetRedlightLevelIntent(channel: .color).perform()
@@ -58,6 +97,7 @@ import Testing
         _ = try await SetRedlightLoginIntent(enabled: true).perform()
         let statusResult = try await GetRedlightStatusIntent().perform()
         #expect(statusResult.value?.contains("test-version") == true)
+        #expect(statusResult.value?.contains("Bedtime") == false)
         let displayResult = try await ListRedlightDisplaysIntent().perform()
         #expect(displayResult.value?.map(\.id) == ["stable-1", "stable-2"])
         if #available(macOS 15.0, *) { _ = try await SetRedlightIntent(false).perform() }
@@ -66,6 +106,11 @@ import Testing
         var expected: [RedlightCommand] = [
             .master(.on), .master(.off), .master(.toggle),
             .step(.color, -5), .step(.whitepoint, 10), .master(.on), .pause(.on), .status, .pause(.off),
+            .pauseFor(.minutes(90)), .status, .pauseFor(.untilSunrise), .pause(.off),
+            .location(.manual(latitude: 51.5, longitude: -0.13)), .location(.automatic),
+            .bedtime(.at(hour: 22, minute: 30)), .status, .bedtime(.off),
+            .apps(.add("com.adobe.Photoshop")), .status, .appsList, .apps(.remove("com.adobe.Photoshop")),
+            .apps(.add("com.apple.Photos")), .apps(.clear),
             .color(55), .whitepoint(65),
             .reset(.color), .reset(.whitepoint), .preset(.night), .savePreset(.warm),
             .adaptive(.on), .adaptive(.off), .limits(.color, min: 10, max: 90),
@@ -100,6 +145,16 @@ import Testing
         #expect(try await query.entities(matching: "studio").map(\.id) == ["monitor-uuid"])
         #expect(suggestions[0].selector == .all)
         #expect(suggestions[1].selector == .key("monitor-uuid"))
+    }
+
+    @Test func pauseWithoutMinutesStaysTheDefaultPause() async throws {
+        var received: [RedlightCommand] = []
+        IntentBridge.install(execute: { received.append($0); return Status() }, snapshot: { Status() })
+        defer { IntentBridge.uninstall() }
+        _ = try await PauseRedlightIntent().perform()
+        _ = try await PauseRedlightIntent(minutes: nil).perform()
+        _ = try await PauseRedlightIntent(minutes: 45).perform()
+        #expect(received == [.pause(.on), .pause(.on), .pauseFor(.minutes(45))])
     }
 
     @Test func handlerValidationErrorsReachTheIntent() async throws {

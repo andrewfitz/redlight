@@ -6,6 +6,7 @@
 enum PopoverAction: Equatable {
     case master(CommandSwitch)
     case pause(CommandSwitch)
+    case pauseFor(CommandPauseLength)
     case reset(CommandChannel)
     case preset(CommandPreset)
     case savePreset(CommandPreset)
@@ -14,6 +15,9 @@ enum PopoverAction: Equatable {
     case invert(CommandDisplaySelector, CommandSwitch)
     case appearance(CommandAppearance)
     case login(Bool)
+    case location(CommandLocation)
+    case bedtime(CommandBedtime)
+    case apps(CommandApps)
     case update
     case quit
 
@@ -21,6 +25,7 @@ enum PopoverAction: Equatable {
         switch self {
         case .master(let state): .master(state)
         case .pause(let state): .pause(state)
+        case .pauseFor(let length): .pauseFor(length)
         case .reset(let channel): .reset(channel)
         case .preset(let preset): .preset(preset)
         case .savePreset(let preset): .savePreset(preset)
@@ -29,6 +34,9 @@ enum PopoverAction: Equatable {
         case .invert(let display, let state): .invert(display, state)
         case .appearance(let appearance): .appearance(appearance)
         case .login(let enabled): .login(enabled)
+        case .location(let location): .location(location)
+        case .bedtime(let bedtime): .bedtime(bedtime)
+        case .apps(let change): .apps(change)
         case .update: .update
         case .quit: .quit
         }
@@ -38,6 +46,7 @@ enum PopoverAction: Equatable {
         switch self {
         case .master: .master
         case .pause: .pause
+        case .pauseFor: .pauseFor
         case .reset: .reset
         case .preset: .preset
         case .savePreset: .savePreset
@@ -46,6 +55,9 @@ enum PopoverAction: Equatable {
         case .invert: .invert
         case .appearance: .appearance
         case .login: .login
+        case .location: .location
+        case .bedtime: .bedtime
+        case .apps: .apps
         case .update: .update
         case .quit: .quit
         }
@@ -55,5 +67,6 @@ enum PopoverAction: Equatable {
 /// A finite catalogue avoids pretending that the associated display keys and numeric
 /// payloads are enumerable. Parity tests use real representative actions for every kind.
 enum PopoverActionDescriptor: CaseIterable {
-    case master, pause, reset, preset, savePreset, adaptive, display, invert, appearance, login, update, quit
+    case master, pause, pauseFor, reset, preset, savePreset, adaptive, display, invert, appearance, login,
+         location, bedtime, apps, update, quit
 }

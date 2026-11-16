@@ -13,9 +13,13 @@ import Testing
         var invalidateCount = 0
         var closeCount = 0
         var pointer: (cursor: NSCursor?, location: NSPoint)?
+        var pointerUpdateCount = 0
         func apply(screen: NSScreen, intensity: Float, whitepoint: Float, invert: Bool) { applyCount += 1 }
         func invalidateSurface() { invalidateCount += 1 }
-        func updatePointer(_ cursor: NSCursor?, at location: NSPoint) { pointer = (cursor, location) }
+        func updatePointer(_ cursor: NSCursor?, at location: NSPoint) {
+            pointer = (cursor, location)
+            pointerUpdateCount += 1
+        }
         func close() { closeCount += 1 }
     }
 
@@ -251,6 +255,24 @@ import Testing
         #expect(pointer.changed != nil)
         controller.restoreAll()
         #expect(pointer.stopCount == 2)
+    }
+
+    @Test func restoringADisplayWithoutAnOverlayDoesNotResyncThePointer() throws {
+        let screen = try #require(NSScreen.screens.first)
+        let overlay = Overlay()
+        let pointer = Pointer()
+        let controller = SidecarFilterController(getScreen: { _ in screen }, makeOverlay: { _ in overlay },
+                                                 pointer: pointer)
+        controller.applyFilter(to: 7, intensity: 0.6, whitepoint: 1, invert: false)
+        let updates = overlay.pointerUpdateCount
+        // Every frame restores each neutral display; that must not cost a pointer pass.
+        for _ in 0..<100 { controller.restore(2) }
+        controller.applyFilter(to: 2, intensity: 1, whitepoint: 1, invert: false)
+        #expect(overlay.pointerUpdateCount == updates)
+        #expect(pointer.changed != nil)
+        controller.restore(7)
+        #expect(overlay.closeCount == 1)
+        #expect(pointer.changed == nil)
     }
 
     @Test func compositorCurveMatchesExistingTransferFunction() {

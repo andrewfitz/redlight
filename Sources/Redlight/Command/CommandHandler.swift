@@ -16,6 +16,11 @@ struct CommandServices {
         DispatchQueue.main.async { action() }
     }
     var canUpdate: () -> Bool = { true }
+    /// Bundle IDs of the apps that suspend the tint while in front.
+    var apps: () -> [String] = { [] }
+    var changeApps: (CommandApps) throws -> Void = { _ in
+        throw CommandError.system("Pausing for apps is unavailable in this copy of Redlight.")
+    }
 }
 
 @MainActor
@@ -37,6 +42,7 @@ final class CommandHandler {
         // Resolve every display and validate every argument before touching a drag,
         // preferences, gamma, or a system service.
         let addressed: [CGDirectDisplayID]
+        var pauseLength: TimeInterval?
         switch command {
         case .color(let value):
             try validate(value, channel: .color)
@@ -52,6 +58,26 @@ final class CommandHandler {
         case .pause(let state):
             if state.resolve(current: manager.isPaused), !manager.isPaused, !manager.isOn {
                 throw CommandError.invalidInput("Turn Redlight on before pausing.")
+            }
+            addressed = []
+        case .pauseFor(let length):
+            guard manager.isOn else { throw CommandError.invalidInput("Turn Redlight on before pausing.") }
+            pauseLength = try resolve(length)
+            addressed = []
+        case .location(.manual(let latitude, let longitude)):
+            try ManualLocation.validate(latitude: latitude, longitude: longitude)
+            addressed = []
+        case .bedtime(.at(let hour, let minute)):
+            guard Bedtime(hour: hour, minute: minute) != nil else {
+                throw CommandError.invalidInput(Bedtime.invalidMessage)
+            }
+            addressed = []
+        case .apps(.add(let bundleID)):
+            _ = try AppBundleID.validate(bundleID)
+            addressed = []
+        case .apps(.remove(let bundleID)):
+            guard services.apps().contains(where: { AppBundleID.matches($0, bundleID) }) else {
+                throw CommandError.invalidInput("\(bundleID) is not in the list; use redlight apps list.")
             }
             addressed = []
         case .limits(let channel, let min, let max):
@@ -97,6 +123,16 @@ final class CommandHandler {
                 } else {
                     manager.resume()
                 }
+            case .pauseFor:
+                manager.pause(for: pauseLength ?? DisplayManager.Defaults.pauseDuration)
+            case .location(.automatic):
+                manager.setManualLocation(nil)
+            case .location(.manual(let latitude, let longitude)):
+                manager.setManualLocation((latitude, longitude))
+            case .bedtime(.off):
+                manager.setBedtime(nil)
+            case .bedtime(.at(let hour, let minute)):
+                manager.setBedtime(Bedtime(hour: hour, minute: minute))
             case .reset(.color):
                 manager.resetIntensity()
             case .reset(.whitepoint):
@@ -146,7 +182,9 @@ final class CommandHandler {
                 services.deferAction(services.update)
             case .quit:
                 services.deferAction(services.quit)
-            case .status, .displayList:
+            case .apps(let change):
+                try services.changeApps(change)
+            case .status, .displayList, .appsList:
                 break
             }
         } catch let error as CommandError {
@@ -180,7 +218,13 @@ final class CommandHandler {
             ),
             appearance: services.appearance() ? .dark : .light,
             login: services.login(), version: services.version(), fading: manager.commandIsFading,
-            pausedUntil: manager.pausedUntil
+            pausedUntil: manager.pausedUntil,
+            locationSource: manager.manualLocation != nil ? .manual
+                : manager.isLocationApproximate ? .timeZone : .auto,
+            bedtime: manager.bedtime?.text,
+            // Off shows no tint, so there is nothing to suspend.
+            suspendedFor: manager.isOn ? manager.suspendedForApp : nil,
+            apps: services.apps()
         )
     }
 
@@ -194,6 +238,26 @@ final class CommandHandler {
         let range: ClosedRange<Double> = channel == .color ? 0...100 : 25...100
         guard value.isFinite, range.contains(value) else {
             throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(range.lowerBound)) to 100.")
+        }
+    }
+
+    /// Seconds for a requested pause. Sunrise is found now, before anything changes, so a
+    /// missing location or a polar day fails without pausing or interrupting a drag.
+    private func resolve(_ length: CommandPauseLength) throws -> TimeInterval {
+        switch length {
+        case .minutes(let minutes):
+            guard CommandPauseLength.minuteRange.contains(minutes) else {
+                throw CommandError.invalidInput("A pause must be a whole number of minutes from 1 to 1440 (24 hours).")
+            }
+            return TimeInterval(minutes * 60)
+        case .untilSunrise:
+            guard manager.hasLocation else {
+                throw CommandError.invalidInput("Redlight has no location to find sunrise from. Set one under Adaptive or with redlight location.")
+            }
+            guard let seconds = manager.secondsUntilSunrise() else {
+                throw CommandError.invalidInput("The sun does not rise here in the next 24 hours, so Redlight cannot pause until sunrise.")
+            }
+            return seconds
         }
     }
 

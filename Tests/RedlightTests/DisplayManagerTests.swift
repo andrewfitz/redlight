@@ -1,7 +1,13 @@
 import Testing
 import Foundation
 import CoreGraphics
+import Observation
 @testable import Redlight
+
+/// Set from an observation `onChange`, which must be `@Sendable`.
+final class ObservationFlag: @unchecked Sendable {
+    var fired = false
+}
 
 final class MockGammaController: GammaControlling {
     var applyCalls: [(displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)] = []
@@ -27,14 +33,50 @@ final class MockGammaController: GammaControlling {
 }
 
 final class FakeLocationProvider: LocationProviding {
-    var coordinate: (latitude: Double, longitude: Double)?
+    /// The automatic coordinate; assigning `coordinate` sets it, and a manual one wins.
+    var automaticCoordinate: (latitude: Double, longitude: Double)?
+    var coordinate: (latitude: Double, longitude: Double)? {
+        get { manualCoordinate ?? automaticCoordinate }
+        set { automaticCoordinate = newValue }
+    }
+    private(set) var manualCoordinate: (latitude: Double, longitude: Double)?
     var authorization: LocationAuthorization = .authorized
     var onChange: (() -> Void)?
-    var isApproximate = false
+    var automaticIsApproximate = false
+    var isApproximate: Bool {
+        get { manualCoordinate == nil && automaticIsApproximate }
+        set { automaticIsApproximate = newValue }
+    }
+    /// Counts every call, manual or not, so tests can prove the owner stopped asking.
     var requestCount = 0
     var cancelCount = 0
     func requestWhenInUse() { requestCount += 1 }
     func cancelRequest() { cancelCount += 1 }
+    func setManualCoordinate(_ coordinate: (latitude: Double, longitude: Double)?) {
+        manualCoordinate = coordinate
+        onChange?()
+    }
+}
+
+/// Core Location hands back the system's last known fix synchronously from the request.
+final class ImmediateFixLocationProvider: LocationProviding {
+    var coordinate: (latitude: Double, longitude: Double)?
+    var authorization: LocationAuthorization = .authorized
+    var onChange: (() -> Void)?
+    var isApproximate = false
+    var pendingFix: (latitude: Double, longitude: Double)?
+    private(set) var manualCoordinate: (latitude: Double, longitude: Double)?
+    func requestWhenInUse() {
+        guard manualCoordinate == nil, let fix = pendingFix else { return }
+        pendingFix = nil
+        coordinate = fix
+        onChange?()
+    }
+    func cancelRequest() {}
+    func setManualCoordinate(_ coordinate: (latitude: Double, longitude: Double)?) {
+        manualCoordinate = coordinate
+        onChange?()
+    }
 }
 
 @MainActor @Suite struct DisplayManagerTests {
@@ -1267,6 +1309,23 @@ final class FakeLocationProvider: LocationProviding {
         #expect(mock.restoreCalls.last == 1)   // neutral value restores the calibrated table
     }
 
+    @Test func endingNoPreviewDoesNotRewriteGamma() {
+        let manager = makeManager()
+        manager.intensity = 0.4
+        manager.toggle(1)
+        mock.applyCalls.removeAll()
+
+        manager.endPreview()                  // popover closed with nothing being previewed
+        manager.interruptSliderInteraction()  // a command arrived with no drag in progress
+        #expect(mock.applyCalls.isEmpty)
+
+        manager.previewWhitepoint(0.5)
+        mock.applyCalls.removeAll()
+        manager.endPreview()
+        #expect(mock.applyCalls.count == 1)
+        #expect(mock.applyCalls.last?.whitepoint == 1)
+    }
+
     @Test func adaptiveTickPushesGammaOncePerDisplay() {
         let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
         let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
@@ -1691,6 +1750,28 @@ final class FakeLocationProvider: LocationProviding {
         #expect(mock.applyCalls[0].intensity < 0.5)
     }
 
+    @Test func launchWithAnImmediateNewFixDoesNotFadeInFromTheStalePersistedValue() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        defaults.set(0.0, forKey: "redlight.intensity")      // last saved at night
+        defaults.set(0.3, forKey: "redlight.whitepoint")
+        defaults.set(true, forKey: "redlight.display.1.enabled")
+        let loc = ImmediateFixLocationProvider()
+        loc.coordinate = (0, 0)
+        loc.pendingFix = (0, 10)                              // the Mac moved since last launch
+        let noon = ISO8601DateFormatter().date(from: "2025-03-21T12:00:00Z")!
+        let manager = makeManager(
+            defaults: defaults, location: loc, now: { noon },
+            transitionDuration: 2, displayTransitionDuration: 0.7)
+
+        // Midday is Day at both coordinates: the launch fade-in must show no red at all.
+        #expect(manager.intensity == 1)
+        manager.advanceDisplayTransitions(toProgress: 0.5)
+        manager.completeDisplayTransitions()
+        #expect(mock.applyCalls.isEmpty)
+        #expect(!manager.commandIsFading)
+    }
+
     @Test func adaptiveRetriesApproximateLocationUntilAPreciseFixArrives() {
         var date = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
         let loc = FakeLocationProvider()
@@ -1700,7 +1781,7 @@ final class FakeLocationProvider: LocationProviding {
         manager.adaptiveEnabled = true
         #expect(loc.requestCount == 1)
 
-        date.addTimeInterval(59)
+        date.addTimeInterval(3_599)
         manager.applyAdaptive()
         #expect(loc.requestCount == 1)
 
@@ -1729,7 +1810,7 @@ final class FakeLocationProvider: LocationProviding {
         manager.adaptiveEnabled = true
         #expect(loc.requestCount == 1)
 
-        date.addTimeInterval(59)
+        date.addTimeInterval(3_599)
         manager.applyAdaptive()
         #expect(loc.requestCount == 1)
 
@@ -1900,5 +1981,321 @@ final class FakeLocationProvider: LocationProviding {
 
         #expect(loc.requestCount == 2)
         #expect(mock.applyCalls.count == 1)
+    }
+
+    // MARK: - Preset fade with Adaptive off
+
+    @Test func presetFadesOnTheRenderClockWithAdaptiveOff() throws {
+        var uptime: TimeInterval = 50
+        let d = freshDefaults()
+        let manager = makeManager(defaults: d, transitionDuration: 2, transitionUptime: { uptime })
+        manager.toggle(1)
+        manager.intensity = 0.9
+        manager.whitepoint = 0.9
+        mock.applyCalls.removeAll()
+
+        manager.applyPreset(4)   // Deep Red: 0.0 / 0.3
+
+        // Model, persistence and the command target land on the preset at once…
+        #expect(manager.intensity == 0.0)
+        #expect(manager.whitepoint == 0.3)
+        #expect(manager.activePresetIndex == 4)
+        #expect(d.double(forKey: "redlight.intensity") == 0.0)
+        #expect(d.double(forKey: "redlight.whitepoint") == 0.3)
+        #expect(manager.commandIsFading)
+        // …while the display starts from the frame that was showing.
+        var call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.9) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.9) < 0.0001)
+
+        // The shared render clock moves it; no Adaptive timer is running.
+        uptime += 1; manager.tickTransitions()
+        call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.45) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.6) < 0.0001)
+        #expect(manager.commandIsFading)
+
+        uptime += 1.5; manager.tickTransitions()
+        call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.0) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.3) < 0.0001)
+        #expect(!manager.commandIsFading)
+        #expect(!manager.adaptiveEnabled)
+    }
+
+    @Test func presetAlreadyOnScreenDoesNotStartAFade() {
+        let manager = makeManager(transitionDuration: 2, transitionUptime: { 50 })
+        manager.toggle(1)
+        manager.intensity = 0.5
+        manager.whitepoint = 0.65
+        mock.applyCalls.removeAll()
+        manager.applyPreset(2)   // Sunset: the same pair
+        #expect(!manager.commandIsFading)
+        #expect(manager.activePresetIndex == 2)
+        #expect(mock.applyCalls.count == 1)
+    }
+
+    @Test func sliderMidPresetFadeTakesOverOnlyItsChannel() throws {
+        var uptime: TimeInterval = 50
+        let manager = makeManager(transitionDuration: 2, transitionUptime: { uptime })
+        manager.toggle(1)
+        manager.intensity = 0.9
+        manager.whitepoint = 0.9
+        manager.applyPreset(4)
+        uptime += 0.5; manager.tickTransitions()
+        let whitepointBeforeEdit = try #require(mock.applyCalls.last).whitepoint
+
+        manager.intensity = 0.65
+
+        var call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
+        #expect(abs(call.whitepoint - whitepointBeforeEdit) < 0.0001)
+        #expect(manager.activePresetIndex == nil)
+        #expect(manager.commandIsFading)
+
+        uptime += 2; manager.tickTransitions()
+        call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.3) < 0.0001)
+        #expect(!manager.commandIsFading)
+    }
+
+    @Test func secondPresetMidFadeStartsFromTheShownFrame() throws {
+        var uptime: TimeInterval = 50
+        let manager = makeManager(transitionDuration: 2, transitionUptime: { uptime })
+        manager.toggle(1)
+        manager.intensity = 0.9
+        manager.whitepoint = 0.9
+        manager.applyPreset(4)
+        uptime += 1; manager.tickTransitions()
+        let shown = try #require(mock.applyCalls.last)
+
+        manager.applyPreset(0)   // Day: 1.0 / 1.0
+
+        var call = try #require(mock.applyCalls.last)
+        #expect(abs(call.intensity - shown.intensity) < 0.0001)
+        #expect(abs(call.whitepoint - shown.whitepoint) < 0.0001)
+        #expect(manager.activePresetIndex == 0)
+        #expect(manager.commandIsFading)
+        uptime += 1; manager.tickTransitions()
+        call = try #require(mock.applyCalls.last)
+        #expect(abs(call.intensity - (shown.intensity + 1) / 2) < 0.0001)
+        #expect(abs(call.whitepoint - (shown.whitepoint + 1) / 2) < 0.0001)
+        uptime += 1; manager.tickTransitions()
+        #expect(!manager.commandIsFading)
+        #expect(mock.restoreCalls.last == 1)   // neutral Day leaves ColorSync untouched
+    }
+
+    @Test func presetWhilePausedIsSavedAndShowsOnResume() throws {
+        var uptime: TimeInterval = 50
+        let d = freshDefaults()
+        let manager = makeManager(defaults: d, transitionDuration: 2, transitionUptime: { uptime })
+        manager.toggle(1)
+        manager.intensity = 0.9
+        manager.whitepoint = 0.9
+        #expect(manager.pause())
+        mock.applyCalls.removeAll()
+
+        manager.applyPreset(3)   // Night: 0.25 / 0.45
+
+        #expect(manager.intensity == 0.25)
+        #expect(d.double(forKey: "redlight.intensity") == 0.25)
+        #expect(manager.activePresetIndex == 3)
+        // The output still moves (and reports it), so a resume mid-way shows a real frame.
+        #expect(manager.commandIsFading)
+        uptime += 1; manager.tickTransitions()
+        #expect(mock.applyCalls.isEmpty)   // the paused display stays untinted throughout
+        uptime += 2; manager.tickTransitions()
+        #expect(!manager.commandIsFading)
+
+        manager.resume()
+        let call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.25) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.45) < 0.0001)
+    }
+
+    @Test func presetWithFilterOffIsSavedAndShowsWhenTurnedOn() throws {
+        var uptime: TimeInterval = 50
+        let manager = makeManager(transitionDuration: 2, transitionUptime: { uptime })
+        manager.intensity = 0.9
+        mock.applyCalls.removeAll()
+
+        manager.applyPreset(3)
+        #expect(manager.commandIsFading)
+        uptime += 1; manager.tickTransitions()
+        #expect(mock.applyCalls.isEmpty)
+
+        uptime += 2; manager.tickTransitions()
+        manager.toggle(1)
+        let call = try #require(mock.applyCalls.last)
+        #expect(abs(Double(call.intensity) - 0.25) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - 0.45) < 0.0001)
+    }
+
+    // MARK: - Next solar event
+
+    func makeSolarManager(
+        location: FakeLocationProvider,
+        now: @escaping () -> Date,
+        nextSolarEvent: @escaping (Date, Double, Double) -> SunCycle.Event?
+    ) -> DisplayManager {
+        DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { [1] },
+            getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) },
+            defaults: freshDefaults(),
+            location: location,
+            now: now,
+            nextSolarEvent: nextSolarEvent,
+            adaptiveTransitionDuration: 0,
+            displayTransitionDuration: 0)
+    }
+
+    @Test func nextSolarEventDurationsReadInWholeMinutes() {
+        func text(_ seconds: TimeInterval) -> String {
+            DisplayManager.describeNextSolarEvent("sunset", in: seconds)
+        }
+        #expect(text(-5) == "Sunset in under a minute")
+        #expect(text(0) == "Sunset in under a minute")
+        #expect(text(59.9) == "Sunset in under a minute")
+        #expect(text(60) == "Sunset in 1 m")
+        #expect(text(8 * 60 + 59) == "Sunset in 8 m")
+        #expect(text(3599) == "Sunset in 59 m")
+        #expect(text(3600) == "Sunset in 1 h")
+        #expect(text(3660) == "Sunset in 1 h 1 m")
+        #expect(text(72 * 60 + 30) == "Sunset in 1 h 12 m")
+        #expect(text(2 * 3600) == "Sunset in 2 h")
+        #expect(text(.nan) == "Sunset in under a minute")
+        #expect(DisplayManager.describeNextSolarEvent("civil dusk", in: 480) == "Civil dusk in 8 m")
+        #expect(DisplayManager.describeNextSolarEvent("first light", in: 600) == "First light in 10 m")
+    }
+
+    @Test func nextSolarEventIsScannedOnceAndCountsDownOnTheTick() {
+        let sunset = ISO8601DateFormatter().date(from: "2025-03-20T18:00:00Z")!
+        var clock = sunset.addingTimeInterval(-3630)
+        var scans = 0
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeSolarManager(location: loc, now: { clock }) { date, _, _ in
+            scans += 1
+            return SunCycle.Event(label: "sunset", seconds: sunset.timeIntervalSince(date), elevation: 0)
+        }
+        #expect(manager.nextSolarEventText == nil)
+
+        manager.adaptiveEnabled = true
+        #expect(scans == 1)
+        #expect(manager.nextSolarEventText == "Sunset in 1 h")
+        #expect(manager.adaptiveStatusText.hasPrefix("Following the sun · "))
+        #expect(!manager.adaptiveStatusText.contains("Sunset"))
+
+        // A 5 s tick inside the same minute neither rescans nor invalidates observers.
+        let invalidated = ObservationFlag()
+        withObservationTracking { _ = manager.nextSolarEventText } onChange: { invalidated.fired = true }
+        clock += 5; manager.applyAdaptive()
+        #expect(!invalidated.fired)
+        #expect(scans == 1)
+
+        for _ in 0..<7 { clock += 5; manager.applyAdaptive() }   // 3590 s left
+        #expect(invalidated.fired)
+        #expect(manager.nextSolarEventText == "Sunset in 59 m")
+        #expect(scans == 1)
+    }
+
+    @Test func nextSolarEventRescansOnlyAfterItPassesOrTheCoordinateMoves() {
+        let iso = ISO8601DateFormatter()
+        let events = [
+            (date: iso.date(from: "2025-03-20T18:00:00Z")!, label: "sunset"),
+            (date: iso.date(from: "2025-03-20T18:20:00Z")!, label: "civil dusk"),
+        ]
+        var clock = iso.date(from: "2025-03-20T17:50:00Z")!
+        var scans: [(Double, Double)] = []
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeSolarManager(location: loc, now: { clock }) { date, lat, lon in
+            scans.append((lat, lon))
+            guard let next = events.first(where: { $0.date > date }) else { return nil }
+            return SunCycle.Event(label: next.label, seconds: next.date.timeIntervalSince(date), elevation: 0)
+        }
+        manager.adaptiveEnabled = true
+        #expect(manager.nextSolarEventText == "Sunset in 10 m")
+
+        clock = iso.date(from: "2025-03-20T18:00:30Z")!
+        manager.applyAdaptive()
+        #expect(scans.count == 2)
+        #expect(manager.nextSolarEventText == "Civil dusk in 19 m")
+        manager.applyAdaptive()
+        #expect(scans.count == 2)
+
+        loc.coordinate = (10, 20)
+        loc.onChange?()
+        #expect(scans.count == 3)
+        #expect(scans.last?.0 == 10 && scans.last?.1 == 20)
+
+        // A clock set backwards cannot leave a countdown hours too long.
+        clock = iso.date(from: "2025-03-20T17:00:00Z")!
+        manager.applyAdaptive()
+        #expect(scans.count == 4)
+        #expect(manager.nextSolarEventText == "Sunset in 1 h")
+    }
+
+    @Test func nextSolarEventFollowsAdaptiveAndTheCoordinate() {
+        let sunset = ISO8601DateFormatter().date(from: "2025-03-20T18:00:00Z")!
+        let clock = sunset.addingTimeInterval(-600)
+        var scans = 0
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeSolarManager(location: loc, now: { clock }) { date, _, _ in
+            scans += 1
+            return SunCycle.Event(label: "sunset", seconds: sunset.timeIntervalSince(date), elevation: 0)
+        }
+        manager.adaptiveEnabled = true
+        #expect(manager.nextSolarEventText == "Sunset in 10 m")
+
+        manager.adaptiveEnabled = false
+        #expect(manager.nextSolarEventText == nil)
+        manager.adaptiveEnabled = true
+        #expect(scans == 2)   // turning Adaptive on always recomputes
+        #expect(manager.nextSolarEventText == "Sunset in 10 m")
+
+        manager.applyPreset(2)   // bypasses the Adaptive didSet
+        #expect(manager.nextSolarEventText == nil)
+
+        loc.coordinate = nil
+        manager.adaptiveEnabled = true
+        #expect(manager.adaptiveStatusText == "Locating…")
+        #expect(manager.nextSolarEventText == nil)
+    }
+
+    @Test func noSolarEventAheadIsCachedUntilTheScanHorizon() {
+        var clock = ISO8601DateFormatter().date(from: "2025-06-21T12:00:00Z")!
+        var scans = 0
+        let loc = FakeLocationProvider(); loc.coordinate = (89.9, 0)
+        let manager = makeSolarManager(location: loc, now: { clock }) { _, _, _ in
+            scans += 1
+            return nil
+        }
+        manager.adaptiveEnabled = true
+        #expect(manager.nextSolarEventText == nil)
+        for _ in 0..<20 { clock += 5; manager.applyAdaptive() }
+        #expect(scans == 1)
+
+        clock += 86_400
+        manager.applyAdaptive()
+        #expect(scans == 2)
+    }
+
+    @Test func nextSolarEventUsesNamedTwilightCrossings() throws {
+        // Equator mid-afternoon: the raw next curve anchor is the unnamed +12°. The popover
+        // names the next horizon or twilight crossing instead: sunset, a little after 18:00.
+        let afternoon = ISO8601DateFormatter().date(from: "2025-03-20T15:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc, now: { afternoon })
+        manager.adaptiveEnabled = true
+        let text = try #require(manager.nextSolarEventText)
+        #expect(text.hasPrefix("Sunset in 3 h "))
+        #expect(!text.lowercased().contains("transition"))
+
+        let polar = FakeLocationProvider(); polar.coordinate = (89.9, 0)
+        let polarDay = makeManager(location: polar, now: { afternoon.addingTimeInterval(93 * 86_400) })
+        polarDay.adaptiveEnabled = true
+        #expect(polarDay.nextSolarEventText == nil)
     }
 }

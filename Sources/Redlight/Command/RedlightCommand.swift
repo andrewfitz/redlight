@@ -26,6 +26,41 @@ enum CommandPreset: String, Codable, Sendable, CaseIterable {
     var index: Int { Self.allCases.firstIndex(of: self)! }
 }
 
+/// A pause with its own length. The plain `pause(.on)` stays the 30-minute default.
+enum CommandPauseLength: Codable, Sendable, Equatable {
+    /// Whole minutes, 1 through 1440 (24 hours).
+    case minutes(Int)
+    /// The next sunrise at the current location, within 24 hours.
+    case untilSunrise
+
+    static let minuteRange = 1...1440
+}
+
+enum CommandLocation: Codable, Sendable, Equatable {
+    /// Core Location, falling back to the time zone's city.
+    case automatic
+    /// Degrees: latitude −90…90, longitude −180…180.
+    case manual(latitude: Double, longitude: Double)
+}
+
+/// Adaptive's "deepest by" time, 24-hour local wall clock, or off.
+enum CommandBedtime: Codable, Sendable, Equatable {
+    case off
+    /// Hour 0…23, minute 0…59.
+    case at(hour: Int, minute: Int)
+}
+
+/// Changes to the apps that suspend the tint while in front, by bundle identifier.
+enum CommandApps: Codable, Sendable, Equatable {
+    case add(String)
+    case remove(String)
+    case clear
+}
+
+/// Where Adaptive's coordinate comes from: a fix (current or last known), the user, or
+/// the time zone's city.
+enum CommandLocationSource: String, Codable, Sendable, CaseIterable { case auto, manual, timeZone }
+
 enum CommandDisplaySelector: Codable, Sendable, Equatable {
     case number(Int)
     case name(String)
@@ -42,6 +77,8 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     /// Relative percentage change from the current target, resolved by the running app.
     case step(CommandChannel, Double)
     case pause(CommandSwitch)
+    /// Starts a pause of this length, replacing any pause already running.
+    case pauseFor(CommandPauseLength)
     case reset(CommandChannel)
     case preset(CommandPreset)
     case savePreset(CommandPreset)
@@ -52,10 +89,14 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     case invert(CommandDisplaySelector, CommandSwitch)
     case appearance(CommandAppearance)
     case login(Bool)
+    case location(CommandLocation)
+    case bedtime(CommandBedtime)
+    case appsList
+    case apps(CommandApps)
     case update
     case quit
 
-    var isReadOnly: Bool { self == .status || self == .displayList }
+    var isReadOnly: Bool { self == .status || self == .displayList || self == .appsList }
 }
 
 /// All levels are percentages, and targets are endpoints rather than fade frames.
@@ -101,12 +142,21 @@ struct Status: Codable, Sendable, Equatable {
     var version: String = ""
     var fading: Bool = false
     var pausedUntil: Date?
+    /// Absent from apps older than protocol 3.
+    var locationSource: CommandLocationSource?
+    /// Adaptive's bedtime as "22:30"; absent when off, and from older apps.
+    var bedtime: String?
+    /// The chosen app in front that is suspending the tint; absent when none is.
+    var suspendedFor: String?
+    /// Bundle IDs of the apps that suspend the tint; absent from JSON when there are none.
+    var apps: [String] = []
 
     static var notRunning: Status { Status(running: false) }
 
     private enum CodingKeys: String, CodingKey {
         case running, on, displays, color, whitepoint, activePreset, adaptive, elevation
-        case statusLine, limits, appearance, login, version, fading, pausedUntil
+        case statusLine, limits, appearance, login, version, fading, pausedUntil, locationSource, bedtime
+        case suspendedFor, apps
     }
 
     init(
@@ -117,7 +167,8 @@ struct Status: Codable, Sendable, Equatable {
         limits: Limits = Limits(color: Band(min: 0, max: 100), whitepoint: Band(min: 30, max: 100)),
         appearance: CommandAppearance = .light,
         login: Login = Login(enabled: false, requiresApproval: false), version: String = "", fading: Bool = false,
-        pausedUntil: Date? = nil
+        pausedUntil: Date? = nil, locationSource: CommandLocationSource? = nil, bedtime: String? = nil,
+        suspendedFor: String? = nil, apps: [String] = []
     ) {
         self.running = running
         self.on = on
@@ -134,6 +185,10 @@ struct Status: Codable, Sendable, Equatable {
         self.version = version
         self.fading = fading
         self.pausedUntil = pausedUntil
+        self.locationSource = locationSource
+        self.bedtime = bedtime
+        self.suspendedFor = suspendedFor
+        self.apps = apps
     }
 
     init(from decoder: Decoder) throws {
@@ -155,7 +210,11 @@ struct Status: Codable, Sendable, Equatable {
             version: try values.decode(String.self, forKey: .version),
             fading: try values.decode(Bool.self, forKey: .fading),
             pausedUntil: try values.decodeIfPresent(String.self, forKey: .pausedUntil)
-                .flatMap { ISO8601DateFormatter().date(from: $0) }
+                .flatMap { ISO8601DateFormatter().date(from: $0) },
+            locationSource: try values.decodeIfPresent(CommandLocationSource.self, forKey: .locationSource),
+            bedtime: try values.decodeIfPresent(String.self, forKey: .bedtime),
+            suspendedFor: try values.decodeIfPresent(String.self, forKey: .suspendedFor),
+            apps: try values.decodeIfPresent([String].self, forKey: .apps) ?? []
         )
     }
 
@@ -178,6 +237,10 @@ struct Status: Codable, Sendable, Equatable {
         try values.encode(fading, forKey: .fading)
         try values.encodeIfPresent(
             pausedUntil.map { ISO8601DateFormatter().string(from: $0) }, forKey: .pausedUntil)
+        try values.encodeIfPresent(locationSource, forKey: .locationSource)
+        try values.encodeIfPresent(bedtime, forKey: .bedtime)
+        try values.encodeIfPresent(suspendedFor, forKey: .suspendedFor)
+        if !apps.isEmpty { try values.encode(apps, forKey: .apps) }
     }
 }
 
@@ -194,8 +257,11 @@ struct CommandError: Error, LocalizedError, Codable, Sendable, Equatable {
 }
 
 struct CommandRequest: Codable, Sendable, Equatable {
-    /// 2 added `step` and `pause`; an older app answers "update Redlight" instead of failing to decode.
-    static let currentVersion = 2
+    /// 2 added `step` and `pause`; 3 added `pauseFor`, `location`, `bedtime`, `appsList`,
+    /// `apps`, `Status.locationSource`, `Status.bedtime`, `Status.suspendedFor` and
+    /// `Status.apps`.
+    /// An older app answers "update Redlight" instead of failing to decode.
+    static let currentVersion = 3
     var v: Int = currentVersion
     var command: RedlightCommand
 

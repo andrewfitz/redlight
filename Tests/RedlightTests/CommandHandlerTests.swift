@@ -100,6 +100,137 @@ private struct CommandFixture {
         #expect(f.defaults.bool(forKey: "redlight.isOn"))
     }
 
+    @Test func timedAndSunrisePausesUseTheirOwnLength() throws {
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 41.88, longitude: -87.63)
+        let f = makeFixture(location: location)
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        expectError(.invalidInput) { _ = try f.handler.execute(.pauseFor(.minutes(90))) } // nothing to pause
+        expectError(.invalidInput) { _ = try f.handler.execute(.pauseFor(.untilSunrise)) }
+        #expect(!f.manager.isPaused)
+
+        _ = try f.handler.execute(.master(.on))
+        var status = try f.handler.execute(.pauseFor(.minutes(90)))
+        #expect(!status.on)
+        #expect(status.pausedUntil == now.addingTimeInterval(90 * 60))
+        // A plain pause keeps the running one; choosing a length replaces it.
+        status = try f.handler.execute(.pause(.on))
+        #expect(status.pausedUntil == now.addingTimeInterval(90 * 60))
+        status = try f.handler.execute(.pauseFor(.minutes(1)))
+        #expect(status.pausedUntil == now.addingTimeInterval(60))
+
+        let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: 41.88, longitude: -87.63))
+        status = try f.handler.execute(.pauseFor(.untilSunrise))
+        let until = try #require(status.pausedUntil)
+        #expect(abs(until.timeIntervalSince(sunrise)) < 1)
+        #expect(abs(f.manager.pauseLength - until.timeIntervalSince(now)) < 0.001)
+        status = try f.handler.execute(.pause(.off))
+        #expect(status.on)
+        #expect(status.pausedUntil == nil)
+    }
+
+    @Test func untilSunriseWithoutASunriseOrLocationIsAClearErrorAndDoesNotPause() throws {
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 89.9, longitude: 0)   // late May: the sun never sets
+        let f = makeFixture(location: location)
+        _ = try f.handler.execute(.master(.on))
+        func message() -> String {
+            do {
+                _ = try f.handler.execute(.pauseFor(.untilSunrise))
+                Issue.record("Paused without a sunrise")
+            } catch let error as CommandError {
+                #expect(error.code == .invalidInput)
+                return error.message
+            } catch { Issue.record("Unexpected error: \(error)") }
+            return ""
+        }
+        #expect(message().contains("24 hours"))
+        #expect(!f.manager.isPaused)
+        location.coordinate = nil
+        #expect(message().contains("location"))
+        #expect(!f.manager.isPaused)
+    }
+
+    @Test func locationCommandsSetManualAndReportTheSource() throws {
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 41.88, longitude: -87.63)
+        location.isApproximate = true
+        let f = makeFixture(location: location)
+        #expect(f.handler.snapshot().locationSource == .timeZone)
+
+        var status = try f.handler.execute(.location(.manual(latitude: 51.5, longitude: -0.13)))
+        #expect(status.locationSource == .manual)
+        #expect(location.manualCoordinate?.latitude == 51.5)
+        #expect(f.manager.manualLocation?.longitude == -0.13)
+        _ = try f.handler.execute(.adaptive(.on))
+        status = try f.handler.execute(.status)
+        #expect(status.statusLine.hasSuffix(" · manual"))
+        #expect(!status.statusLine.contains("51.5"))
+
+        status = try f.handler.execute(.location(.automatic))
+        #expect(status.locationSource == .timeZone)
+        #expect(location.manualCoordinate == nil)
+        location.isApproximate = false
+        #expect(f.handler.snapshot().locationSource == .auto)
+    }
+
+    @Test func invalidLocationsAndPauseLengthsAreRejectedBeforeInterrupting() throws {
+        let location = FakeLocationProvider()   // no coordinate, so no sunrise to find
+        let f = makeFixture(location: location)
+        _ = try f.handler.execute(.master(.on))
+        let commands: [RedlightCommand] = [
+            .location(.manual(latitude: 91, longitude: 0)), .location(.manual(latitude: -90.01, longitude: 0)),
+            .location(.manual(latitude: 0, longitude: 180.01)), .location(.manual(latitude: .nan, longitude: 0)),
+            .location(.manual(latitude: 0, longitude: .infinity)),
+            .pauseFor(.minutes(0)), .pauseFor(.minutes(-5)), .pauseFor(.minutes(1441)), .pauseFor(.untilSunrise),
+        ]
+        let token = f.manager.beginSliderInteraction()
+        f.manager.previewIntensity(0.15)
+        let original = f.handler.snapshot()
+        for command in commands {
+            expectError(.invalidInput) { _ = try f.handler.execute(command) }
+            #expect(f.manager.isSliderInteractionCurrent(token))
+            #expect(f.handler.snapshot() == original)
+            #expect(location.manualCoordinate == nil)
+        }
+    }
+
+    @Test func bedtimeCommandsSetAndClearTheAdaptiveBedtime() throws {
+        let f = makeFixture()
+        #expect(f.handler.snapshot().bedtime == nil)
+        var status = try f.handler.execute(.bedtime(.at(hour: 22, minute: 30)))
+        #expect(status.bedtime == "22:30")
+        #expect(f.manager.bedtime == Bedtime(hour: 22, minute: 30))
+        #expect(f.defaults.integer(forKey: "redlight.adaptiveBedtime") == 1350)
+        status = try f.handler.execute(.bedtime(.at(hour: 7, minute: 5)))
+        #expect(status.bedtime == "07:05")
+        #expect(!status.adaptive)                               // saved for when Adaptive is on
+        status = try f.handler.execute(.bedtime(.off))
+        #expect(status.bedtime == nil)
+        #expect(f.manager.bedtime == nil)
+        #expect(f.defaults.object(forKey: "redlight.adaptiveBedtime") == nil)
+    }
+
+    @Test func invalidBedtimesAreRejectedBeforeInterrupting() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.bedtime(.at(hour: 21, minute: 0)))
+        let token = f.manager.beginSliderInteraction()
+        f.manager.previewIntensity(0.15)
+        let original = f.handler.snapshot()
+        for (hour, minute) in [(24, 0), (-1, 0), (22, 60), (22, -1), (99, 99)] {
+            do {
+                _ = try f.handler.execute(.bedtime(.at(hour: hour, minute: minute)))
+                Issue.record("Accepted bedtime \(hour):\(minute)")
+            } catch let error as CommandError {
+                #expect(error.code == .invalidInput)
+                #expect(error.message.contains("23:59"))
+            }
+            #expect(f.manager.isSliderInteractionCurrent(token))
+            #expect(f.handler.snapshot() == original)
+            #expect(f.manager.bedtime == Bedtime(hour: 21, minute: 0))
+        }
+    }
+
     @Test func percentagesResetLimitsAndPersistence() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.color(42))
@@ -322,6 +453,29 @@ private struct CommandFixture {
         #expect(status.color.target == 0)
         #expect(status.whitepoint.target == 30)
         #expect(status.elevation != nil)
+        f.manager.completeOutputTransition()
+        #expect(!f.handler.snapshot().fading)
+    }
+
+    @Test func presetWithAdaptiveOffReportsItsFadeUntilItLands() throws {
+        let f = makeFixture(fadeDuration: 2)
+        _ = try f.handler.execute(.display(.all, .on))
+        let status = try f.handler.execute(.preset(.night))
+        #expect(status.fading)
+        #expect(!status.adaptive)
+        #expect(status.activePreset == .night)
+        #expect(abs(status.color.target - 25) < 1e-9)
+        #expect(abs(status.whitepoint.target - 45) < 1e-9)
+        f.manager.completeOutputTransition()
+        #expect(!f.handler.snapshot().fading)
+        // Re-applying the preset already on screen has nothing to fade.
+        #expect(try !f.handler.execute(.preset(.night)).fading)
+        // A level command mid-fade takes that channel over and reports the new target.
+        _ = try f.handler.execute(.preset(.day))
+        let level = try f.handler.execute(.color(60))
+        #expect(level.activePreset == nil)
+        #expect(abs(level.color.target - 60) < 1e-9)
+        #expect(level.fading)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)
     }

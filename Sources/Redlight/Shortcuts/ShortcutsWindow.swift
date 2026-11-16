@@ -8,6 +8,7 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     private let store: ShortcutStore
     private let reserved: () -> Set<KeyShortcut>
     private var window: NSWindow?
+    private var host: NSHostingView<ShortcutsView>?
 
     init(store: ShortcutStore, reserved: @escaping () -> Set<KeyShortcut> = { KeyShortcut.systemReserved() }) {
         self.store = store
@@ -25,6 +26,9 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        // The window is kept between openings. System Settings may have gained or lost
+        // shortcuts meanwhile, so re-read them rather than validate against a stale set.
+        host?.rootView = ShortcutsView(store: store, reserved: reserved())
         let window = window ?? makeWindow()
         self.window = window
         NSApp.activate()
@@ -37,7 +41,9 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
         window.title = "Keyboard Shortcuts"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentView = NSHostingView(rootView: ShortcutsView(store: store, reserved: reserved()))
+        let host = NSHostingView(rootView: ShortcutsView(store: store, reserved: reserved()))
+        self.host = host
+        window.contentView = host
         window.setContentSize(window.contentView?.fittingSize ?? CGSize(width: 440, height: 480))
         window.center()
         return window

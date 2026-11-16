@@ -98,6 +98,19 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(store.shortcut(for: .presetDay) == nil)
         #expect(store.shortcut(for: .adaptive) == nil)
     }
+
+    @Test func suggestedShortcutsMoveACombinationAnotherActionAlreadyUses() {
+        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
+        let custom = KeyShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: primary)
+        store.set(ShortcutAction.toggle.suggested, for: .presetDay)
+        store.set(custom, for: .adaptive)
+        store.useSuggested()
+        #expect(store.shortcut(for: .toggle) == ShortcutAction.toggle.suggested)
+        #expect(store.shortcut(for: .presetDay) == nil)
+        #expect(store.shortcut(for: .adaptive) == custom)
+        let assigned = Array(store.shortcuts.values)
+        #expect(Set(assigned).count == assigned.count)
+    }
 }
 
 @MainActor @Suite struct ShortcutControllerTests {
@@ -170,6 +183,22 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         controller.handle(id: id(.warmer), pressed: false)
     }
 
+    @Test func rollingOntoAnotherStepKeyStepsItAndKeepsItRepeating() {
+        let (controller, manager) = makeController()
+        controller.handle(id: id(.warmer), pressed: true)
+        controller.handle(id: id(.dimmer), pressed: true)   // pressed before Warmer is released
+        #expect(abs(manager.intensity - 0.95) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.95) < 1e-9)
+        controller.handle(id: id(.warmer), pressed: false)
+        // Dimmer is still held and repeating, so a resent press must not step again.
+        controller.handle(id: id(.dimmer), pressed: true)
+        #expect(abs(manager.whitepoint - 0.95) < 1e-9)
+        controller.handle(id: id(.dimmer), pressed: false)
+        controller.handle(id: id(.dimmer), pressed: true)
+        #expect(abs(manager.whitepoint - 0.90) < 1e-9)
+        controller.handle(id: id(.dimmer), pressed: false)
+    }
+
     @Test func leavingTheWindowEndsRecordingAndRestoresHotkeys() {
         let (controller, _) = makeController()
         let window = ShortcutsWindowController(store: controller.store, reserved: { [] })
@@ -200,6 +229,33 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         controller.handle(id: id(.pause), pressed: false)
         #expect(!manager.isPaused)
         #expect(manager.isFiltering)
+    }
+
+    @Test func stepsAndPauseKeepWorkingWhileSuspendedForAnApp() {
+        let (controller, manager) = makeController()
+        manager.setAll(on: true)
+        manager.setSuspendedForApp("Photoshop")
+        controller.handle(id: id(.warmer), pressed: true)
+        controller.handle(id: id(.warmer), pressed: false)
+        #expect(abs(manager.intensity - 0.95) < 1e-9)
+        #expect(readout.shown.last?.text == "Color Temp 95% · Suspended")
+
+        // A held peek changes nothing visible, and releasing it leaves the suspension.
+        controller.handle(id: id(.pause), pressed: true)
+        uptime.now += 2
+        controller.handle(id: id(.pause), pressed: false)
+        #expect(manager.suspendedForApp == "Photoshop")
+        controller.handle(id: id(.pause), pressed: true)
+        uptime.now += 0.1
+        controller.handle(id: id(.pause), pressed: false)
+        #expect(manager.isPaused)
+        controller.handle(id: id(.warmer), pressed: true)
+        controller.handle(id: id(.warmer), pressed: false)
+        #expect(readout.shown.last?.text == "Color Temp 90% · Paused")
+        controller.handle(id: id(.pause), pressed: true)
+        controller.handle(id: id(.pause), pressed: false)
+        #expect(!manager.isPaused)
+        #expect(manager.suspendedForApp == "Photoshop")
     }
 
     @Test func pauseWhileOffExplainsInsteadOfPeeking() {

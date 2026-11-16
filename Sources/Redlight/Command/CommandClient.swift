@@ -52,7 +52,8 @@ struct CommandClient: Sendable {
         }
         if !running {
             switch command {
-            case .status, .master(.off), .pause(.on), .quit: return .notRunning
+            // A stopped app shows no tint, so there is nothing to pause either.
+            case .status, .master(.off), .pause(.on), .pauseFor, .quit: return .notRunning
             default: break
             }
         }

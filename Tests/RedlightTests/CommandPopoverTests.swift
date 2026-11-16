@@ -95,6 +95,43 @@ private final class PopoverServicesState {
         #expect(state.quitCount == 1)
     }
 
+    @Test func pauseLengthAndLocationActionsReachTheModel() {
+        let location = FakeLocationProvider()   // no coordinate yet: no sunrise to find
+        let manager = DisplayManager(
+            gamma: MockGammaController(), getDisplayIDs: { [41] }, getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { "stable-\($0)" }, getMainDisplayID: { 41 },
+            defaults: defaultsRegistry.makeDefaults(prefix: "CommandPopoverTests"),
+            location: location, adaptiveTransitionDuration: 0, displayTransitionDuration: 0
+        )
+        let dispatch = PopoverCommandDispatch(handler: CommandHandler(manager: manager, services: PopoverServicesState().services))
+        #expect(dispatch.execute(.master(.on)) == nil)
+        #expect(dispatch.execute(.pauseFor(.untilSunrise))?.isEmpty == false)
+        #expect(!manager.isPaused)
+        #expect(dispatch.execute(.pauseFor(.minutes(120))) == nil)
+        #expect(manager.pauseLength == 120 * 60)
+
+        #expect(dispatch.execute(.location(.manual(latitude: 91, longitude: 0)))?.contains("Latitude") == true)
+        #expect(location.manualCoordinate == nil)
+        #expect(dispatch.execute(.location(.manual(latitude: 51.5, longitude: -0.13))) == nil)
+        #expect(location.manualCoordinate?.latitude == 51.5)
+        #expect(manager.manualLocation?.longitude == -0.13)
+        #expect(dispatch.execute(.location(.automatic)) == nil)
+        #expect(location.manualCoordinate == nil)
+        #expect(manager.manualLocation == nil)
+    }
+
+    @Test func bedtimeActionsReachTheModel() {
+        let manager = makeManager()
+        let dispatch = PopoverCommandDispatch(handler: CommandHandler(manager: manager, services: PopoverServicesState().services))
+        #expect(dispatch.execute(.adaptive(.on)) == nil)
+        #expect(dispatch.execute(.bedtime(.at(hour: 22, minute: 30))) == nil)
+        #expect(manager.bedtime == Bedtime(hour: 22, minute: 30))
+        #expect(dispatch.execute(.bedtime(.at(hour: 24, minute: 0)))?.contains("23:59") == true)
+        #expect(manager.bedtime == Bedtime(hour: 22, minute: 30))
+        #expect(dispatch.execute(.bedtime(.off)) == nil)
+        #expect(manager.bedtime == nil)
+    }
+
     @Test func previewsWithoutAHandlerShowAnActionableError() {
         let dispatch = PopoverCommandDispatch(handler: nil)
         #expect(dispatch.execute(.master(.on))?.contains("Reopen the app") == true)

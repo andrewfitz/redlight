@@ -33,13 +33,16 @@ Free open source blue light filter mac app that:
 
 - **Color Temp** goes from a normal screen (100%) to pure red (0%), passing through warm orange. Blue drops faster than green, so it never turns purple
 - **White Point** dims bright areas while leaving darks mostly unchanged, like iOS Reduce White Point but adjustable
-- **Presets**: one-click Day, Warm, Sunset, Night and Deep Red. **Save to Preset…** overwrites a preset with the current sliders
+- **Presets**: one-click Day, Warm, Sunset, Night and Deep Red, each fading in over two seconds. **Save to Preset…** overwrites a preset with the current sliders
 - **Invert** per display flips light and dark beneath the red filter
 
 **Adaptive**
 
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
 - The **sun arc** graphs today's solar elevation, the sun's position, and the filter level Adaptive applies
+- The status line names the next solar event, such as “Sunset in 1 h 12 m”
+- **Deepest by** sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
+- **Manual location**: enter a latitude and longitude instead of granting Location access
 - **Band limits**: drag the red bracket markers on each slider to set a hard minimum and maximum. Moving a slider inside the band shifts the curve without turning Adaptive off
 - **Fixed values**: drag one bracket onto the other to pin that slider, so Adaptive leaves it alone while the other one keeps following the sun. Moving a pinned slider moves the pin; drag a bracket tip (above or below the knob) to pull the limits apart again
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
@@ -52,7 +55,8 @@ Free open source blue light filter mac app that:
 
 **Controls**
 
-- **Pause** suspends the tint for 30 minutes, with a minutes countdown in the header. Invert stays on
+- **Pause** suspends the tint for 30 minutes, with a countdown in the header. Invert stays on. Other lengths, up to 24 hours or until sunrise, are one click away
+- **Pause for apps** suspends the tint while an app you choose, such as a photo or video editor, is in front
 - **Keyboard shortcuts** that work in any app, with no Accessibility or Input Monitoring permission
 - **Light/dark switch** for the system appearance
 - **Command line**, **Siri and Shortcuts** actions, and a **Control Center** toggle
@@ -63,6 +67,16 @@ Free open source blue light filter mac app that:
 - Remembers your settings across launches
 - Optional **Launch at Login**, off by default and never registered behind your back
 - **Automatic updates** through Sparkle, plus an **Updates…** button
+
+## New in 1.5
+
+- **Pause for apps**: the tint steps aside while color-critical apps are in front, and returns when you switch away
+- **Pause lengths**: 30 minutes, 1 hour, 2 hours or until sunrise from the popover; any length from the command line and Shortcuts
+- **Bedtime for Adaptive**: reach your deepest setting by a set time, whatever the sun is doing
+- **Manual location** for Macs that cannot get a fix, or if you prefer not to share Location
+- **Next solar event** countdown under the Adaptive status
+- **Presets fade** over two seconds instead of jumping
+- New commands: `redlight pause 90`, `redlight pause until sunrise`, `redlight location`, `redlight adaptive bedtime` and `redlight apps`
 
 ## New in 1.4
 
@@ -81,22 +95,55 @@ Click the menu bar icon (a sun behind a monitor) to open the popover. The icon's
 solid while a filter is showing and faint when it is off or paused.
 
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
-- The **pause** button beside it suspends the tint for 30 minutes; click it again to resume early
+- The **pause** button beside it suspends the tint for 30 minutes; click it again to resume early. The chevron next to it offers 1 hour, 2 hours and Until sunrise
 - Toggle each display, or check **Invert** to flip its colors
 - Drag **Color Temp** to remove blue and green light, and **White Point** to reduce peak brightness
 - Click a preset to jump to it. The reset button beside each slider restores its default and clears its limits
-- Turn on **Adaptive** to let the sun drive the filter, then drag the red brackets to set its limits
+- Turn on **Adaptive** to let the sun drive the filter, then drag the red brackets to set its limits. **Deepest by** and the location fields appear beneath it
+- Open **Pause for apps** to choose apps that suspend the tint while they are in front
 - The keyboard button at the bottom opens **Keyboard Shortcuts**
 
 ### Pause
 
 Pausing hides the tint without changing which displays are enabled, so Invert stays on. The
-header counts down the minutes left, and the filter fades back when the time is up. A pause
-survives sleep and relaunch, and changing the clock cannot make it longer than 30 minutes.
+header counts down the time left, and the filter fades back when the time is up. A pause
+survives sleep and relaunch, and changing the clock cannot make it longer than the length
+you chose. A pause lasts from 1 minute to 24 hours. **Until sunrise** needs a location and
+a sunrise within the next 24 hours.
 
 While paused, Redlight counts as off: the menu bar icon, Control Center and `redlight status`
 all show off. Turning Redlight on, from anywhere, ends the pause. Slider and preset changes
 made while paused are saved and appear on resume. Pause is unavailable while Redlight is off.
+
+### Pause for apps
+
+Open **Pause for apps** in the popover and add any running app. While a chosen app is in
+front, the tint fades out and the header shows “Suspended for” and its name; it fades back
+when you switch to another app. Invert stays on, and the menu bar icon goes faint.
+
+Unlike Pause, this does not count as off: Control Center and `redlight status` still show
+on, and turning Redlight off and on again while the app is in front leaves the tint
+suspended. Pause works independently. Slider, preset and Adaptive changes made meanwhile
+appear when the suspension ends.
+
+### Bedtime
+
+With Adaptive on, set a time and check **Deepest by**; to change it later, edit the time and
+click **Set**. Starting two hours before it, the
+filter eases to the deepest end of your limits and holds there until solar midnight, when
+the normal morning curve takes over. Bedtime can only make the evening redder, never
+lighter, and the sun arc shows the result. The status line reads “bedtime” while it is in
+effect.
+
+A bedtime later than solar midnight (around 01:00 during summer time in many places) has no
+effect that night. Under the midnight sun the tint lifts again after solar midnight.
+
+### Location
+
+Adaptive normally uses Location Services, falling back to a city in your time zone. To set
+it yourself, enter a latitude and longitude under Adaptive, or run `redlight location`.
+With a manual location Redlight makes no Location requests and does not ask for permission.
+Switch back to automatic at any time.
 
 ## Keyboard shortcuts
 
@@ -144,10 +191,14 @@ redlight whitepoint 50           # 25–100
 redlight color down 5            # warmer; steps default to 5
 redlight whitepoint up 10
 redlight pause                   # 30 minutes
+redlight pause 90                # minutes, 1–1440
+redlight pause until sunrise
 redlight resume
 redlight preset night
 redlight preset save night
 redlight adaptive on
+redlight adaptive bedtime 22:30  # or: off
+redlight location 51.5 -0.12     # or: auto
 redlight limits color 10 80
 redlight limits whitepoint 30 90
 redlight limits whitepoint 100 100   # pin White Point: Adaptive only changes Color Temp
@@ -155,6 +206,8 @@ redlight display list
 redlight display 2 on
 redlight display "Studio" invert toggle
 redlight display all off
+redlight apps add com.adobe.Photoshop
+redlight apps list               # also: remove <bundle-id>, clear
 redlight appearance dark
 redlight login on
 redlight status --json
@@ -165,13 +218,18 @@ redlight --version
 
 - Levels are percentages matching the popover. Display names accept a unique case-insensitive substring
 - `color` is the command name for Color Temp. `down` is warmer, and steps start from the current setting
-- Applying a preset turns Adaptive off. Setting a level while Adaptive is on shifts its curve within the limits
+- Applying a preset turns Adaptive off and fades over two seconds. Setting a level while Adaptive is on shifts its curve within the limits
 - `on`, `toggle` and `resume` end a pause. While paused, `status` reports off and the minutes left
+- `pause <minutes>` while already paused replaces the running pause
+- `apps` takes bundle identifiers. `status` adds “suspended for” and the app's name while a chosen app is in front, and still reports on
+- `status --json` reports the location source (`auto`, `manual` or `timeZone`), never the coordinates
 - A command that changes settings interrupts a slider drag in progress, so the drag cannot overwrite it
 
-`status`, `off`, `pause` and `quit` leave a stopped app stopped. Other commands launch it
-as needed, and `toggle` on a stopped app turns it on. Only one copy of the app can own the
-displays; if an older version is running, quit it first.
+`status`, `off`, `pause` (with or without a length) and `quit` leave a stopped app stopped.
+Other commands launch it as needed, and `toggle` on a stopped app turns it on. Only one
+copy of the app can own the displays; if an older version is running, quit it first. The
+`redlight` command and the running app must be the same version, or the command asks you
+to update.
 
 Add `--json` for script output. Exit codes are `0` for success, `1` for invalid input and
 `2` for an unavailable app or failed system action. `login on` reports when approval is
@@ -179,9 +237,10 @@ needed in System Settings → Login Items.
 
 ## Siri, Shortcuts and Control Center
 
-Redlight provides Shortcuts app actions for its commands, including Pause and Resume,
-Adjust (warmer, cooler, dimmer or brighter by any amount), display selection, preset
-editing, limits, system appearance and status. These Siri phrases work out of the box:
+Redlight provides Shortcuts app actions for its commands, including Pause (with an optional
+length, or until sunrise) and Resume, Adjust (warmer, cooler, dimmer or brighter by any
+amount), display selection, preset editing, limits, bedtime, location, pause for apps,
+system appearance and status. These Siri phrases work out of the box:
 
 - “Turn on Redlight” / “Turn off Redlight”
 - “Pause Redlight” / “Resume Redlight”
@@ -202,8 +261,8 @@ drag **Redlight** to `/Applications`. Installed copies update themselves.
 If macOS blocks an older release from opening, right-click the app and choose **Open**, or
 allow it under **System Settings → Privacy & Security**.
 
-Adaptive asks for Location access the first time you turn it on. The light/dark switch may
-ask once for permission to control System Events.
+Adaptive asks for Location access the first time you turn it on, unless you have set a
+manual location. The light/dark switch may ask once for permission to control System Events.
 
 ## Building from source
 
@@ -235,8 +294,8 @@ bundles, so failed builds may leave gaps.
 - macOS 14 (Sonoma) or later. The Control Center toggle needs macOS 26 or later
 - To build: full Xcode.app with a macOS 26 or later SDK
 
-**Adaptive** uses CoreLocation to get an approximate coordinate, caches it for offline use,
-refreshes it occasionally and after wake, and computes the sun's elevation locally with the
+**Adaptive** uses CoreLocation to get an approximate coordinate (or the one you entered),
+caches it for offline use, refreshes it hourly and after wake, and computes the sun's elevation locally with the
 NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6° and Sunset at
 0°, follows the civil, nautical and astronomical twilight boundaries at −6°, −12° and −18°,
 and reaches Deep Red at solar midnight. Mornings mirror the night up to sunrise, then reach
@@ -251,7 +310,7 @@ python3 -m unittest discover -s Tools/tests
 ```
 
 Swift tests cover display behavior with mock gamma, Sidecar routing and pointer handling,
-pause and peek, keyboard shortcut validation and dispatch, commands, the parser and
+pause and peek, pause for apps, bedtime, manual location, keyboard shortcut validation and dispatch, commands, the parser and
 transport, popover and intent parity, slider interaction, installer safeguards, and solar
 calculations and chart geometry. Python tests cover release versions, concurrent
 build-number allocation, and changelog release notes. `build.sh` verifies both bundles'

@@ -7,6 +7,7 @@ import Testing
 private final class Clock {
     var date = Date(timeIntervalSince1970: 1_000_000)
     var uptime: TimeInterval = 100
+    var displayIDs: [CGDirectDisplayID] = [1, 2]
 }
 
 @MainActor @Suite struct PauseTests {
@@ -78,6 +79,39 @@ private final class Clock {
         #expect(manager.isFiltering)
     }
 
+    @Test func masterOnTurnsAFilterOnWhenThePausedDisplayWasUnplugged() {
+        let clock = clock
+        let manager = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { clock.displayIDs },
+            getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) },
+            getMainDisplayID: { 1 },
+            defaults: defaultsRegistry.makeDefaults(prefix: "PauseTests"),
+            location: FakeLocationProvider(),
+            now: { clock.date },
+            adaptiveTransitionDuration: 0,
+            displayTransitionDuration: 0,
+            peekTransitionDuration: 0,
+            transitionUptime: { clock.uptime }
+        )
+        manager.intensity = 0.4
+        manager.setEnabled(true, for: 2)
+        #expect(manager.pause())
+
+        clock.displayIDs = [1]
+        manager.refreshDisplays()
+        #expect(manager.isPaused)
+        #expect(!manager.isOn)
+
+        // One request, not two: resuming alone would leave Redlight off.
+        mock.applyCalls.removeAll()
+        manager.setAll(on: true)
+        #expect(!manager.isPaused)
+        #expect(manager.isFiltering)
+        #expect(mock.applyCalls.last { $0.displayID == 1 }?.intensity == Float(0.4))
+    }
+
     @Test func turningOffEndsThePauseWithoutReshowingTheFilter() {
         let manager = makeManager(fadeDuration: 1)
         manager.intensity = 0.4
@@ -126,6 +160,118 @@ private final class Clock {
         let late = makeManager(defaults: defaults)
         #expect(!late.isPaused)
         #expect(late.isFiltering)
+    }
+
+    @Test func timedPauseUsesAndPersistsItsOwnLength() {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "PauseTests")
+        let manager = makeManager(defaults: defaults)
+        manager.setEnabled(true, for: 1)
+        #expect(manager.pause(for: 2 * 3_600))
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(2 * 3_600))
+        #expect(manager.pauseLength == 2 * 3_600)
+        #expect(defaults.double(forKey: "redlight.pauseLength") == 2 * 3_600)
+        #expect(defaults.double(forKey: "redlight.pausedUntil") == clock.date.addingTimeInterval(2 * 3_600).timeIntervalSince1970)
+
+        manager.resume()
+        #expect(defaults.object(forKey: "redlight.pausedUntil") == nil)
+        #expect(defaults.object(forKey: "redlight.pauseLength") == nil)
+
+        // The default pause records its 30 minutes too.
+        manager.pause()
+        #expect(manager.pauseLength == DisplayManager.Defaults.pauseDuration)
+        #expect(defaults.double(forKey: "redlight.pauseLength") == DisplayManager.Defaults.pauseDuration)
+    }
+
+    @Test func pauseLengthIsClampedToOneMinuteThroughOneDay() {
+        let manager = makeManager()
+        manager.setEnabled(true, for: 1)
+        manager.pause(for: 10)
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(60))
+        manager.pause(for: 100_000)
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(86_400))
+        manager.pause(for: .nan)
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(DisplayManager.Defaults.pauseDuration))
+    }
+
+    @Test func clockChangesAreCappedAtThePausesOwnLength() {
+        let manager = makeManager()
+        manager.setEnabled(true, for: 1)
+        manager.pause(for: 2 * 3_600)
+        clock.date = clock.date.addingTimeInterval(-3 * 3_600) // clock set back three hours
+        manager.refreshPause()
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(2 * 3_600))
+        #expect(manager.pauseLength == 2 * 3_600)
+    }
+
+    @Test func longPauseSurvivesRelaunchWithoutTheThirtyMinuteCap() {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "PauseTests")
+        let first = makeManager(defaults: defaults)
+        first.setEnabled(true, for: 1)
+        first.pause(for: 3 * 3_600)
+        let until = first.pausedUntil
+
+        clock.date = clock.date.addingTimeInterval(60)
+        let relaunched = makeManager(defaults: defaults)
+        #expect(relaunched.isPaused)
+        #expect(relaunched.pausedUntil == until)
+        #expect(relaunched.pauseLength == 3 * 3_600)
+    }
+
+    @Test func pauseSavedByAnOlderVersionKeepsTheThirtyMinuteCap() {
+        for storedLength: Any? in [nil, Double.nan, 1e9, -5.0, "long"] {
+            let defaults = defaultsRegistry.makeDefaults(prefix: "PauseTests")
+            defaults.set(true, forKey: "redlight.display.1.enabled")
+            defaults.set(clock.date.addingTimeInterval(5 * 3_600).timeIntervalSince1970, forKey: "redlight.pausedUntil")
+            if let storedLength { defaults.set(storedLength, forKey: "redlight.pauseLength") }
+            let manager = makeManager(defaults: defaults)
+            #expect(manager.isPaused)
+            #expect(manager.pausedUntil == clock.date.addingTimeInterval(DisplayManager.Defaults.pauseDuration))
+            #expect(manager.pauseLength == DisplayManager.Defaults.pauseDuration)
+        }
+    }
+
+    @Test func countdownTextReadsNaturallyForLongPauses() {
+        let until = Date(timeIntervalSince1970: 100_000)
+        func text(_ seconds: TimeInterval) -> String {
+            DisplayManager.pauseCountdownText(until: until, now: until.addingTimeInterval(-seconds))
+        }
+        #expect(text(30 * 60) == "30 min")
+        #expect(text(59 * 60) == "59 min")
+        #expect(text(59 * 60 + 1) == "1 h")
+        #expect(text(72 * 60) == "1 h 12 m")
+        #expect(text(120 * 60) == "2 h")
+        #expect(text(24 * 3_600) == "24 h")
+        #expect(text(10) == "1 min")
+        func spoken(_ seconds: TimeInterval) -> String {
+            DisplayManager.pauseCountdownAccessibilityText(until: until, now: until.addingTimeInterval(-seconds))
+        }
+        #expect(spoken(30 * 60) == "Paused, 30 minutes left")
+        #expect(spoken(10) == "Paused, 1 minute left")
+        #expect(spoken(60 * 60) == "Paused, 1 hour left")
+        #expect(spoken(72 * 60) == "Paused, 1 hour 12 minutes left")
+        #expect(spoken(121 * 60) == "Paused, 2 hours 1 minute left")
+        #expect(DisplayManager.pauseLengthText(30 * 60) == "30 min")
+        #expect(DisplayManager.pauseLengthText(90 * 60) == "1 h 30 m")
+        #expect(DisplayManager.pauseLengthText(14.5 * 3_600) == "14 h 30 m")
+    }
+
+    @Test func secondsUntilSunriseUsesTheProviderCoordinate() throws {
+        let location = FakeLocationProvider()
+        let clock = clock
+        clock.date = ISO8601DateFormatter().date(from: "2025-03-20T15:00:00Z")!
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { [1] }, getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) },
+            defaults: defaultsRegistry.makeDefaults(prefix: "PauseTests"),
+            location: location, now: { clock.date },
+            adaptiveTransitionDuration: 0, displayTransitionDuration: 0)
+        #expect(manager.secondsUntilSunrise() == nil)
+        location.setManualCoordinate((latitude: 0, longitude: 0))
+        let expected = try #require(SunCycle.nextSunrise(after: clock.date, latitude: 0, longitude: 0))
+        #expect(manager.secondsUntilSunrise() == expected.timeIntervalSince(clock.date))
+        clock.date = ISO8601DateFormatter().date(from: "2025-06-21T12:00:00Z")!
+        location.setManualCoordinate((latitude: 89.9, longitude: 0))   // polar day
+        #expect(manager.secondsUntilSunrise() == nil)
     }
 
     @Test func peekShowsTrueColorsOnlyWhileHeld() {

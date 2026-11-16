@@ -157,7 +157,10 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
     func restore(_ id: CGDirectDisplayID) {
         screens.removeValue(forKey: id)
         unavailable.remove(id)
-        overlays.removeValue(forKey: id)?.close()
+        // Callers restore every neutral display on every frame. Only a removed overlay
+        // changes what the pointer has to do.
+        guard let overlay = overlays.removeValue(forKey: id) else { return }
+        overlay.close()
         syncPointer()
     }
 

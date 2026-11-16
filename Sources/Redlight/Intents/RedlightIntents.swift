@@ -148,13 +148,28 @@ struct TurnOffRedlightIntent: AppIntent {
     }
 }
 
+/// Minutes are optional so "Pause Redlight" in Siri still asks nothing and pauses for 30.
 struct PauseRedlightIntent: AppIntent {
     static let title: LocalizedStringResource = "Pause Redlight"
-    static let description = IntentDescription("Suspends the color filter for 30 minutes. Invert stays on.")
+    static let description = IntentDescription(
+        "Suspends the color filter for 30 minutes, or for the minutes you choose (up to 24 hours). Invert stays on.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Minutes", inclusiveRange: (1, 1440)) var minutes: Int?
+    init() {}
+    init(minutes: Int?) { self.minutes = minutes }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(minutes.map { .pauseFor(.minutes($0)) } ?? .pause(.on))
+        return .result()
+    }
+}
+
+struct PauseRedlightUntilSunriseIntent: AppIntent {
+    static let title: LocalizedStringResource = "Pause Redlight Until Sunrise"
+    static let description = IntentDescription("Suspends the color filter until the next sunrise at Redlight's location. Invert stays on.")
     static let openAppWhenRun = false
     init() {}
     @MainActor func perform() async throws -> some IntentResult {
-        _ = try IntentBridge.execute(.pause(.on))
+        _ = try IntentBridge.execute(.pauseFor(.untilSunrise))
         return .result()
     }
 }
@@ -286,6 +301,105 @@ struct SetRedlightLimitsIntent: AppIntent {
     }
 }
 
+struct SetRedlightLocationIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Location"
+    static let description = IntentDescription(
+        "Uses these coordinates for Adaptive instead of Location Services. South and west are negative.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Latitude", inclusiveRange: (-90, 90)) var latitude: Double
+    @Parameter(title: "Longitude", inclusiveRange: (-180, 180)) var longitude: Double
+    init() {}
+    init(latitude: Double, longitude: Double) { self.latitude = latitude; self.longitude = longitude }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.location(.manual(latitude: latitude, longitude: longitude)))
+        return .result()
+    }
+}
+
+struct UseAutomaticRedlightLocationIntent: AppIntent {
+    static let title: LocalizedStringResource = "Use Automatic Redlight Location"
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.location(.automatic))
+        return .result()
+    }
+}
+
+struct SetRedlightBedtimeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Bedtime"
+    static let description = IntentDescription(
+        "Adaptive reaches its deepest setting by this time (24-hour, local), even while the sun is still up. Mornings still follow the sun.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Hour", inclusiveRange: (0, 23)) var hour: Int
+    @Parameter(title: "Minute", default: 0, inclusiveRange: (0, 59)) var minute: Int
+    static var parameterSummary: some ParameterSummary {
+        Summary("Set Redlight bedtime to \(\.$hour):\(\.$minute)")
+    }
+    init() {}
+    init(hour: Int, minute: Int) { self.hour = hour; self.minute = minute }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.bedtime(.at(hour: hour, minute: minute)))
+        return .result()
+    }
+}
+
+struct TurnOffRedlightBedtimeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Turn Off Redlight Bedtime"
+    static let description = IntentDescription("Adaptive follows the sun alone again.")
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.bedtime(.off))
+        return .result()
+    }
+}
+
+struct PauseRedlightForAppIntent: AppIntent {
+    static let title: LocalizedStringResource = "Pause Redlight for an App"
+    static let description = IntentDescription(
+        "Suspends the color filter whenever this app is in front. Use its bundle ID, such as com.apple.Photos. Invert stays on.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Bundle ID") var bundleID: String
+    init() {}
+    init(bundleID: String) { self.bundleID = bundleID }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.apps(.add(bundleID)))
+        return .result()
+    }
+}
+
+struct StopPausingRedlightForAppIntent: AppIntent {
+    static let title: LocalizedStringResource = "Stop Pausing Redlight for an App"
+    static let openAppWhenRun = false
+    @Parameter(title: "Bundle ID") var bundleID: String
+    init() {}
+    init(bundleID: String) { self.bundleID = bundleID }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.apps(.remove(bundleID)))
+        return .result()
+    }
+}
+
+struct ListRedlightPauseAppsIntent: AppIntent {
+    static let title: LocalizedStringResource = "List Apps That Pause Redlight"
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<[String]> {
+        .result(value: try IntentBridge.execute(.appsList).apps)
+    }
+}
+
+struct ClearRedlightPauseAppsIntent: AppIntent {
+    static let title: LocalizedStringResource = "Clear Apps That Pause Redlight"
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.apps(.clear))
+        return .result()
+    }
+}
+
 struct SetRedlightDisplayIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Redlight Display"
     static let openAppWhenRun = false
@@ -381,7 +495,9 @@ func redlightStatusText(_ status: Status) -> String {
     if let pausedUntil = status.pausedUntil {
         text += " (paused, \(DisplayManager.pauseMinutesLeft(until: pausedUntil, now: Date())) min left)"
     }
+    if let app = status.suspendedFor { text += " (suspended for \(app))" }
     text += "\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
+    if let bedtime = status.bedtime { text += "\nBedtime: \(bedtime)" }
     text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }

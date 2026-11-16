@@ -19,6 +19,7 @@ final class ShortcutController {
     private let repeatInterval: () -> TimeInterval
 
     private var repeatTimer: Timer?
+    private var repeatingAction: ShortcutAction?
     private var repeatStartedAt: TimeInterval = 0
     private var peekStartedAt: TimeInterval?
     private var peekWatch: Timer?
@@ -67,9 +68,15 @@ final class ShortcutController {
         if action == .pause {
             pressed ? pausePressed() : pauseReleased()
         } else if action.repeats {
-            // Some macOS versions resend the press while held; the timer already repeats.
-            if pressed, repeatTimer != nil { return }
-            pressed ? startRepeating(action) : stopRepeating()
+            if pressed {
+                // Some macOS versions resend the press while held; the timer already repeats.
+                if repeatingAction == action { return }
+                // Rolling onto another step key takes over the repeat.
+                startRepeating(action)
+            } else if repeatingAction == action {
+                // Releasing a key that was rolled off must not stop the one still held.
+                stopRepeating()
+            }
         } else if pressed {
             perform(action)
         }
@@ -111,7 +118,9 @@ final class ShortcutController {
             var text = "\(channel == .color ? "Color Temp" : "White Point") \(Int(value.rounded()))%"
             let pinned = channel == .color ? manager.isIntensityPinned : manager.isWhitepointPinned
             if after == before, manager.adaptiveEnabled, !pinned { text += " · Adaptive limit" }
-            if status.pausedUntil != nil { text += " · Paused" } else if !status.on { text += " · Off" }
+            if status.pausedUntil != nil { text += " · Paused" }
+            else if status.suspendedFor != nil { text += " · Suspended" }
+            else if !status.on { text += " · Off" }
             let floor = channel == .color ? 0.0 : 25.0
             readout.show(text, level: (value - floor) / (100 - floor))
             return after != before
@@ -141,11 +150,13 @@ final class ShortcutController {
         timer.fireDate = Date().addingTimeInterval(repeatDelay())
         RunLoop.main.add(timer, forMode: .common)
         repeatTimer = timer
+        repeatingAction = action
     }
 
     private func stopRepeating() {
         repeatTimer?.invalidate()
         repeatTimer = nil
+        repeatingAction = nil
     }
 
     // MARK: - Pause and peek
@@ -189,7 +200,7 @@ final class ShortcutController {
         }
         do {
             _ = try execute(.pause(.on))
-            readout.show("Paused · \(Int(DisplayManager.Defaults.pauseDuration / 60)) min", level: nil)
+            readout.show("Paused · \(DisplayManager.pauseLengthText(manager.pauseLength))", level: nil)
         } catch {
             manager.setPeeking(false)
             readout.show(error.localizedDescription, level: nil)

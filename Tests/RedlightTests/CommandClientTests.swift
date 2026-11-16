@@ -20,7 +20,7 @@ private final class ClientProbe: @unchecked Sendable {
 
 @Suite struct CommandClientTests {
     @Test func stoppedReadAndStopCommandsNeverLaunch() async throws {
-        for command: RedlightCommand in [.status, .master(.off), .pause(.on), .quit] {
+        for command: RedlightCommand in [.status, .master(.off), .pause(.on), .pauseFor(.minutes(90)), .pauseFor(.untilSunrise), .quit] {
             let probe = ClientProbe()
             let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
                                        launch: { probe.started() }, send: { probe.sent($0) })
@@ -47,6 +47,9 @@ private final class ClientProbe: @unchecked Sendable {
             .master(.on), .color(60), .whitepoint(80), .reset(.color), .preset(.night),
             .savePreset(.day), .adaptive(.on), .limits(.color, min: 0, max: 100),
             .displayList, .display(.all, .on), .invert(.all, .on), .appearance(.dark), .login(true), .update,
+            .location(.manual(latitude: 51.5, longitude: -0.13)), .location(.automatic),
+            .bedtime(.at(hour: 22, minute: 30)), .bedtime(.off),
+            .appsList, .apps(.add("com.adobe.Photoshop")), .apps(.remove("com.adobe.Photoshop")), .apps(.clear),
         ]
         for command in commands {
             let probe = ClientProbe()
@@ -147,5 +150,22 @@ private final class ClientProbe: @unchecked Sendable {
                       "Night below horizon", "1: Studio", "invert on"] {
             #expect(output.contains(field))
         }
+        #expect(!output.contains("bedtime"))
+    }
+
+    @Test func humanStatusAddsTheBedtimeOnlyWhenSet() async {
+        let unset = Status(on: true, adaptive: true, statusLine: "Following the sun · −3.0°", version: "1.2")
+        var plain = ""
+        #expect(await RedlightCLI.run(arguments: ["status"], client: CommandClient(hasPort: { true }, send: { _ in unset }),
+                                     writeOutput: { plain = $0 }) == 0)
+        let set = Status(on: true, adaptive: true, statusLine: "Following the sun · −3.0° · bedtime",
+                         version: "1.2", bedtime: "22:30")
+        var output = ""
+        #expect(await RedlightCLI.run(arguments: ["status"], client: CommandClient(hasPort: { true }, send: { _ in set }),
+                                     writeOutput: { output = $0 }) == 0)
+        #expect(output.contains("Adaptive: on; bedtime 22:30"))
+        #expect(output.contains("Following the sun · −3.0° · bedtime"))
+        #expect(!plain.contains("bedtime"))
+        #expect(plain.contains("Adaptive: on\n"))
     }
 }

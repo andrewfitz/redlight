@@ -18,6 +18,17 @@ enum SolarCalculator {
         hourAngle(at: date, t: julianCentury(date), longitude: longitude) < 0
     }
 
+    /// The next solar midnight (lower culmination) at or after `date`. The hour angle turns
+    /// at 15° an hour, but the equation of time drifts up to ~15 s over half a day; one
+    /// correction at the first estimate keeps every evening tick on the same instant.
+    static func nextSolarMidnight(after date: Date, longitude: Double) -> Date {
+        let degreesToGo = 180 - hourAngle(at: date, t: julianCentury(date), longitude: longitude)
+        let estimate = date.addingTimeInterval(degreesToGo * 240)
+        var residual = 180 - hourAngle(at: estimate, t: julianCentury(estimate), longitude: longitude)
+        if residual >= 180 { residual -= 360 }
+        return estimate.addingTimeInterval(residual * 240)
+    }
+
     /// Hour angle in degrees, −180…180: negative before solar noon, positive after.
     private static func hourAngle(at date: Date, t: Double, longitude: Double) -> Double {
         let trueSolarTime = (utcMinutes(date) + equationOfTime(t) + 4 * longitude)

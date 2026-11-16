@@ -26,6 +26,21 @@ import Testing
             (["pause"], .pause(.on)), (["resume"], .pause(.off)),
             (["color", "up"], .step(.color, 5)), (["color", "down", "2.5"], .step(.color, -2.5)),
             (["whitepoint", "down"], .step(.whitepoint, -5)), (["whitepoint", "up", "10"], .step(.whitepoint, 10)),
+            (["pause", "90"], .pauseFor(.minutes(90))), (["pause", "1"], .pauseFor(.minutes(1))),
+            (["pause", "1440"], .pauseFor(.minutes(1440))), (["pause", "until", "sunrise"], .pauseFor(.untilSunrise)),
+            (["location", "40.71", "-74.01"], .location(.manual(latitude: 40.71, longitude: -74.01))),
+            (["location", "-33.87", "151.21"], .location(.manual(latitude: -33.87, longitude: 151.21))),
+            (["location", "-90", "-180"], .location(.manual(latitude: -90, longitude: -180))),
+            (["location", "90", "180"], .location(.manual(latitude: 90, longitude: 180))),
+            (["location", "auto"], .location(.automatic)),
+            (["adaptive", "bedtime", "22:30"], .bedtime(.at(hour: 22, minute: 30))),
+            (["adaptive", "bedtime", "0:00"], .bedtime(.at(hour: 0, minute: 0))),
+            (["adaptive", "bedtime", "23:59"], .bedtime(.at(hour: 23, minute: 59))),
+            (["adaptive", "bedtime", "07:05"], .bedtime(.at(hour: 7, minute: 5))),
+            (["adaptive", "bedtime", "off"], .bedtime(.off)),
+            (["apps", "list"], .appsList), (["apps", "clear"], .apps(.clear)),
+            (["apps", "add", "com.adobe.Photoshop"], .apps(.add("com.adobe.Photoshop"))),
+            (["apps", "remove", "com.apple.Photos"], .apps(.remove("com.apple.Photos"))),
         ]
         for (arguments, expected) in examples {
             #expect(try CLIParser.parse(arguments) == ParsedCLICommand(command: expected, json: false))
@@ -55,6 +70,21 @@ import Testing
             ["login", "toggle"], ["--version", "extra"],
             ["pause", "now"], ["resume", "5"], ["color", "up", "0"], ["color", "down", "101"],
             ["color", "up", "nan"], ["whitepoint", "up", "5", "5"],
+            ["pause", "0"], ["pause", "1441"], ["pause", "-5"], ["pause", "1.5"], ["pause", "nan"],
+            ["pause", "until"], ["pause", "until", "sunset"], ["pause", "90", "extra"],
+            ["pause", "until", "sunrise", "extra"],
+            ["location"], ["location", "40"], ["location", "91", "0"], ["location", "-90.1", "0"],
+            ["location", "0", "181"], ["location", "0", "-180.5"], ["location", "nan", "0"],
+            ["location", "0", "inf"], ["location", "north", "1"], ["location", "auto", "extra"],
+            ["location", "1", "2", "3"],
+            ["adaptive"], ["adaptive", "on", "extra"], ["adaptive", "22:30"], ["adaptive", "bedtime"],
+            ["adaptive", "bedtime", "24:00"], ["adaptive", "bedtime", "22:60"], ["adaptive", "bedtime", "22"],
+            ["adaptive", "bedtime", "-1:00"], ["adaptive", "bedtime", "+5:00"], ["adaptive", "bedtime", "on"],
+            ["adaptive", "bedtime", "10:30pm"], ["adaptive", "bedtime", "22:30", "extra"],
+            ["adaptive", "bedtime", "off", "extra"],
+            ["apps"], ["apps", "show"], ["apps", "list", "extra"], ["apps", "clear", "all"], ["apps", "add"],
+            ["apps", "remove"], ["apps", "add", ""], ["apps", "add", "com.adobe Photoshop"],
+            ["apps", "add", String(repeating: "a", count: 256)], ["apps", "add", "a.b", "c.d"],
         ]
         for args in examples {
             do {
@@ -63,6 +93,43 @@ import Testing
             } catch let error as CommandError { #expect(error.exitCode == 1) }
             catch { Issue.record("Unexpected error for \(args): \(error)") }
         }
+    }
+
+    @Test func locationAndPauseErrorsNameTheValidRange() {
+        func message(_ arguments: [String]) -> String {
+            do { _ = try CLIParser.parse(arguments) } catch let error as CommandError { return error.message } catch {}
+            return ""
+        }
+        #expect(message(["location", "91", "0"]).contains("Latitude"))
+        #expect(message(["location", "91", "0"]).contains("90"))
+        #expect(message(["location", "0", "181"]).contains("Longitude"))
+        #expect(message(["location", "0", "181"]).contains("180"))
+        #expect(message(["pause", "0"]).contains("1440"))
+        #expect(CLIParser.help.contains("pause [minutes|until sunrise]"))
+        #expect(CLIParser.help.contains("location <latitude> <longitude> | location auto"))
+    }
+
+    @Test func adaptiveBedtimeIsAddedWithoutChangingAdaptiveErrors() {
+        func message(_ arguments: [String]) -> String {
+            do { _ = try CLIParser.parse(arguments) } catch let error as CommandError { return error.message } catch {}
+            return ""
+        }
+        #expect(message(["adaptive"]) == "Usage: redlight adaptive <on|off|toggle>")
+        #expect(message(["adaptive", "on", "extra"]) == "Usage: redlight adaptive <on|off|toggle>")
+        #expect(message(["adaptive", "yes"]) == "Invalid value 'yes'; valid values: on, off, toggle.")
+        #expect(message(["adaptive", "bedtime", "24:00"]).contains("23:59"))
+        #expect(message(["adaptive", "bedtime"]).contains("adaptive bedtime <HH:MM|off>"))
+        #expect(CLIParser.help.contains("adaptive bedtime <HH:MM|off>"))
+    }
+
+    @Test func appsUsageAndHelpNameTheForms() {
+        func message(_ arguments: [String]) -> String {
+            do { _ = try CLIParser.parse(arguments) } catch let error as CommandError { return error.message } catch {}
+            return ""
+        }
+        #expect(message(["apps"]) == "Usage: redlight apps list | apps clear | apps <add|remove> <bundle-id>")
+        #expect(message(["apps", "add", "a b"]).contains("bundle ID"))
+        #expect(CLIParser.help.contains("apps list | apps clear | apps <add|remove> <bundle-id>"))
     }
 
     @Test func helpAndVersionAreSuccessfulInformationalRequests() {
