@@ -76,26 +76,10 @@ final class AppearanceController {
         isDark = read()
     }
 
-    /// Flips the system appearance. SkyLight first (silent), AppleScript via
-    /// System Events as fallback. Never crashes or retries if both fail; the
-    /// notification observer reconciles `isDark` with whatever actually stuck.
-    func toggle() {
-        // Trust SkyLight's own read of the current theme when available; it
-        // can't be stale the way a cached UserDefaults snapshot can.
-        do {
-            try setDark(!(injectedRead?() ?? getTheme?() ?? isDark))
-        } catch {
-            NSLog("Redlight: appearance change failed: %@", error.localizedDescription)
-        }
-    }
-
     /// An explicit state setter is idempotent, unlike scripting a toggle.
     func setDark(_ target: Bool) throws {
-        let current = injectedRead?() ?? getTheme?() ?? isDark
-        guard current != target else {
-            isDark = current
-            return
-        }
+        refresh()
+        guard isDark != target else { return }
         if let injectedWrite {
             try injectedWrite(target)
         } else if let setTheme {
@@ -109,8 +93,9 @@ final class AppearanceController {
         isDark = target
     }
 
-    private func refresh() {
-        isDark = Self.readSystemIsDark()
+    func refresh() {
+        let current = injectedRead?() ?? getTheme?() ?? Self.readSystemIsDark()
+        if isDark != current { isDark = current }
     }
 
     /// "Dark" is stored in NSGlobalDomain as `AppleInterfaceStyle = Dark`; the

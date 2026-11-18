@@ -22,6 +22,7 @@ final class ShortcutController {
     private var repeatingAction: ShortcutAction?
     private var repeatStartedAt: TimeInterval = 0
     private var peekStartedAt: TimeInterval?
+    private var pauseWasActive = false
     private var peekWatch: Timer?
 
     init(
@@ -163,19 +164,11 @@ final class ShortcutController {
 
     private func pausePressed() {
         guard peekStartedAt == nil else { return }
-        if manager.isPaused {
-            do {
-                _ = try execute(.pause(.off))
-                readout.show("Resumed", level: nil)
-            } catch {
-                readout.show(error.localizedDescription, level: nil)
-            }
-            return
-        }
         guard manager.isOn else {
             readout.show("Redlight Is Off", level: nil)
             return
         }
+        pauseWasActive = manager.isPaused
         peekStartedAt = uptime()
         manager.setPeeking(true)
         guard let shortcut = store.shortcut(for: .pause), hotkeys.isKeyDown(shortcut) else { return }
@@ -199,7 +192,14 @@ final class ShortcutController {
             return
         }
         do {
+            if pauseWasActive {
+                manager.setPeeking(false)
+                _ = try execute(.pause(.off))
+                readout.show("Resumed", level: nil)
+                return
+            }
             _ = try execute(.pause(.on))
+            manager.setPeeking(false)
             readout.show("Paused · \(DisplayManager.pauseLengthText(manager.pauseLength))", level: nil)
         } catch {
             manager.setPeeking(false)

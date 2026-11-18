@@ -28,6 +28,13 @@ import Testing
         #expect(receipts[id]?.error == nil)
         #expect(handoff.handle(url: url(true, id)))
         #expect(executed == 1)
+        handoff.uninstall()
+        let nextID = UUID()
+        #expect(handoff.handle(url: url(false, nextID)))
+        #expect(receipts[nextID] == nil)
+        handoff.install(setOn: { $0 })
+        #expect(receipts[nextID]?.on == false)
+        #expect(executed == 1)
     }
 
     @Test(arguments: [false, true]) func nilBridgeRouteWaitsForCompletionWhetherAppIsStoppedOrRunning(running: Bool) async throws {
@@ -82,10 +89,10 @@ import Testing
         client.read = { _ in ControlReceipt(request: id, on: true, error: "command failed", completedAt: Date()) }
         await #expect(throws: (any Error).self) { try await client.setOn(true) }
         client.read = { _ in nil }
-        var instant = Date(timeIntervalSince1970: 0)
+        var instant = ContinuousClock.now
         var sleeps = 0
         client.now = { instant }
-        client.sleep = { instant = instant.addingTimeInterval(1); sleeps += 1 }
+        client.sleep = { instant = instant.advanced(by: .seconds(1)); sleeps += 1 }
         await #expect(throws: (any Error).self) { try await client.setOn(true) }
         #expect(sleeps == 5)
     }
@@ -123,6 +130,11 @@ import Testing
         try RedlightControlPreferences.record(recent, domain: domain, now: now)
         #expect(RedlightControlPreferences.receipts(domain: domain).count == 128)
         #expect(RedlightControlPreferences.receipt(seeded.last!.request, domain: domain) == nil)
+        // After a wall-clock correction, future-dated entries cannot displace the new receipt.
+        let earlier = now.addingTimeInterval(-60)
+        let afterClockChange = ControlReceipt(request: UUID(), on: false, error: nil, completedAt: earlier)
+        try RedlightControlPreferences.record(afterClockChange, domain: domain, now: earlier)
+        #expect(RedlightControlPreferences.receipt(afterClockChange.request, domain: domain) == afterClockChange)
     }
 
     @Test func launchWaitIsBoundedAndCancellableEvenWhenOpenerIgnoresCancellation() async {

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.5 - 2026-11-15
+## 1.5 - 2026-11-18
 
 - Added Pause for apps. Choose apps in the popover, or with `redlight apps add|remove|list|clear <bundle-id>`, and the tint fades out while one of them is in front and back when you switch away. Invert stays on. Redlight still counts as on; the header and `status` show “suspended for” and the app's name.
 - Added pause lengths. The chevron beside the Pause button offers 30 minutes, 1 hour, 2 hours and Until sunrise, and `redlight pause <minutes>` and `redlight pause until sunrise` accept anything from 1 minute to 24 hours. Plain Pause is still 30 minutes. Long pauses count down in hours and minutes in the popover.
@@ -16,6 +16,11 @@
 - Fixed Use Suggested Shortcuts leaving the same combination on two actions.
 - Fixed a held Warmer/Cooler shortcut stopping its repeat when you rolled onto another step key.
 - Reduced work when closing the popover, showing the shortcut readout, opening Keyboard Shortcuts and answering `status`.
+- Fixed excess tint after a failed calibration read and incorrect filter settings when macOS reuses a display ID. Sidecar also keeps a single visible pointer when macOS declines to hide it.
+- Holding the Pause shortcut now preserves an existing pause and its deadline. Suggested shortcuts respect combinations reserved by macOS.
+- Fixed blank controls after quickly reopening the menu, stale app suspension after wake, and appearance toggles that missed a recent system change.
+- Corrected the sun arc on days that skip local midnight and caught solar events at the edge of the search window.
+- Improved Control Center handoffs after clock changes, CLI feedback for incompatible app versions, and update checks while Sparkle is busy.
 
 ## 1.4.1 - 2026-10-27
 

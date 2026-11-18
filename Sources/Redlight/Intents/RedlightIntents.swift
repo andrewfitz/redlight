@@ -33,6 +33,7 @@ extension IntentBridge {
         AppIntentExecutor.execute = nil
         AppIntentExecutor.snapshot = nil
         setOn = nil
+        ControlHandoff.shared.uninstall()
         handoff = { try await ControlHandoffClient().setOn($0) }
     }
 }

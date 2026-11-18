@@ -28,15 +28,17 @@ enum SidecarBenchmark {
 
     static func main() {
         NSApplication.shared.setActivationPolicy(.accessory)
-        guard let screen = NSScreen.screens.first(where: {
-            $0.localizedName.localizedCaseInsensitiveContains("Sidecar")
-        }), let window = SidecarFilterWindow(screen: screen) else {
+        let displays = NSScreen.screens.compactMap { screen -> (NSScreen, CGDirectDisplayID)? in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+            else { return nil }
+            return (screen, id)
+        }
+        guard let (screen, id) = displays.first(where: { DisplayFilterController.isSidecarDisplay($0.1) }),
+              let window = SidecarFilterWindow(screen: screen) else {
             print("Connect a Sidecar iPad to run this benchmark.")
             exit(1)
         }
         defer { window.close() }
-        let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! CGDirectDisplayID
-        let physicalID = CGMainDisplayID()
         window.alphaValue = 0
         window.apply(screen: screen, intensity: 0.6, whitepoint: 0.8, invert: false)
         let router = DisplayFilterController(gamma: Sink(), sidecar: Sink())
@@ -52,7 +54,9 @@ enum SidecarBenchmark {
             print("\(name): median \(samples.sorted()[2]) ms/10,000 calls; samples \(samples)")
         }
         measure("route-sidecar") { router.applyFilter(to: id, intensity: 0.6, whitepoint: 0.8, invert: false) }
-        measure("route-physical") { router.applyFilter(to: physicalID, intensity: 0.6, whitepoint: 0.8, invert: false) }
+        if let (_, physicalID) = displays.first(where: { !DisplayFilterController.isSidecarDisplay($0.1) }) {
+            measure("route-physical") { router.applyFilter(to: physicalID, intensity: 0.6, whitepoint: 0.8, invert: false) }
+        }
         measure("repeat-window") { window.apply(screen: screen, intensity: 0.6, whitepoint: 0.8, invert: false) }
         var frame = 0
         measure("changing-window") {

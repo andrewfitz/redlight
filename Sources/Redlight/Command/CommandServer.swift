@@ -82,8 +82,6 @@ final class CommandServer {
     }
 }
 
-private struct CommandProtocolHeader: Decodable { var v: Int }
-
 private let commandPortCallback: CFMessagePortCallBack = { _, _, data, info in
     guard let data, let info else { return nil }
     let owner = Unmanaged<CommandServer>.fromOpaque(info).takeUnretainedValue()

@@ -105,7 +105,7 @@ protocol SidecarPointerSystem: AnyObject {
     /// Changes whenever the system cursor's image changes.
     var seed: Int { get }
     var cursor: NSCursor { get }
-    func hide()
+    func hide() -> Bool
     func show()
     func startMonitoring(_ changed: @escaping @MainActor () -> Void)
     func stopMonitoring()
@@ -199,12 +199,15 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
         if target != nil {
             // App activation can unhide the pointer, so hide again whenever it
             // reappears and balance every hide when the pointer leaves.
+            let drawReplica: Bool
             if pointer.isVisible {
-                pointer.hide()
-                pointerHideCount += 1
+                drawReplica = pointer.hide()
+                if drawReplica { pointerHideCount += 1 }
+            } else {
+                // A pointer hidden by another app has no Redlight replica.
+                drawReplica = pointerHideCount > 0
             }
-            // Otherwise another app (such as a full-screen video) hid it first.
-            if pointerHideCount > 0 {
+            if drawReplica {
                 let seed = pointer.seed
                 if pointerCursor?.seed != seed { pointerCursor = (seed, pointer.cursor) }
                 cursor = pointerCursor?.cursor
@@ -261,13 +264,13 @@ final class SidecarSystemPointer: SidecarPointerSystem {
     var isVisible: Bool { isVisibleFn() != 0 }
     var seed: Int { Int(seedFn()) }
     var cursor: NSCursor { NSCursor.currentSystem ?? .arrow }
-    func hide() {
+    func hide() -> Bool {
         // Deferred until needed, so Macs without Sidecar never change this property.
         if !hidesInBackground {
             hidesInBackground = setProperty(
                 connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue) == 0
         }
-        CGDisplayHideCursor(kCGNullDirectDisplay)
+        return CGDisplayHideCursor(kCGNullDirectDisplay) == .success
     }
     func show() { CGDisplayShowCursor(kCGNullDirectDisplay) }
 

@@ -7,7 +7,7 @@ import Observation
 final class DisplayManager {
     struct DisplayInfo: Identifiable {
         let id: CGDirectDisplayID
-        /// Stable ColorSync-UUID key used for UserDefaults; resolved once on connect.
+        /// Stable ColorSync-UUID key used for UserDefaults; resolved when refreshing the display list.
         let persistenceKey: String
         var name: String
         var isEnabled: Bool
@@ -718,11 +718,16 @@ final class DisplayManager {
             defaults, "redlight.pendingAdaptiveIntensity", range: 0...1)
         self.pendingAdaptiveWhitepoint = Self.loadOptionalClamped(
             defaults, "redlight.pendingAdaptiveWhitepoint", range: 0.25...1)
-        self.adaptiveMin = defaults.object(forKey: "redlight.adaptiveMin") as? Double ?? Defaults.intensityMin
-        self.adaptiveMax = defaults.object(forKey: "redlight.adaptiveMax") as? Double ?? Defaults.intensityMax
-        self.adaptiveWpMin = defaults.object(forKey: "redlight.adaptiveWpMin") as? Double ?? Defaults.whitepointMin
-        self.adaptiveWpMax = defaults.object(forKey: "redlight.adaptiveWpMax") as? Double ?? Defaults.whitepointMax
-        normalizeBands()
+        self.adaptiveMin = Self.loadClamped(
+            defaults, "redlight.adaptiveMin", default: Defaults.intensityMin, range: 0...1)
+        self.adaptiveMax = Self.loadClamped(
+            defaults, "redlight.adaptiveMax", default: Defaults.intensityMax, range: 0...1)
+        self.adaptiveWpMin = Self.loadClamped(
+            defaults, "redlight.adaptiveWpMin", default: Defaults.whitepointMin, range: 0.25...1)
+        self.adaptiveWpMax = Self.loadClamped(
+            defaults, "redlight.adaptiveWpMax", default: Defaults.whitepointMax, range: 0.25...1)
+        if adaptiveMin > adaptiveMax { swap(&adaptiveMin, &adaptiveMax) }
+        if adaptiveWpMin > adaptiveWpMax { swap(&adaptiveWpMin, &adaptiveWpMax) }
         // Minutes after midnight; anything else (wrong type, out of range) reads as off.
         self.bedtime = (defaults.object(forKey: "redlight.adaptiveBedtime") as? Int)
             .flatMap { Bedtime(minuteOfDay: $0) }
@@ -780,16 +785,6 @@ final class DisplayManager {
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
-    }
-
-    /// Enforce band invariants on persisted values (didSets don't run during init).
-    private func normalizeBands() {
-        adaptiveMin = clamp(adaptiveMin, to: 0...1)
-        adaptiveMax = clamp(adaptiveMax, to: 0...1)
-        if adaptiveMin > adaptiveMax { swap(&adaptiveMin, &adaptiveMax) }
-        adaptiveWpMin = clamp(adaptiveWpMin, to: 0.25...1)
-        adaptiveWpMax = clamp(adaptiveWpMax, to: 0.25...1)
-        if adaptiveWpMin > adaptiveWpMax { swap(&adaptiveWpMin, &adaptiveWpMax) }
     }
 
     private func clamp(_ v: Double, to range: ClosedRange<Double>) -> Double {
@@ -855,10 +850,18 @@ final class DisplayManager {
         var seen = Set<CGDirectDisplayID>()
         let ids = getDisplayIDs().filter { seen.insert($0).inserted }
         let currentIDs = Set(ids)
-        let previousIDs = Set(displays.map(\.id))
+        let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
+        let keys = Dictionary(uniqueKeysWithValues: ids.map { id in
+            let key = getDisplayPersistenceKey(id)
+            // A temporary UUID lookup failure is not evidence of a monitor swap.
+            return (id, key == String(id) ? previous[id]?.persistenceKey ?? key : key)
+        })
+        let replaced = Set(ids.filter { id in
+            previous[id].map { $0.persistenceKey != keys[id] } ?? false
+        })
         // Screen-parameter notifications also include harmless desktop changes. Hardware
         // mode changes and display-only wake have their own recovery triggers below.
-        let topologyChanged = previousIDs != currentIDs
+        let topologyChanged = Set(previous.keys) != currentIDs || !replaced.isEmpty
         if apply, !isTerminating, topologyChanged {
             gamma.restoreAll()
             scheduleDisplayRecovery()
@@ -872,20 +875,16 @@ final class DisplayManager {
                 gamma.restore(display.id)
             }
         }
-        for id in Array(displayTransitions.keys) where !currentIDs.contains(id) {
+        for id in Array(displayTransitions.keys) where !currentIDs.contains(id) || replaced.contains(id) {
             cancelDisplayTransition(id)
         }
         if topologyChanged {
-            let prevEnabled = Dictionary(displays.map { ($0.id, $0.isEnabled) }, uniquingKeysWith: { a, _ in a })
-            let prevInverted = Dictionary(displays.map { ($0.id, $0.isInverted) }, uniquingKeysWith: { a, _ in a })
-            let prevKey = Dictionary(displays.map { ($0.id, $0.persistenceKey) }, uniquingKeysWith: { a, _ in a })
             displays = ids.map { id in
-                // The ColorSync UUID lookup is a CoreGraphics call; resolve it once per
-                // connect instead of on every save().
-                let key = prevKey[id] ?? getDisplayPersistenceKey(id)
-                let enabled = prevEnabled[id]
+                let key = keys[id]!
+                let retained = replaced.contains(id) ? nil : previous[id]
+                let enabled = retained?.isEnabled
                     ?? persistedDisplayFlag(id, persistenceKey: key, suffix: "enabled")
-                let inverted = prevInverted[id]
+                let inverted = retained?.isInverted
                     ?? persistedDisplayFlag(id, persistenceKey: key, suffix: "inverted")
                 return DisplayInfo(
                     id: id, persistenceKey: key, name: getDisplayName(id),
@@ -1989,13 +1988,17 @@ final class DisplayManager {
         _ id: CGDirectDisplayID, persistenceKey: String, suffix: String
     ) -> Bool {
         let stableKey = "\(displayDefaultsPrefix(persistenceKey)).\(suffix)"
-        if defaults.object(forKey: stableKey) != nil { return defaults.bool(forKey: stableKey) }
-
         let legacyKey = "redlight.display.\(id).\(suffix)"
-        guard defaults.object(forKey: legacyKey) != nil else { return false }
-        let value = defaults.bool(forKey: legacyKey)
-        defaults.set(value, forKey: stableKey)
-        return value
+        // Without a UUID the numeric key remains the active storage location.
+        guard stableKey != legacyKey else { return defaults.bool(forKey: stableKey) }
+        if defaults.object(forKey: legacyKey) != nil {
+            if defaults.object(forKey: stableKey) == nil {
+                defaults.set(defaults.bool(forKey: legacyKey), forKey: stableKey)
+            }
+            // The same transient ID may next belong to a different monitor.
+            defaults.removeObject(forKey: legacyKey)
+        }
+        return defaults.bool(forKey: stableKey)
     }
 
     // MARK: - System Helpers

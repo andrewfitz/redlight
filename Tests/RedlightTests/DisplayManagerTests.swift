@@ -787,6 +787,26 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(second.displays[0].isEnabled)
     }
 
+    @Test func sameNumericIDWithNewUUIDLoadsTheReplacementMonitorsSettings() {
+        var key = "original"
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { [7] }, getDisplayName: { _ in "Monitor" },
+            getDisplayPersistenceKey: { _ in key }, defaults: freshDefaults(),
+            location: FakeLocationProvider())
+        manager.setEnabled(true, for: 7)
+        manager.setInverted(true, for: 7)
+        key = "replacement"
+        manager.refreshDisplays()
+        #expect(manager.displays[0].persistenceKey == "replacement")
+        #expect(!manager.displays[0].isEnabled)
+        #expect(!manager.displays[0].isInverted)
+        #expect(!manager.commandIsFading)
+        key = "original"
+        manager.refreshDisplays()
+        #expect(manager.displays[0].isEnabled)
+        #expect(manager.displays[0].isInverted)
+    }
+
     @Test func legacyNumericDisplayKeyMigratesToStableKey() {
         let d = freshDefaults()
         d.set(true, forKey: "redlight.display.7.enabled")
@@ -802,6 +822,16 @@ final class ImmediateFixLocationProvider: LocationProviding {
 
         #expect(manager.displays[0].isEnabled)
         #expect(d.bool(forKey: "redlight.display.physical-display-b.enabled"))
+
+        let replacement = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { [7] },
+            getDisplayName: { _ in "Replacement" },
+            getDisplayPersistenceKey: { _ in "replacement-uuid" },
+            defaults: d,
+            location: FakeLocationProvider()
+        )
+        #expect(!replacement.displays[0].isEnabled)
     }
 
     @Test func enablingAdaptiveAppliesCurveValueAndRequestsLocation() {
@@ -1888,6 +1918,15 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let manager = makeManager(defaults: d)
         #expect(manager.intensity == 1.0)
         #expect(manager.whitepoint == 0.25)
+    }
+
+    @Test func nonFinitePersistedBandEndpointsUseTheirOwnDefaults() {
+        let d = freshDefaults()
+        d.set(Double.nan, forKey: "redlight.adaptiveMax")
+        d.set(Double.infinity, forKey: "redlight.adaptiveWpMin")
+        let manager = makeManager(defaults: d)
+        #expect(manager.intensityBand == 0...1)
+        #expect(manager.whitepointBand == 0.3...1)
     }
 
     @Test func corruptPresetsAndOffsetsAreSanitizedOnLoad() throws {

@@ -1,8 +1,26 @@
-import Foundation
+import AppKit
 import Testing
 @testable import Redlight
 
 @MainActor @Suite struct MenuBarViewTests {
+    @Test func deferredMenuCloseOnlyRemovesTheViewThatClosed() async {
+        let item = NSMenuItem()
+        item.view = NSView()
+        StatusItemController.removeClosedView(from: item)
+        let reopened = NSView()
+        item.view = reopened
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(item.view === reopened)
+
+        StatusItemController.removeClosedView(from: item)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(item.view == nil)
+    }
+
     @Test func sunArcAccessibilityReportsCurrentElevationWithoutPhaseJargon() {
         let summary = SunArcView.accessibilitySummary(currentElevation: 0.8)
         #expect(summary.contains("Solar elevation +1°"))

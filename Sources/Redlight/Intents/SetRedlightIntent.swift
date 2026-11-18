@@ -38,12 +38,16 @@ enum RedlightControlPreferences {
     }
 
     static func record(_ receipt: ControlReceipt, domain: String = domain, now: Date = Date()) throws {
-        var recent = receipts(domain: domain).filter { now.timeIntervalSince($0.value.completedAt) < 120 }
-        recent[receipt.request.uuidString] = receipt
-        if recent.count > 128 {
-            let retained = recent.values.sorted { $0.completedAt > $1.completedAt }.prefix(128)
+        var recent = receipts(domain: domain).filter { key, previous in
+            let age = now.timeIntervalSince(previous.completedAt)
+            return key == previous.request.uuidString && previous.request != receipt.request
+                && age >= 0 && age < 120
+        }
+        if recent.count >= 128 {
+            let retained = recent.values.sorted { $0.completedAt > $1.completedAt }.prefix(127)
             recent = Dictionary(uniqueKeysWithValues: retained.map { ($0.request.uuidString, $0) })
         }
+        recent[receipt.request.uuidString] = receipt
         let data = try JSONEncoder().encode(recent)
         CFPreferencesSetValue(receiptsKey as CFString, data as CFData, domain as CFString,
                               kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
@@ -126,6 +130,10 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
         for request in requests { complete(request) }
     }
 
+    func uninstall() {
+        execute = nil
+    }
+
     private func complete(_ request: Request) {
         guard let execute else { return }
         var on = request.on
@@ -148,7 +156,7 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 @MainActor struct ControlHandoffClient {
     var open: (URL) async throws -> Void = Self.openURL
     var read: (UUID) -> ControlReceipt? = { RedlightControlPreferences.receipt($0) }
-    var now: () -> Date = Date.init
+    var now: () -> ContinuousClock.Instant = { .now }
     var sleep: () async throws -> Void = { try await Task.sleep(for: .milliseconds(50)) }
     var requestID: () -> UUID = UUID.init
     var timeout: TimeInterval = 5
@@ -156,7 +164,7 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
     func setOn(_ on: Bool) async throws {
         let id = requestID()
         let url = URL(string: "redlight://\(on ? "on" : "off")?request=\(id.uuidString)")!
-        let deadline = now().addingTimeInterval(timeout)
+        let deadline = now().advanced(by: .seconds(timeout))
         let opener = open
         try await Self.awaitCompletion(timeout: timeout) { completion in
             let task = Task { @MainActor in

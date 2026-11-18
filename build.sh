@@ -14,8 +14,7 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 OUTPUT_DIR="${REDLIGHT_BUILD_OUTPUT_DIR:-$ROOT}"
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
-APP="$OUTPUT_DIR/Redlight.app"
-CONTENTS="$APP/Contents"
+OUTPUT_APP="$OUTPUT_DIR/Redlight.app"
 DMG="$OUTPUT_DIR/Redlight-${VERSION}.dmg"
 YEAR="$(date +%Y)"
 
@@ -42,7 +41,7 @@ XCODE_VERSION="$(xcodebuild -version | sed -n 's/^Build version //p')"
 # Every build reserves a new number, including attempts that later fail compilation.
 # Seed from prior bundles so removing .build does not downgrade an installed build.
 BUILD_NUMBER_ARGS=(--root "$ROOT" --state "$ROOT/.build/redlight-build-number.json"
-    --seed-app "$ROOT/Redlight.app" --seed-app "$APP"
+    --seed-app "$ROOT/Redlight.app" --seed-app "$OUTPUT_APP"
     --seed-app "/Applications/Redlight.app" --seed-app "$HOME/Applications/Redlight.app")
 if [[ -n "${BUILD_NUMBER:-}" ]]; then BUILD_NUMBER_ARGS+=(--override "$BUILD_NUMBER"); fi
 BUILD_NUMBER="$(python3 "$ROOT/Tools/build-version.py" next "${BUILD_NUMBER_ARGS[@]}")"
@@ -74,7 +73,23 @@ if ! { swift "$ROOT/Tools/make-icon.swift" "$ICONSET" && iconutil -c icns "$ICON
     echo "warning: icon generation failed; using existing Redlight.icns if present" >&2
 fi
 
-rm -rf "$APP"
+STAGE="$(mktemp -d "$OUTPUT_DIR/.redlight-package.XXXXXX")"
+cleanup_stage() {
+    # An interrupted publication or failed rollback can leave the only copy here.
+    if [[ $? -ne 0 ]]; then
+        for backup in "$STAGE"/previous-*; do
+            if [[ -e "$backup" || -L "$backup" ]]; then
+                echo "Previous build artifacts retained in $STAGE" >&2
+                return
+            fi
+        done
+    fi
+    rm -rf "$STAGE"
+}
+trap cleanup_stage EXIT
+VOLUME="$STAGE/volume"
+APP="$VOLUME/Redlight.app"
+CONTENTS="$APP/Contents"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
 cp "$BIN_DIR/Redlight" "$CONTENTS/MacOS/Redlight"
@@ -211,20 +226,44 @@ if [[ -n "${NOTARIZE_TEAM:-}" ]]; then
     "$ROOT/Tools/notarize.sh" "$APP" "$NOTARIZE_TEAM"
 fi
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/redlight-dmg.XXXXXX")"
-cleanup() { rm -rf "$STAGE"; }
-trap cleanup EXIT
-cp -R "$APP" "$STAGE/Redlight.app"
-ln -s /Applications "$STAGE/Applications"
-rm -f "$DMG"
-hdiutil create -volname "Redlight" -srcfolder "$STAGE" -ov -format UDZO \
-    -imagekey zlib-level=9 "$DMG" >/dev/null
+ln -s /Applications "$VOLUME/Applications"
+hdiutil create -volname "Redlight" -srcfolder "$VOLUME" -ov -format UDZO \
+    -imagekey zlib-level=9 "$STAGE/Redlight.dmg" >/dev/null
 
 python3 "$ROOT/Tools/app-intents-metadata.py" build-info \
-    --output-dir "$OUTPUT_DIR" --invocation-dir "$INVOCATION_DIR" --swiftpm-dir "$SWIFTPM_DIR" \
-    --app "$APP" --dmg "$DMG" --version "$VERSION" --build "$BUILD_NUMBER"
+    --output-dir "$STAGE" --invocation-dir "$INVOCATION_DIR" --swiftpm-dir "$SWIFTPM_DIR" \
+    --app "$OUTPUT_APP" --dmg "$DMG" --version "$VERSION" --build "$BUILD_NUMBER"
+
+python3 - "$STAGE" "$OUTPUT_DIR" "$DMG" <<'PUBLISH'
+import fcntl, os, pathlib, sys
+
+stage, output, dmg = map(pathlib.Path, sys.argv[1:])
+# Serialize the short publication step when builds share an output directory.
+directory = os.open(output, os.O_RDONLY)
+fcntl.flock(directory, fcntl.LOCK_EX)
+backups = []
+installed = []
+try:
+    for source, target in ((stage / "volume/Redlight.app", output / "Redlight.app"),
+                           (stage / "Redlight.dmg", dmg),
+                           (stage / ".redlight-build-info.json", output / ".redlight-build-info.json")):
+        if target.exists() or target.is_symlink():
+            if target.is_dir() and (target.name != "Redlight.app" or target.is_symlink()):
+                raise IsADirectoryError(target)
+            backup = stage / ("previous-" + target.name)
+            target.rename(backup)
+            backups.append((backup, target))
+        source.rename(target)
+        installed.append((target, source))
+except BaseException:
+    for target, source in reversed(installed):
+        target.rename(source)
+    for backup, target in reversed(backups):
+        backup.rename(target)
+    raise
+PUBLISH
 
 echo "Version: $VERSION (build $BUILD_NUMBER)"
-echo "Built: $APP"
+echo "Built: $OUTPUT_APP"
 echo "Disk image: $DMG"
 echo "Build metadata inputs: $INVOCATION_DIR"

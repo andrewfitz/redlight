@@ -3,6 +3,13 @@ import Testing
 @testable import Redlight
 
 @Suite struct CommandWireTests {
+    @Test func incompatibleReplySchemaStillReportsVersionMismatch() {
+        let data = Data(#"{"v":99,"ok":true,"status":{"futureStatus":"on"}}"#.utf8)
+        #expect(throws: CommandError.system("Command protocol version mismatch; update Redlight.")) {
+            try CommandClient.decodeReply(data)
+        }
+    }
+
     @Test func everyCommandRoundTripsThroughVersionedRequest() throws {
         var commands: [RedlightCommand] = [.status, .displayList, .color(0), .color(100), .whitepoint(25), .whitepoint(100), .login(true), .login(false), .update, .quit]
         for state in CommandSwitch.allCases {

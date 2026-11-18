@@ -28,6 +28,7 @@ import Testing
         var isVisible = true
         var seed = 1
         var cursor: NSCursor
+        var hideSucceeds = true
         var hideCount = 0
         var showCount = 0
         var changed: (@MainActor () -> Void)?
@@ -36,7 +37,11 @@ import Testing
             _ = NSApplication.shared // standard cursors are nil until AppKit is initialized
             cursor = .arrow
         }
-        func hide() { hideCount += 1; isVisible = false }
+        func hide() -> Bool {
+            hideCount += 1
+            if hideSucceeds { isVisible = false }
+            return hideSucceeds
+        }
         func show() { showCount += 1; isVisible = true }
         func startMonitoring(_ changed: @escaping @MainActor () -> Void) { self.changed = changed }
         func stopMonitoring() { changed = nil; stopCount += 1 }
@@ -233,6 +238,35 @@ import Testing
         changed()
         #expect(pointer.hideCount == 2)
         #expect(overlay.pointer?.cursor == nil)
+    }
+
+    @Test func failedHidesLeaveTheSystemPointerVisibleAndOnlySuccessfulHidesAreBalanced() throws {
+        let screen = try #require(NSScreen.screens.first)
+        let overlay = Overlay()
+        let pointer = Pointer()
+        pointer.location = NSPoint(x: screen.frame.midX, y: screen.frame.midY)
+        pointer.hideSucceeds = false
+        let controller = SidecarFilterController(
+            getScreen: { _ in screen }, makeOverlay: { _ in overlay }, pointer: pointer)
+        controller.applyFilter(to: 7, intensity: 0.6, whitepoint: 1, invert: false)
+        let changed = try #require(pointer.changed)
+        changed()
+        #expect(pointer.isVisible)
+        #expect(overlay.pointer?.cursor == nil)
+
+        pointer.hideSucceeds = true
+        changed()
+        #expect(!pointer.isVisible)
+        #expect(overlay.pointer?.cursor === pointer.cursor)
+
+        // Activation may reveal the pointer again even with a prior hide to balance.
+        pointer.isVisible = true
+        pointer.hideSucceeds = false
+        changed()
+        #expect(overlay.pointer?.cursor == nil)
+        controller.restoreAll()
+        #expect(pointer.hideCount == 4)
+        #expect(pointer.showCount == 1)
     }
 
     @Test func turningTheFilterOffReleasesThePointer() throws {

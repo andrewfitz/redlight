@@ -12,6 +12,11 @@ import xml.etree.ElementTree as ET
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?\Z")
 SECTION_PATTERN = re.compile(r"^##\s+(?:\[([0-9]+\.[0-9]+(?:\.[0-9]+)?)\]|([0-9]+\.[0-9]+(?:\.[0-9]+)?))(?:\s+-\s+.*)?\s*$")
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def closes_fence(marker: re.Match[str] | None, fence: str) -> bool:
+    return bool(marker and marker.group(1).startswith(fence) and not marker.group(2).strip())
 
 
 def release_markdown(changelog: str, version: str) -> str:
@@ -21,11 +26,11 @@ def release_markdown(changelog: str, version: str) -> str:
     current: list[str] | None = None
     fence: str | None = None
     for line in changelog.splitlines():
-        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        marker = FENCE_PATTERN.match(line)
         if marker:
             if fence is None:
-                fence = marker.group(1)[0]
-            elif marker.group(1)[0] == fence:
+                fence = marker.group(1)
+            elif closes_fence(marker, fence):
                 fence = None
             if current is not None:
                 current.append(line)
@@ -70,9 +75,9 @@ def markdown_html(markdown: str) -> str:
             list_kind = None
 
     for line in markdown.splitlines():
-        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        marker = FENCE_PATTERN.match(line)
         if code is not None:
-            if marker and marker.group(1)[0] == fence:
+            if fence and closes_fence(marker, fence):
                 blocks.append("<pre><code>" + html.escape("\n".join(code)) + "</code></pre>")
                 code = None
                 fence = None
@@ -83,7 +88,7 @@ def markdown_html(markdown: str) -> str:
             end_paragraph()
             end_list()
             code = []
-            fence = marker.group(1)[0]
+            fence = marker.group(1)
             continue
         heading = re.match(r"^(#{1,6})\s+(.+)$", line)
         item = re.match(r"^\s*(?:([-*+])\s+|([0-9]+)[.)]\s+)(.+)$", line)

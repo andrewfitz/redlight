@@ -456,6 +456,10 @@ private final class Clock {
         source.frontmostApp = .photoshop
         source.wake()
         #expect(controller.suspendedFor == "Photoshop")
+        source.frontmostApp = nil
+        source.wake()
+        #expect(controller.suspendedFor == nil)
+        #expect(controller.recentBundleID == nil)
     }
 
     @Test func namesAndRunningAppsForThePopover() throws {

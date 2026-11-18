@@ -19,6 +19,10 @@ APP_ACTIONS = {
     "SetRedlightDisplayIntent", "SetRedlightInvertIntent", "SetRedlightAppearanceIntent",
     "SetRedlightLoginIntent", "UpdateRedlightIntent", "QuitRedlightIntent",
     "GetRedlightStatusIntent", "ListRedlightDisplaysIntent",
+    "PauseRedlightIntent", "PauseRedlightUntilSunriseIntent", "ResumeRedlightIntent",
+    "AdjustRedlightIntent", "SetRedlightLocationIntent", "UseAutomaticRedlightLocationIntent",
+    "SetRedlightBedtimeIntent", "TurnOffRedlightBedtimeIntent", "PauseRedlightForAppIntent",
+    "StopPausingRedlightForAppIntent", "ListRedlightPauseAppsIntent", "ClearRedlightPauseAppsIntent",
 }
 CONTROL_ACTIONS = {"SetRedlightIntent"}
 

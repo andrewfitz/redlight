@@ -68,8 +68,24 @@ enum GammaTableComposer {
 /// `restore(_:)` on a display we never modified is a no-op, so repeatedly re-applying
 /// state (every slider tick loops all displays) can't degrade untouched displays.
 final class GammaController: GammaControlling {
-    private var originalTables: [CGDirectDisplayID: (r: [CGGammaValue], g: [CGGammaValue], b: [CGGammaValue])] = [:]
+    typealias Table = GammaTableComposer.Table
+    private let readTable: (CGDirectDisplayID) -> Table?
+    private let writeTable: (CGDirectDisplayID, inout Table) -> CGError
+    private let resetTables: () -> Void
+    private var originalTables: [CGDirectDisplayID: Table] = [:]
     private var modified: Set<CGDirectDisplayID> = []
+
+    init(
+        readTable: @escaping (CGDirectDisplayID) -> Table? = GammaController.readCalibration,
+        writeTable: @escaping (CGDirectDisplayID, inout Table) -> CGError = { id, table in
+            CGSetDisplayTransferByTable(id, UInt32(table.r.count), &table.r, &table.g, &table.b)
+        },
+        resetTables: @escaping () -> Void = CGDisplayRestoreColorSyncSettings
+    ) {
+        self.readTable = readTable
+        self.writeTable = writeTable
+        self.resetTables = resetTables
+    }
 
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
         // A neutral request means relinquish the table entirely, preserving ColorSync and
@@ -86,17 +102,20 @@ final class GammaController: GammaControlling {
         // invert: when true, remap input x → 1−x first (the innermost layer).
         // Uses a lookup table so darks are barely affected while bright
         // areas absorb most of the whitepoint reduction.
-        captureOriginalIfNeeded(displayID)
-        modified.insert(displayID)
+        // A failed initial read uses the identity fallback for this entire session.
+        // Once a write succeeds, a later read would capture our own filtered table.
+        let original = modified.contains(displayID) ? originalTables[displayID] : readTable(displayID)
 
         let tableSize = 256
         var table = GammaTableComposer.compose(
-            original: originalTables[displayID], tableSize: tableSize,
+            original: original, tableSize: tableSize,
             intensity: intensity, whitepoint: whitepoint, invert: invert
         )
 
-        CGSetDisplayTransferByTable(
-            displayID, UInt32(tableSize), &table.r, &table.g, &table.b)
+        if writeTable(displayID, &table) == .success {
+            modified.insert(displayID)
+            originalTables[displayID] = original
+        }
     }
 
     func restore(_ displayID: CGDirectDisplayID) {
@@ -108,42 +127,32 @@ final class GammaController: GammaControlling {
             restoreAll()
             return
         }
-        modified.remove(displayID)
-        if var t = originalTables.removeValue(forKey: displayID) {
-            CGSetDisplayTransferByTable(displayID, UInt32(t.r.count), &t.r, &t.g, &t.b)
-        } else {
-            // Snapshot capture failed: fall back to a plain identity ramp, still per-display.
-            let n = 256
-            var r = [CGGammaValue](repeating: 0, count: n)
-            var g = [CGGammaValue](repeating: 0, count: n)
-            var b = [CGGammaValue](repeating: 0, count: n)
-            for i in 0..<n {
-                let x = CGGammaValue(Float(i) / Float(n - 1))
-                r[i] = x; g[i] = x; b[i] = x
-            }
-            CGSetDisplayTransferByTable(displayID, UInt32(n), &r, &g, &b)
+        var table = originalTables[displayID] ?? GammaTableComposer.compose(
+            original: nil, intensity: 1, whitepoint: 1, invert: false)
+        if writeTable(displayID, &table) == .success {
+            modified.remove(displayID)
+            originalTables.removeValue(forKey: displayID)
         }
     }
 
     func restoreAll() {
         originalTables.removeAll()
         modified.removeAll()
-        CGDisplayRestoreColorSyncSettings()
+        resetTables()
     }
 
     /// Snapshot the display's untouched gamma table once, before we first modify it.
     /// Dropped again on restore so a later session re-captures fresh calibration.
-    private func captureOriginalIfNeeded(_ displayID: CGDirectDisplayID) {
-        guard originalTables[displayID] == nil else { return }
+    private static func readCalibration(_ displayID: CGDirectDisplayID) -> Table? {
         let capacity = CGDisplayGammaTableCapacity(displayID)
-        guard capacity > 0 else { return }
+        guard capacity > 0 else { return nil }
         var r = [CGGammaValue](repeating: 0, count: Int(capacity))
         var g = [CGGammaValue](repeating: 0, count: Int(capacity))
         var b = [CGGammaValue](repeating: 0, count: Int(capacity))
         var sampleCount: UInt32 = 0
         guard CGGetDisplayTransferByTable(displayID, capacity, &r, &g, &b, &sampleCount) == .success,
-              sampleCount > 0 else { return }
+              sampleCount > 0, sampleCount <= capacity else { return nil }
         let n = Int(sampleCount)
-        originalTables[displayID] = (Array(r[..<n]), Array(g[..<n]), Array(b[..<n]))
+        return (Array(r[..<n]), Array(g[..<n]), Array(b[..<n]))
     }
 }

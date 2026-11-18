@@ -14,18 +14,26 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
     static let shared = Updater()
 
     private(set) var hasPendingUpdate = false
+    private(set) var canCheckForUpdates = false
     @ObservationIgnored private var controller: SPUStandardUpdaterController?
+    @ObservationIgnored private var availabilityObservation: NSKeyValueObservation?
 
     private override init() {
         super.init()
         guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
-        controller = SPUStandardUpdaterController(
+        let controller = SPUStandardUpdaterController(
             startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+        self.controller = controller
+        availabilityObservation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) {
+            [weak self] updater, _ in
+            MainActor.assumeIsolated { self?.canCheckForUpdates = updater.canCheckForUpdates }
+        }
     }
 
     var isAvailable: Bool { controller != nil }
 
     func checkForUpdates() {
+        guard canCheckForUpdates else { return }
         // Accessory app: bring Sparkle's window to the front instead of behind other apps.
         NSApplication.shared.activate()
         controller?.checkForUpdates(nil)

@@ -204,6 +204,7 @@ enum RedlightApp {
         let launchAtLogin = LaunchAtLogin()
         let handler = CommandHandler(manager: manager, services: CommandServices(
             appearance: { AppearanceController.shared.isDark },
+            refreshAppearance: { AppearanceController.shared.refresh() },
             setAppearance: { try AppearanceController.shared.setDark($0) },
             login: {
                 launchAtLogin.refresh(maxAge: 1)
@@ -214,7 +215,7 @@ enum RedlightApp {
             update: { Updater.shared.checkForUpdates() },
             quit: { NSApplication.shared.terminate(nil) },
             version: { AboutInfo.version() },
-            canUpdate: { Updater.shared.isAvailable },
+            canUpdate: { Updater.shared.canCheckForUpdates },
             apps: { appSuspension.bundleIDs },
             changeApps: { try appSuspension.apply($0) }
         ))

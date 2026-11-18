@@ -256,6 +256,8 @@ struct CommandError: Error, LocalizedError, Codable, Sendable, Equatable {
     static func unreachable(_ message: String) -> Self { Self(code: .unreachable, message: message) }
 }
 
+struct CommandProtocolHeader: Decodable { var v: Int }
+
 struct CommandRequest: Codable, Sendable, Equatable {
     /// 2 added `step` and `pause`; 3 added `pauseFor`, `location`, `bedtime`, `appsList`,
     /// `apps`, `Status.locationSource`, `Status.bedtime`, `Status.suspendedFor` and

@@ -47,6 +47,14 @@ class ReleaseNotesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             notes.markdown_html("# Title\n```\nunfinished")
 
+    def test_shorter_or_labelled_fences_inside_example_remain_literal(self):
+        example = "```\n## 1.2\n````swift\n## 1.1"
+        changelog = f"## 2.0\n````markdown\n{example}\n`````\nCurrent.\n## 1.0\nOld."
+        selected = notes.release_markdown(changelog, "2.0")
+        self.assertIn("Current.", selected)
+        self.assertNotIn("Old.", selected)
+        self.assertIn(f"<pre><code>{example}</code></pre>", notes.markdown_html(selected))
+
     def test_feed_requires_matching_item_and_hosted_notes_link(self):
         with tempfile.TemporaryDirectory() as temporary:
             feed = pathlib.Path(temporary) / "appcast.xml"

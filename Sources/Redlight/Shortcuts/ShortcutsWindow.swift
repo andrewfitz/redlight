@@ -105,7 +105,12 @@ struct ShortcutsView: View {
             HStack {
                 Button("Use Suggested Shortcuts") {
                     notes.removeAll()
-                    store.useSuggested()
+                    store.useSuggested(reserved: reserved)
+                    for action in ShortcutAction.allCases {
+                        if let suggested = action.suggested, reserved.contains(suggested) {
+                            notes[action] = "macOS already uses \(suggested.label())."
+                        }
+                    }
                 }
                 Spacer()
                 Button("Clear All") {

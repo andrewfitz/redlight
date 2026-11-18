@@ -15,6 +15,26 @@ import Foundation
         return c
     }
 
+    @Test func dayEndsAtMidnightAfterSkippedMidnight() {
+        var calendar = utc()
+        calendar.timeZone = TimeZone(identifier: "America/Sao_Paulo")!
+        let cycle = SunCycle(now: date("2018-11-04T12:00:00Z"), latitude: -23.55,
+                             longitude: -46.63, calendar: calendar)
+        #expect(cycle.samples.first?.date == date("2018-11-04T03:00:00Z"))
+        #expect(cycle.samples.last?.date == date("2018-11-05T02:00:00Z"))
+    }
+
+    @Test func crossingCanLandExactlyAtEndOfScan() {
+        let now = date("2025-03-20T06:00:00Z")
+        for horizon in [60.0, 120.0, 150.0] {
+            let threshold = SolarCalculator.elevation(at: now.addingTimeInterval(horizon),
+                                                     latitude: 0, longitude: 0)
+            let event = SunCycle.findNextEvent(now: now, latitude: 0, longitude: 0,
+                                               thresholds: [threshold], rising: true, horizon: horizon)
+            #expect(event?.seconds == horizon)
+        }
+    }
+
     @Test func samplesSpanDayMonotonically() {
         let c = SunCycle(now: date("2025-03-20T15:00:00Z"),
                          latitude: 0, longitude: 0, calendar: utc())

@@ -122,9 +122,9 @@ final class ShortcutStore {
         return previousOwner
     }
 
-    func useSuggested() {
+    func useSuggested(reserved: Set<KeyShortcut>) {
         for action in ShortcutAction.allCases {
-            guard let suggested = action.suggested else { continue }
+            guard let suggested = action.suggested, suggested.problem(reserved: reserved) == nil else { continue }
             // As in `set`: a combination belongs to one action, so take it from another.
             for (owner, shortcut) in shortcuts where shortcut == suggested && owner != action {
                 shortcuts[owner] = nil

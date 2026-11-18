@@ -74,7 +74,7 @@ final class AppSuspensionController {
     @ObservationIgnored private let ownProcessID: pid_t
     /// The last app in front other than Redlight. Opening the Shortcuts window activates
     /// Redlight; judging this app instead keeps the decision and still follows list changes.
-    @ObservationIgnored private var recentApp: RunningApp?
+    private var recentApp: RunningApp?
     @ObservationIgnored private var names: [String: String] = [:]
 
     init(
@@ -165,7 +165,7 @@ final class AppSuspensionController {
         } else {
             defaults.set(bundleIDs, forKey: Self.defaultsKey)
         }
-        evaluate(nil)
+        evaluate(recentApp)
     }
 
     /// The app being judged quit. Usually the next app's activation follows, but not when
@@ -178,10 +178,9 @@ final class AppSuspensionController {
         evaluate(front?.processID == app.processID ? nil : front)
     }
 
-    /// Judge `app` when it is another app, otherwise the last other app in front. An app
-    /// without a bundle identifier never matches.
+    /// Redlight keeps the previous app. An empty frontmost snapshot clears it.
     private func evaluate(_ app: RunningApp?) {
-        if let app, !isOwn(app) { recentApp = app }
+        if app.map(isOwn) != true { recentApp = app }
         let match = recentApp.flatMap { app in app.bundleID.map(contains) == true ? app : nil }
         suspendedFor = match?.name
         onChange?(suspendedFor)

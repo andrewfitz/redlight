@@ -41,7 +41,7 @@ struct SunCycle {
         let sampleCount = max(2, sampleCount)
         let dayStart = calendar.startOfDay(for: now)
         // Actual local day length — 23/25 h on DST transition days, not a hardcoded 24 h.
-        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)
+        let dayEnd = calendar.dateInterval(of: .day, for: now)?.end
             ?? dayStart.addingTimeInterval(86_400)
         let daySeconds = dayEnd.timeIntervalSince(dayStart)
 
@@ -128,12 +128,13 @@ struct SunCycle {
 
         var prevOffset: Double = 0
         var prev = elev(0)
-        var offset = step
-        while offset <= horizon {
+        while prevOffset < horizon {
+            let offset = min(prevOffset + step, horizon)
             let cur = elev(offset)
             var best: (thr: Double, at: Double)?
-            for thr in thresholds where (prev - thr) * (cur - thr) < 0 && rising.map({ $0 == (cur > prev) }) ?? true {
-                let at = crossing(thr, prevOffset, offset)
+            for thr in thresholds where ((prev < thr && cur >= thr) || (prev > thr && cur <= thr))
+                && (rising.map({ $0 == (cur > prev) }) ?? true) {
+                let at = cur == thr ? offset : crossing(thr, prevOffset, offset)
                 if best == nil || at < best!.at { best = (thr, at) }
             }
             if let best {
@@ -144,7 +145,6 @@ struct SunCycle {
             }
             prevOffset = offset
             prev = cur
-            offset += step
         }
         return nil
     }

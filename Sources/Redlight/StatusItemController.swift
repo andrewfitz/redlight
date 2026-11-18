@@ -49,7 +49,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Removing the view fires SwiftUI's onDisappear (ends any slider preview). Deferred:
     /// the close may come from a button inside it, still mid-action.
     func menuDidClose(_ menu: NSMenu) {
-        DispatchQueue.main.async { [weak self] in self?.contentItem.view = nil }
+        Self.removeClosedView(from: contentItem)
+    }
+
+    static func removeClosedView(from item: NSMenuItem) {
+        guard let closedView = item.view else { return }
+        DispatchQueue.main.async { [weak item, weak closedView] in
+            // Tracking can restart before this block runs. Keep the new menu intact.
+            guard let item, let closedView, item.view === closedView else { return }
+            item.view = nil
+        }
     }
 }
 

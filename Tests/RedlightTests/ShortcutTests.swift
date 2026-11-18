@@ -91,7 +91,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
     @Test func suggestedShortcutsAreValidDistinctAndLeaveExtrasUnassigned() {
         let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
         #expect(store.shortcuts.isEmpty)
-        store.useSuggested()
+        store.useSuggested(reserved: [])
         let assigned = Array(store.shortcuts.values)
         #expect(Set(assigned).count == assigned.count)
         #expect(assigned.allSatisfy { $0.problem(reserved: []) == nil })
@@ -99,12 +99,21 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(store.shortcut(for: .adaptive) == nil)
     }
 
+    @Test func reservedSuggestionsPreserveTheExistingAssignment() {
+        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
+        let custom = KeyShortcut(keyCode: UInt32(kVK_F13), modifiers: 0)
+        store.set(custom, for: .toggle)
+        store.useSuggested(reserved: [ShortcutAction.toggle.suggested!])
+        #expect(store.shortcut(for: .toggle) == custom)
+        #expect(store.shortcut(for: .pause) == ShortcutAction.pause.suggested)
+    }
+
     @Test func suggestedShortcutsMoveACombinationAnotherActionAlreadyUses() {
         let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
         let custom = KeyShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: primary)
         store.set(ShortcutAction.toggle.suggested, for: .presetDay)
         store.set(custom, for: .adaptive)
-        store.useSuggested()
+        store.useSuggested(reserved: [])
         #expect(store.shortcut(for: .toggle) == ShortcutAction.toggle.suggested)
         #expect(store.shortcut(for: .presetDay) == nil)
         #expect(store.shortcut(for: .adaptive) == custom)
@@ -131,7 +140,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
             appearance: { false }, setAppearance: { _ in }, login: { .init(enabled: false, requiresApproval: false) },
             setLogin: { _ in }, update: {}, quit: {}, version: { "test" }))
         let store = ShortcutStore(defaults: defaults)
-        store.useSuggested()
+        store.useSuggested(reserved: [])
         let uptime = uptime
         let controller = ShortcutController(
             store: store, manager: manager, execute: { try handler.execute($0) },
@@ -229,6 +238,18 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         controller.handle(id: id(.pause), pressed: false)
         #expect(!manager.isPaused)
         #expect(manager.isFiltering)
+    }
+
+    @Test func holdingPauseDuringAnExistingPausePreservesItsDeadline() {
+        let (controller, manager) = makeController()
+        manager.setAll(on: true)
+        manager.pause(for: 7200)
+        let deadline = manager.pausedUntil
+        controller.handle(id: id(.pause), pressed: true)
+        #expect(manager.isPaused)
+        uptime.now += 2
+        controller.handle(id: id(.pause), pressed: false)
+        #expect(manager.pausedUntil == deadline)
     }
 
     @Test func stepsAndPauseKeepWorkingWhileSuspendedForAnApp() {

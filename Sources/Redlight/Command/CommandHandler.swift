@@ -6,6 +6,7 @@ import Foundation
 @MainActor
 struct CommandServices {
     var appearance: () -> Bool
+    var refreshAppearance: () -> Void = {}
     var setAppearance: (Bool) throws -> Void
     var login: () -> Status.Login
     var setLogin: (Bool) throws -> Void
@@ -160,6 +161,7 @@ final class CommandHandler {
                 let inverted = state.resolve(current: anyInverted)
                 for id in addressed { manager.setInverted(inverted, for: id) }
             case .appearance(let appearance):
+                if appearance == .toggle { services.refreshAppearance() }
                 let dark = switch appearance {
                 case .light: false
                 case .dark: true

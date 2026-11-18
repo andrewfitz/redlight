@@ -90,10 +90,20 @@ struct CommandClient: Sendable {
         guard result == kCFMessagePortSuccess, let replyData else {
             throw CommandError.unreachable("Redlight did not reply to the command (transport error \(result)).")
         }
+        return try decodeReply(replyData.takeRetainedValue() as Data)
+    }
+
+    static func decodeReply(_ data: Data) throws -> Status {
         let reply: CommandReply
         do {
-            reply = try JSONDecoder().decode(CommandReply.self, from: replyData.takeRetainedValue() as Data)
+            reply = try JSONDecoder().decode(CommandReply.self, from: data)
         } catch {
+            // A newer protocol can change the status or error schema. Preserve the
+            // update advice even when the rest of the envelope cannot be decoded.
+            if let header = try? JSONDecoder().decode(CommandProtocolHeader.self, from: data),
+               header.v != CommandRequest.currentVersion {
+                throw CommandError.system("Command protocol version mismatch; update Redlight.")
+            }
             throw CommandError.unreachable("Redlight returned an invalid command reply: \(error.localizedDescription)")
         }
         try reply.validateVersion()

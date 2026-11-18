@@ -387,6 +387,7 @@ struct MenuBarView: View {
                         // Close the menu first; it floats above Sparkle's window.
                         if dispatch(.update) { closeMenu() }
                     }
+                    .disabled(!Updater.shared.canCheckForUpdates)
                     .accessibilityLabel(Updater.shared.hasPendingUpdate
                                         ? "Update available" : "Check for Updates")
                 }

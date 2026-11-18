@@ -3,6 +3,30 @@ import Testing
 @testable import Redlight
 
 @Suite struct GammaControllerTests {
+    @Test func transientCaptureFailureDoesNotCompoundTheFilterOnLaterFrames() {
+        var reads = 0
+        var currentTable: GammaTableComposer.Table?
+        let controller = GammaController(
+            readTable: { _ in reads += 1; return currentTable },
+            writeTable: { _, table in currentTable = table; return .success },
+            resetTables: {})
+        controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: false)
+        controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: false)
+        #expect(reads == 1)
+        #expect(currentTable?.g.last == 0.5)
+    }
+
+    @Test func failedWriteDoesNotClaimTheDisplayOrResetOtherDisplaysOnRestore() {
+        var resets = 0
+        let controller = GammaController(
+            readTable: { _ in nil },
+            writeTable: { _, _ in .failure },
+            resetTables: { resets += 1 })
+        controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: false)
+        controller.restore(1)
+        #expect(resets == 0)
+    }
+
     @Test func identityCalibrationKeepsLegacyFilterShape() {
         let table = GammaTableComposer.compose(
             original: nil, tableSize: 3,
