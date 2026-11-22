@@ -25,7 +25,8 @@ mkdir -p "$ROOT/.build"
 INVOCATION_DIR="$(mktemp -d "$ROOT/.build/command-control-build.XXXXXX")"
 SOURCE="$INVOCATION_DIR/source"
 mkdir "$SOURCE"
-git -C "$ROOT" archive "$TARGET" | tar -xf - -C "$SOURCE"
+git -C "$ROOT" archive --output="$STAGE/source.tar" "$TARGET"
+tar -xf "$STAGE/source.tar" -C "$SOURCE"
 
 VERSION_ARGS=(--root "$SOURCE")
 if [[ -n "${VERSION:-}" ]]; then VERSION_ARGS+=(--override "$VERSION"); fi
