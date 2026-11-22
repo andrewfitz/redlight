@@ -110,16 +110,17 @@ final class AppSuspensionController {
     }
 
     func remove(_ bundleID: String) throws {
-        guard contains(bundleID) else {
+        guard let index = bundleIDs.firstIndex(where: { AppBundleID.matches($0, bundleID) }) else {
             throw CommandError.invalidInput("\(bundleID) is not in the list; use redlight apps list.")
         }
-        bundleIDs.removeAll { AppBundleID.matches($0, bundleID) }
+        names.removeValue(forKey: bundleIDs.remove(at: index))
         listDidChange()
     }
 
     func clear() {
         guard !bundleIDs.isEmpty else { return }
         bundleIDs.removeAll()
+        names.removeAll()
         listDidChange()
     }
 
@@ -147,9 +148,10 @@ final class AppSuspensionController {
 
     /// A string array with invalid entries and case-insensitive repeats dropped.
     static func sanitized(_ raw: [Any]?) -> [String] {
+        var seen = Set<String>()
         var result: [String] = []
-        for case let id as String in raw ?? []
-            where (try? AppBundleID.validate(id)) != nil && !result.contains(where: { AppBundleID.matches($0, id) }) {
+        for case let id as String in raw ?? [] where (try? AppBundleID.validate(id)) != nil {
+            guard seen.insert(id.folding(options: .caseInsensitive, locale: nil)).inserted else { continue }
             result.append(id)
         }
         return result
@@ -182,6 +184,7 @@ final class AppSuspensionController {
     private func evaluate(_ app: RunningApp?) {
         if app.map(isOwn) != true { recentApp = app }
         let match = recentApp.flatMap { app in app.bundleID.map(contains) == true ? app : nil }
+        guard suspendedFor != match?.name else { return }
         suspendedFor = match?.name
         onChange?(suspendedFor)
     }

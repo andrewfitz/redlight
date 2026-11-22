@@ -62,7 +62,7 @@ struct SunArcView: View {
                     elevations: cycle.samples.map(\.elevation), height: size.height)
                 let bottom = geometry.bottom
                 let w = size.width
-                let xPad: CGFloat = 8                       // keep the sun dot off the edges
+                let xPad = min(8, w / 2)
 
                 func y(_ e: Double) -> CGFloat { geometry.y(for: e) }
                 func x(_ t: Double) -> CGFloat { xPad + CGFloat(t) * (w - 2 * xPad) }
@@ -70,10 +70,11 @@ struct SunArcView: View {
 
                 // Smooth curve + the area beneath it.
                 let pts = cycle.samples.map { CGPoint(x: x($0.t), y: y($0.elevation)) }
+                guard let first = pts.first, let last = pts.last else { return }
                 let curve = Self.smoothPath(pts)
                 var area = curve
-                area.addLine(to: CGPoint(x: pts.last!.x, y: bottom))
-                area.addLine(to: CGPoint(x: pts.first!.x, y: bottom))
+                area.addLine(to: CGPoint(x: last.x, y: bottom))
+                area.addLine(to: CGPoint(x: first.x, y: bottom))
                 area.closeSubpath()
 
                 // Tint the area by the applied intensity across the day (clear day → red night).
@@ -123,9 +124,9 @@ struct SunArcView: View {
     }
 
     static func degreeLabel(_ elevation: Double) -> String {
-        let rounded = Int(elevation.rounded())
+        guard let rounded = Int(exactly: elevation.rounded()) else { return "unavailable" }
         if rounded > 0 { return "+\(rounded)°" }
-        if rounded < 0 { return "−\(abs(rounded))°" }
+        if rounded < 0 { return "−\(rounded.magnitude)°" }
         return "0°"
     }
 

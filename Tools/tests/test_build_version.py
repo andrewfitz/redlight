@@ -53,7 +53,7 @@ class BuildVersionTests(unittest.TestCase):
         self.assertEqual(version.next_build_number(self.state), 14)
         self.assertEqual(version.next_build_number(self.state, override="50"), 50)
         self.assertEqual(version.next_build_number(self.state), 51)
-        for override in ("50", "51", "0", "-1", "1.2", "abc"):
+        for override in ("50", "51", "0", "-1", "1.2", "abc", "１２３"):
             with self.assertRaises(ValueError):
                 version.next_build_number(self.state, override=override)
         self.assertEqual(json.loads(self.state.read_text())["lastBuildNumber"], 51)
@@ -78,6 +78,8 @@ class BuildVersionTests(unittest.TestCase):
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleVersion": "118"}))
         self.assertEqual(version.next_build_number(self.state, version.app_build_seed(app)), 119)
         self.assertEqual(version.app_build_seed(self.app("Invalid.app", "development")), 0)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(["unexpected plist type"]))
+        self.assertEqual(version.app_build_seed(app), 0)
         self.assertEqual(version.app_build_seed(self.root / "Absent.app"), 0)
         with self.assertRaises(ValueError):
             version.next_build_number(self.root / "new-state.json", seed=200, override="200")
@@ -110,6 +112,44 @@ class BuildVersionTests(unittest.TestCase):
             builds = list(executor.map(reserve, range(12)))
         self.assertEqual(sorted(builds), list(range(71, 83)))
         self.assertEqual(json.loads(self.state.read_text())["lastBuildNumber"], 82)
+
+    def package_stage(self, number):
+        stage = self.root / f"stage-{number}"
+        self.app(f"stage-{number}/volume/Redlight.app", str(number))
+        (stage / "Redlight.dmg").write_text(f"dmg {number}")
+        (stage / ".redlight-build-info.json").write_text(f"receipt {number}")
+        return stage
+
+    def test_publication_rejects_stale_build_and_snapshots_exact_artifacts(self):
+        output = self.root / "output"
+        output.mkdir()
+        snapshot = self.root / "snapshot"
+        version.publish_build(self.package_stage(82), output, "1.5", 82, snapshot)
+        with self.assertRaisesRegex(ValueError, "81 cannot replace build 82"):
+            version.publish_build(self.package_stage(81), output, "1.5", 81)
+        version.publish_build(self.package_stage(83), output, "1.5", 83)
+        self.assertEqual((output / "Redlight-1.5.dmg").read_text(), "dmg 83")
+        self.assertEqual((snapshot / "Redlight-1.5.dmg").read_text(), "dmg 82")
+        self.assertEqual((snapshot / ".redlight-build-info.json").read_text(), "receipt 82")
+
+    def test_publication_restores_prior_artifacts_on_partial_failure(self):
+        output = self.root / "output"
+        output.mkdir()
+        version.publish_build(self.package_stage(82), output, "1.5", 82)
+        stage = self.package_stage(83)
+        rename = pathlib.Path.rename
+
+        def fail_installing_receipt(source, target):
+            if source == stage / ".redlight-build-info.json":
+                raise OSError("fixture failure")
+            return rename(source, target)
+
+        with patch.object(pathlib.Path, "rename", fail_installing_receipt):
+            with self.assertRaisesRegex(OSError, "fixture failure"):
+                version.publish_build(stage, output, "1.5", 83)
+        self.assertEqual(version.app_build_seed(output / "Redlight.app"), 82)
+        self.assertEqual((output / "Redlight-1.5.dmg").read_text(), "dmg 82")
+        self.assertEqual((output / ".redlight-build-info.json").read_text(), "receipt 82")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,22 @@
+import CoreLocation
 import Foundation
 import Testing
 @testable import Redlight
 
 @MainActor @Suite struct LocationProviderTests {
+    private final class TestManager: CLLocationManager {
+        var status = CLAuthorizationStatus.notDetermined
+        var cachedLocation: CLLocation?
+        var authorizationRequests = 0
+        var locationRequests = 0
+
+        override var authorizationStatus: CLAuthorizationStatus { status }
+        override var location: CLLocation? { cachedLocation }
+        override func requestWhenInUseAuthorization() { authorizationRequests += 1 }
+        override func requestLocation() { locationRequests += 1 }
+        override func stopUpdatingLocation() {}
+    }
+
     @Test func missingCacheFallsBackToTimeZoneSoAdaptiveIsNeverStuck() throws {
         let name = "RedlightLocationTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
@@ -124,7 +138,9 @@ import Testing
     }
 
     @Test func corruptPersistedManualCoordinateIsIgnoredOnLoad() {
-        let cases: [(Any?, Any?)] = [(Double.nan, 10.0), (95.0, 10.0), (10.0, 200.0), (10.0, nil), ("north", 10.0)]
+        let cases: [(Any?, Any?)] = [
+            (Double.nan, 10.0), (95.0, 10.0), (10.0, 200.0), (10.0, nil), ("north", 10.0), (true, 10.0),
+        ]
         for (lat, lon) in cases {
             let defaults = freshDefaults()
             if let lat { defaults.set(lat, forKey: "redlight.location.manualLat") }
@@ -134,6 +150,68 @@ import Testing
             #expect(provider.isApproximate)
             #expect(abs((provider.coordinate?.latitude ?? 0) - 35.68) < 1.5)
         }
+    }
+
+    @Test func oneShotRetriesOnlyWhenAskedAfterFailureOrInvalidFix() {
+        let manager = TestManager()
+        let provider = LocationProvider(defaults: freshDefaults(), manager: manager)
+        provider.requestWhenInUse()
+        provider.requestWhenInUse()
+        #expect(manager.authorizationRequests == 1)
+        manager.status = .authorizedAlways
+        provider.locationManagerDidChangeAuthorization(manager)
+        provider.locationManagerDidChangeAuthorization(manager)
+        #expect(provider.wantsFix)
+        #expect(manager.locationRequests == 1)
+
+        provider.locationManager(manager, didFailWithError: CLError(.locationUnknown))
+        #expect(!provider.wantsFix)
+        provider.locationManagerDidChangeAuthorization(manager)
+        #expect(manager.locationRequests == 1)
+        provider.requestWhenInUse()
+        #expect(manager.locationRequests == 2)
+        provider.locationManager(manager, didUpdateLocations: [])
+        #expect(!provider.wantsFix)
+        #expect(provider.isApproximate)
+    }
+
+    @Test func aFixDeliveredAfterCancellationLeavesTheAutomaticLocationUntouched() {
+        let manager = TestManager()
+        manager.status = .authorizedAlways
+        let defaults = freshDefaults()
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let provider = LocationProvider(defaults: defaults, timeZone: chicago, manager: manager)
+        provider.requestWhenInUse()
+        #expect(manager.locationRequests == 1)
+        provider.setManualCoordinate((latitude: 10, longitude: 20))
+
+        let fix = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 30, longitude: 40),
+                             altitude: 0, horizontalAccuracy: 1_000, verticalAccuracy: -1, timestamp: Date())
+        provider.locationManager(manager, didUpdateLocations: [fix])
+        #expect(defaults.object(forKey: "redlight.location.lat") == nil)
+        provider.setManualCoordinate(nil)
+        #expect(provider.isApproximate)
+        #expect(provider.coordinate?.latitude == ApproximateLocation.from(chicago).latitude)
+    }
+
+    @Test func recentValidCachedFixSkipsHardwareAndInvalidCachedFixDoesNot() {
+        let manager = TestManager()
+        manager.status = .authorizedAlways
+        let provider = LocationProvider(defaults: freshDefaults(), manager: manager)
+        func fix(_ accuracy: Double) -> CLLocation {
+            CLLocation(coordinate: CLLocationCoordinate2D(latitude: 30, longitude: 40),
+                       altitude: 0, horizontalAccuracy: accuracy, verticalAccuracy: -1, timestamp: Date())
+        }
+        manager.cachedLocation = fix(1_000)
+        provider.requestWhenInUse()
+        #expect(manager.locationRequests == 0)
+        #expect(provider.coordinate?.latitude == 30)
+        #expect(!provider.wantsFix)
+
+        manager.cachedLocation = fix(-1)
+        provider.requestWhenInUse()
+        #expect(manager.locationRequests == 1)
+        #expect(provider.wantsFix)
     }
 
     @Test func manualLocationTextValidationNamesTheRange() throws {

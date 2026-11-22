@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6 - 2026-11-21
+
+- The menu bar popover now accepts keyboard input, grows as sections expand, and scrolls on shorter screens. Press Return to save a manual location, or use the arrow keys to adjust a focused slider or band limit.
+- Drag the center of an existing pinned slider to move its fixed value. Drag a bracket tip to widen the band. You can set an exact pin with equal limits, such as `redlight limits whitepoint 80 80`.
+- Display fades reuse calibration samples and gamma table buffers. In a benchmark of 200,000 frames across three simulated displays, gamma table preparation dropped from 3.375 seconds to 0.239 seconds with matching output.
+- Fixed redundant ColorSync resets during wake and shutdown. Connecting a monitor while Redlight is quitting no longer applies a fresh tint. The Sidecar pointer updates when the overlay geometry changes.
+- **Until sunrise** now resumes at the calculated sunrise even when it is less than a minute away or more than 24 hours away. The deadline survives relaunch and clock changes. Adaptive also handles brief sunrise and sunset crossings near the polar circles.
+- Fixed stale location callbacks after cancellation and incorrect bedtime tint during the midnight sun. The sun arc reuses the day's samples between refreshes.
+- Fixed shortcut conflicts, repeated toggle events, and Pause holds that could get stuck after a missed key release.
+- The CLI handles simultaneous launches more reliably. Control Center retries preserve the result of the original request, so an older retry cannot undo a newer toggle.
+- Release builds now use the tagged commit's source and locked dependencies. The Sparkle feed and GitHub download use the same disk image.
+
 ## 1.5 - 2026-11-18
 
 - Added Pause for apps. Choose apps in the popover, or with `redlight apps add|remove|list|clear <bundle-id>`, and the tint fades out while one of them is in front and back when you switch away. Invert stays on. Redlight still counts as on; the header and `status` show “suspended for” and the app's name.

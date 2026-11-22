@@ -6,8 +6,14 @@ import AppKit
 final class ShortcutController {
     /// A shorter press of the Pause shortcut pauses; a longer hold only peeks.
     static let tapThreshold: TimeInterval = 0.35
-    /// Fallback limit for a held step whose key-up never arrives.
-    static let maxRepeatDuration: TimeInterval = 4
+    /// Limit a hold when neither Carbon nor the physical key state can report its release.
+    static let untrackedHoldLimit: TimeInterval = 4
+
+    private struct Hold {
+        let shortcut: KeyShortcut
+        let startedAt: TimeInterval
+        var hasObservedKeyDown: Bool
+    }
 
     let store: ShortcutStore
     private let hotkeys: HotkeyRegistering
@@ -18,12 +24,14 @@ final class ShortcutController {
     private let repeatDelay: () -> TimeInterval
     private let repeatInterval: () -> TimeInterval
 
+    private var nextRegistrationID: UInt32 = 0
+    private var registrations: [UInt32: (action: ShortcutAction, shortcut: KeyShortcut)] = [:]
+    private var heldActions: [ShortcutAction: Hold] = [:]
+    private var releaseWatch: Timer?
     private var repeatTimer: Timer?
     private var repeatingAction: ShortcutAction?
-    private var repeatStartedAt: TimeInterval = 0
     private var peekStartedAt: TimeInterval?
     private var pauseWasActive = false
-    private var peekWatch: Timer?
 
     init(
         store: ShortcutStore,
@@ -49,38 +57,98 @@ final class ShortcutController {
     }
 
     /// Re-register after any change. Everything is released while a recorder listens.
-    func registerAll() {
-        stopRepeating()
-        endPeek()
-        hotkeys.unregisterAll()
+    private func registerAll() {
+        clearRegistrations()
         guard !store.isRecording else { return }
         var refused = Set<ShortcutAction>()
-        for (index, action) in ShortcutAction.allCases.enumerated() {
+        for action in ShortcutAction.allCases {
             guard let shortcut = store.shortcut(for: action) else { continue }
-            if !hotkeys.register(shortcut, id: UInt32(index + 1)) { refused.insert(action) }
+            nextRegistrationID &+= 1
+            if store.systemReserved.contains(shortcut) || !hotkeys.register(shortcut, id: nextRegistrationID) {
+                refused.insert(action)
+            } else {
+                registrations[nextRegistrationID] = (action, shortcut)
+            }
         }
         if store.unavailable != refused { store.unavailable = refused }
     }
 
-    func handle(id: UInt32, pressed: Bool) {
-        let index = Int(id) - 1
-        guard ShortcutAction.allCases.indices.contains(index) else { return }
-        let action = ShortcutAction.allCases[index]
+    private func clearRegistrations() {
+        stopRepeating()
+        endPeek()
+        heldActions.removeAll()
+        stopReleaseWatch()
+        guard !registrations.isEmpty else { return }
+        registrations.removeAll()
+        hotkeys.unregisterAll()
+    }
+
+    isolated deinit { clearRegistrations() }
+
+    private func handle(id: UInt32, pressed: Bool) {
+        // Ignore events queued for registrations removed while recording or editing.
+        guard let (action, shortcut) = registrations[id] else { return }
+        guard pressed else {
+            release(action)
+            return
+        }
+        // Carbon can resend a press while held, including for keys we rolled off.
+        guard heldActions[action] == nil else { return }
+        heldActions[action] = Hold(shortcut: shortcut, startedAt: uptime(),
+                                   hasObservedKeyDown: hotkeys.isKeyDown(shortcut))
+        startReleaseWatch()
         if action == .pause {
-            pressed ? pausePressed() : pauseReleased()
+            pausePressed()
         } else if action.repeats {
-            if pressed {
-                // Some macOS versions resend the press while held; the timer already repeats.
-                if repeatingAction == action { return }
-                // Rolling onto another step key takes over the repeat.
-                startRepeating(action)
-            } else if repeatingAction == action {
-                // Releasing a key that was rolled off must not stop the one still held.
-                stopRepeating()
-            }
-        } else if pressed {
+            startRepeating(action)
+        } else {
             perform(action)
         }
+    }
+
+    private func release(_ action: ShortcutAction, expired: Bool = false) {
+        guard heldActions.removeValue(forKey: action) != nil else { return }
+        if heldActions.isEmpty { stopReleaseWatch() }
+        if repeatingAction == action { stopRepeating() }
+        if action == .pause {
+            expired ? endPeek() : pauseReleased()
+        }
+    }
+
+    private func startReleaseWatch() {
+        guard releaseWatch == nil else { return }
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkHeldKeys() }
+        }
+        timer.tolerance = 0.02
+        RunLoop.main.add(timer, forMode: .common)
+        releaseWatch = timer
+    }
+
+    private func stopReleaseWatch() {
+        releaseWatch?.invalidate()
+        releaseWatch = nil
+    }
+
+    private func checkHeldKeys() {
+        for action in heldActions.keys { _ = isHeld(action) }
+    }
+
+    private func isHeld(_ action: ShortcutAction) -> Bool {
+        guard let hold = heldActions[action] else { return false }
+        if hotkeys.isKeyDown(hold.shortcut) {
+            if !hold.hasObservedKeyDown { heldActions[action]?.hasObservedKeyDown = true }
+            return true
+        }
+        if hold.hasObservedKeyDown {
+            release(action)
+            return false
+        }
+        if uptime() - hold.startedAt >= Self.untrackedHoldLimit {
+            release(action, expired: true)
+            return false
+        }
+        return true
     }
 
     // MARK: - Actions
@@ -117,12 +185,15 @@ final class ShortcutController {
             let after = channel == .color ? manager.intensity : manager.whitepoint
             let value = channel == .color ? status.color.set : status.whitepoint.set
             var text = "\(channel == .color ? "Color Temp" : "White Point") \(Int(value.rounded()))%"
-            let pinned = channel == .color ? manager.isIntensityPinned : manager.isWhitepointPinned
-            if after == before, manager.adaptiveEnabled, !pinned { text += " · Adaptive limit" }
+            let floor = channel == .color ? 0.0 : 25.0
+            let band = channel == .color ? manager.intensityBand : manager.whitepointBand
+            let narrowerLimit = percent < 0 ? band.lowerBound > floor / 100 : band.upperBound < 1
+            if after == before, manager.adaptiveEnabled, band.lowerBound != band.upperBound, narrowerLimit {
+                text += " · Adaptive limit"
+            }
             if status.pausedUntil != nil { text += " · Paused" }
             else if status.suspendedFor != nil { text += " · Suspended" }
             else if !status.on { text += " · Off" }
-            let floor = channel == .color ? 0.0 : 25.0
             readout.show(text, level: (value - floor) / (100 - floor))
             return after != before
         } catch {
@@ -135,20 +206,17 @@ final class ShortcutController {
 
     private func startRepeating(_ action: ShortcutAction) {
         stopRepeating()
-        guard step(action), let shortcut = store.shortcut(for: action) else { return }
-        // Only trust the key state as a missed-release guard if it reports this press.
-        let keyStateWorks = hotkeys.isKeyDown(shortcut)
-        repeatStartedAt = uptime()
-        let timer = Timer(timeInterval: max(0.01, repeatInterval()), repeats: true) { [weak self] _ in
+        guard step(action) else { return }
+        let delay = repeatDelay()
+        let interval = repeatInterval()
+        guard delay.isFinite, delay >= 0, interval.isFinite, interval > 0 else { return }
+        let timer = Timer(timeInterval: max(0.01, interval), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                let held = keyStateWorks
-                    ? self.hotkeys.isKeyDown(shortcut)
-                    : self.uptime() - self.repeatStartedAt < Self.maxRepeatDuration
-                if !held || !self.step(action) { self.stopRepeating() }
+                guard let self, self.isHeld(action) else { return }
+                if !self.step(action) { self.stopRepeating() }
             }
         }
-        timer.fireDate = Date().addingTimeInterval(repeatDelay())
+        timer.fireDate = Date().addingTimeInterval(delay)
         RunLoop.main.add(timer, forMode: .common)
         repeatTimer = timer
         repeatingAction = action
@@ -171,22 +239,11 @@ final class ShortcutController {
         pauseWasActive = manager.isPaused
         peekStartedAt = uptime()
         manager.setPeeking(true)
-        guard let shortcut = store.shortcut(for: .pause), hotkeys.isKeyDown(shortcut) else { return }
-        let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, !self.hotkeys.isKeyDown(shortcut) else { return }
-                self.pauseReleased()
-            }
-        }
-        RunLoop.main.add(watch, forMode: .common)
-        peekWatch = watch
     }
 
     private func pauseReleased() {
         guard let startedAt = peekStartedAt else { return }
         peekStartedAt = nil
-        peekWatch?.invalidate()
-        peekWatch = nil
         guard uptime() - startedAt < Self.tapThreshold else {
             manager.setPeeking(false)
             return
@@ -210,8 +267,6 @@ final class ShortcutController {
     private func endPeek() {
         guard peekStartedAt != nil else { return }
         peekStartedAt = nil
-        peekWatch?.invalidate()
-        peekWatch = nil
         manager.setPeeking(false)
     }
 }

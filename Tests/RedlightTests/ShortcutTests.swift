@@ -66,6 +66,14 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(shortcut.modifierFlags == flags)
         #expect(shortcut.modifiers == UInt32(cmdKey | controlKey))
     }
+
+    @Test func decodingNormalizesModifiersAndOversizedCodesCanBeLabeled() throws {
+        let shortcut = try JSONDecoder().decode(KeyShortcut.self, from:
+            Data("{\"keyCode\":4294967295,\"modifiers\":4294967295}".utf8))
+        #expect(shortcut.modifiers == KeyShortcut.supportedModifiers)
+        #expect(shortcut.problem(reserved: []) == .invalidKey)
+        #expect(shortcut.label() == "⌃⌥⇧⌘Key 4294967295")
+    }
 }
 
 @MainActor @Suite struct ShortcutStoreTests {
@@ -73,7 +81,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
 
     @Test func assigningTakesTheShortcutFromItsPreviousActionAndPersists() {
         let defaults = registry.makeDefaults(prefix: "ShortcutStoreTests")
-        let store = ShortcutStore(defaults: defaults)
+        let store = ShortcutStore(defaults: defaults, reserved: { [] })
         var changes = 0
         store.onChange = { changes += 1 }
         let shortcut = KeyShortcut(keyCode: UInt32(kVK_ANSI_R), modifiers: primary)
@@ -82,14 +90,14 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(store.shortcut(for: .toggle) == nil)
         #expect(changes == 2)
 
-        let reloaded = ShortcutStore(defaults: defaults)
+        let reloaded = ShortcutStore(defaults: defaults, reserved: { [] })
         #expect(reloaded.shortcut(for: .pause) == shortcut)
         reloaded.clearAll()
-        #expect(ShortcutStore(defaults: defaults).shortcuts.isEmpty)
+        #expect(ShortcutStore(defaults: defaults, reserved: { [] }).shortcuts.isEmpty)
     }
 
     @Test func suggestedShortcutsAreValidDistinctAndLeaveExtrasUnassigned() {
-        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
+        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"), reserved: { [] })
         #expect(store.shortcuts.isEmpty)
         store.useSuggested(reserved: [])
         let assigned = Array(store.shortcuts.values)
@@ -100,7 +108,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
     }
 
     @Test func reservedSuggestionsPreserveTheExistingAssignment() {
-        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
+        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"), reserved: { [] })
         let custom = KeyShortcut(keyCode: UInt32(kVK_F13), modifiers: 0)
         store.set(custom, for: .toggle)
         store.useSuggested(reserved: [ShortcutAction.toggle.suggested!])
@@ -109,7 +117,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
     }
 
     @Test func suggestedShortcutsMoveACombinationAnotherActionAlreadyUses() {
-        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"))
+        let store = ShortcutStore(defaults: registry.makeDefaults(prefix: "ShortcutStoreTests"), reserved: { [] })
         let custom = KeyShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: primary)
         store.set(ShortcutAction.toggle.suggested, for: .presetDay)
         store.set(custom, for: .adaptive)
@@ -128,10 +136,13 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
     private let readout = FakeReadout()
     private let uptime = Uptime()
 
-    private func makeController() -> (ShortcutController, DisplayManager) {
+    private func makeController(
+        gamma: MockGammaController = MockGammaController(),
+        reserved: @escaping () -> Set<KeyShortcut> = { [] }
+    ) -> (ShortcutController, DisplayManager) {
         let defaults = registry.makeDefaults(prefix: "ShortcutControllerTests")
         let manager = DisplayManager(
-            gamma: MockGammaController(), getDisplayIDs: { [1] },
+            gamma: gamma, getDisplayIDs: { [1] },
             getDisplayName: { "Display \($0)" }, getDisplayPersistenceKey: { String($0) },
             defaults: defaults, location: FakeLocationProvider(),
             now: { Date(timeIntervalSince1970: 1_000_000) },
@@ -139,7 +150,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         let handler = CommandHandler(manager: manager, services: CommandServices(
             appearance: { false }, setAppearance: { _ in }, login: { .init(enabled: false, requiresApproval: false) },
             setLogin: { _ in }, update: {}, quit: {}, version: { "test" }))
-        let store = ShortcutStore(defaults: defaults)
+        let store = ShortcutStore(defaults: defaults, reserved: reserved)
         store.useSuggested(reserved: [])
         let uptime = uptime
         let controller = ShortcutController(
@@ -149,8 +160,11 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         return (controller, manager)
     }
 
-    private func id(_ action: ShortcutAction) -> UInt32 {
-        UInt32(ShortcutAction.allCases.firstIndex(of: action)! + 1)
+    private func send(_ action: ShortcutAction, pressed: Bool, to controller: ShortcutController) {
+        let shortcut = controller.store.shortcut(for: action)
+        if let id = hotkeys.registered.first(where: { $0.value == shortcut })?.key {
+            hotkeys.onEvent?(id, pressed)
+        }
     }
 
     @Test func registersAssignedShortcutsAndReportsRefusals() {
@@ -165,52 +179,90 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(hotkeys.registered.count == 6)
     }
 
+    @Test func savedSystemConflictsBecomeAvailableWhenTheConflictIsRemoved() throws {
+        let toggle = try #require(ShortcutAction.toggle.suggested)
+        var reserved: Set<KeyShortcut> = [toggle]
+        let (controller, _) = makeController(reserved: { reserved })
+        #expect(controller.store.shortcut(for: .toggle) == toggle)
+        #expect(controller.store.unavailable == [.toggle])
+        #expect(!hotkeys.registered.values.contains(toggle))
+
+        reserved = []
+        controller.store.refreshSystemShortcuts()
+        #expect(controller.store.unavailable.isEmpty)
+        #expect(hotkeys.registered.values.contains(toggle))
+    }
+
+    @Test func queuedEventsFromAnOldRegistrationDoNotDispatch() throws {
+        let (controller, manager) = makeController()
+        let toggle = try #require(ShortcutAction.toggle.suggested)
+        let oldID = try #require(hotkeys.registered.first(where: { $0.value == toggle })?.key)
+        controller.store.isRecording = true
+        hotkeys.onEvent?(oldID, true)
+        #expect(!manager.isOn)
+
+        controller.store.isRecording = false
+        hotkeys.onEvent?(oldID, true)
+        #expect(!manager.isOn)
+        send(.toggle, pressed: true, to: controller)
+        #expect(manager.isOn)
+    }
+
     @Test func stepsMoveTheTargetAndReportLimits() {
         let (controller, manager) = makeController()
         manager.setAll(on: true)
-        controller.handle(id: id(.warmer), pressed: true)
-        controller.handle(id: id(.warmer), pressed: false)
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: false, to: controller)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
         #expect(readout.shown.last?.text == "Color Temp 95%")
         #expect(readout.shown.last?.level.map { abs($0 - 0.95) < 1e-9 } == true)
 
         manager.adaptiveEnabled = true
         manager.adaptiveMax = 0.95
-        controller.handle(id: id(.cooler), pressed: true)
-        controller.handle(id: id(.cooler), pressed: false)
+        send(.cooler, pressed: true, to: controller)
+        send(.cooler, pressed: false, to: controller)
         #expect(readout.shown.last?.text == "Color Temp 95% · Adaptive limit")
+
+        manager.adaptiveMax = 1
+        manager.intensity = 1
+        send(.cooler, pressed: true, to: controller)
+        send(.cooler, pressed: false, to: controller)
+        #expect(readout.shown.last?.text == "Color Temp 100%")
     }
 
     @Test func aResentPressWhileHeldDoesNotStepTwice() {
         let (controller, manager) = makeController()
-        controller.handle(id: id(.warmer), pressed: true)
-        controller.handle(id: id(.warmer), pressed: true)
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: true, to: controller)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
-        controller.handle(id: id(.warmer), pressed: false)
-        controller.handle(id: id(.warmer), pressed: true)
+        send(.warmer, pressed: false, to: controller)
+        send(.warmer, pressed: true, to: controller)
         #expect(abs(manager.intensity - 0.90) < 1e-9)
-        controller.handle(id: id(.warmer), pressed: false)
+        send(.warmer, pressed: false, to: controller)
     }
 
     @Test func rollingOntoAnotherStepKeyStepsItAndKeepsItRepeating() {
         let (controller, manager) = makeController()
-        controller.handle(id: id(.warmer), pressed: true)
-        controller.handle(id: id(.dimmer), pressed: true)   // pressed before Warmer is released
+        send(.warmer, pressed: true, to: controller)
+        send(.dimmer, pressed: true, to: controller)   // pressed before Warmer is released
         #expect(abs(manager.intensity - 0.95) < 1e-9)
         #expect(abs(manager.whitepoint - 0.95) < 1e-9)
-        controller.handle(id: id(.warmer), pressed: false)
+        // A repeat event from the older held key must leave Dimmer in control.
+        send(.warmer, pressed: true, to: controller)
+        #expect(abs(manager.intensity - 0.95) < 1e-9)
+        send(.warmer, pressed: false, to: controller)
         // Dimmer is still held and repeating, so a resent press must not step again.
-        controller.handle(id: id(.dimmer), pressed: true)
+        send(.dimmer, pressed: true, to: controller)
         #expect(abs(manager.whitepoint - 0.95) < 1e-9)
-        controller.handle(id: id(.dimmer), pressed: false)
-        controller.handle(id: id(.dimmer), pressed: true)
+        send(.dimmer, pressed: false, to: controller)
+        send(.dimmer, pressed: true, to: controller)
         #expect(abs(manager.whitepoint - 0.90) < 1e-9)
-        controller.handle(id: id(.dimmer), pressed: false)
+        send(.dimmer, pressed: false, to: controller)
     }
 
     @Test func leavingTheWindowEndsRecordingAndRestoresHotkeys() {
         let (controller, _) = makeController()
-        let window = ShortcutsWindowController(store: controller.store, reserved: { [] })
+        let window = ShortcutsWindowController(store: controller.store)
         controller.store.isRecording = true
         #expect(hotkeys.registered.isEmpty)
         window.windowWillClose(Notification(name: NSWindow.willCloseNotification))
@@ -222,20 +274,20 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         let (controller, manager) = makeController()
         manager.setAll(on: true)
 
-        controller.handle(id: id(.pause), pressed: true)
+        send(.pause, pressed: true, to: controller)
         uptime.now += 0.1
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: false, to: controller)
         #expect(manager.isPaused)
         #expect(readout.shown.last?.text == "Paused · 30 min")
 
-        controller.handle(id: id(.pause), pressed: true)
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: true, to: controller)
+        send(.pause, pressed: false, to: controller)
         #expect(!manager.isPaused)
         #expect(readout.shown.last?.text == "Resumed")
 
-        controller.handle(id: id(.pause), pressed: true)
+        send(.pause, pressed: true, to: controller)
         uptime.now += 2
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: false, to: controller)
         #expect(!manager.isPaused)
         #expect(manager.isFiltering)
     }
@@ -245,54 +297,79 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         manager.setAll(on: true)
         manager.pause(for: 7200)
         let deadline = manager.pausedUntil
-        controller.handle(id: id(.pause), pressed: true)
+        send(.pause, pressed: true, to: controller)
         #expect(manager.isPaused)
         uptime.now += 2
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: false, to: controller)
         #expect(manager.pausedUntil == deadline)
+    }
+
+    @Test func aHoldWithoutKeyStateOrReleaseEventuallyRestoresTheTint() async throws {
+        let gamma = MockGammaController()
+        let (controller, manager) = makeController(gamma: gamma)
+        manager.intensity = 0.4
+        manager.setAll(on: true)
+        hotkeys.keyDown = false
+        gamma.restoreCalls.removeAll()
+
+        send(.pause, pressed: true, to: controller)
+        #expect(gamma.restoreCalls.contains(1))
+        gamma.applyCalls.removeAll()
+
+        uptime.now += ShortcutController.untrackedHoldLimit
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while gamma.applyCalls.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(gamma.applyCalls.last?.intensity == Float(0.4))
+        #expect(!manager.isPaused)
+        #expect(controller.store.shortcut(for: .pause) != nil)
     }
 
     @Test func stepsAndPauseKeepWorkingWhileSuspendedForAnApp() {
         let (controller, manager) = makeController()
         manager.setAll(on: true)
         manager.setSuspendedForApp("Photoshop")
-        controller.handle(id: id(.warmer), pressed: true)
-        controller.handle(id: id(.warmer), pressed: false)
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: false, to: controller)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
         #expect(readout.shown.last?.text == "Color Temp 95% · Suspended")
 
         // A held peek changes nothing visible, and releasing it leaves the suspension.
-        controller.handle(id: id(.pause), pressed: true)
+        send(.pause, pressed: true, to: controller)
         uptime.now += 2
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: false, to: controller)
         #expect(manager.suspendedForApp == "Photoshop")
-        controller.handle(id: id(.pause), pressed: true)
+        send(.pause, pressed: true, to: controller)
         uptime.now += 0.1
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: false, to: controller)
         #expect(manager.isPaused)
-        controller.handle(id: id(.warmer), pressed: true)
-        controller.handle(id: id(.warmer), pressed: false)
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: false, to: controller)
         #expect(readout.shown.last?.text == "Color Temp 90% · Paused")
-        controller.handle(id: id(.pause), pressed: true)
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: true, to: controller)
+        send(.pause, pressed: false, to: controller)
         #expect(!manager.isPaused)
         #expect(manager.suspendedForApp == "Photoshop")
     }
 
     @Test func pauseWhileOffExplainsInsteadOfPeeking() {
         let (controller, manager) = makeController()
-        controller.handle(id: id(.pause), pressed: true)
-        controller.handle(id: id(.pause), pressed: false)
+        send(.pause, pressed: true, to: controller)
+        send(.pause, pressed: false, to: controller)
         #expect(!manager.isPaused)
         #expect(readout.shown.last?.text == "Redlight Is Off")
     }
 
     @Test func toggleReportsTheNewState() {
         let (controller, manager) = makeController()
-        controller.handle(id: id(.toggle), pressed: true)
+        send(.toggle, pressed: true, to: controller)
         #expect(manager.isOn)
         #expect(readout.shown.last?.text == "Redlight On")
-        controller.handle(id: id(.toggle), pressed: true)
+        send(.toggle, pressed: true, to: controller)
+        #expect(manager.isOn)
+        send(.toggle, pressed: false, to: controller)
+        send(.toggle, pressed: true, to: controller)
         #expect(readout.shown.last?.text == "Redlight Off")
     }
 }

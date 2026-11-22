@@ -4,10 +4,12 @@ protocol GammaControlling {
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)
     func restore(_ displayID: CGDirectDisplayID)
     func restoreAll()
+    func resetForDisplayRecovery()
     func displaysDidChange()
 }
 
 extension GammaControlling {
+    func resetForDisplayRecovery() { restoreAll() }
     func displaysDidChange() {}
 }
 
@@ -22,42 +24,58 @@ enum GammaTableComposer {
         original: Table?, tableSize: Int = 256,
         intensity: Float, whitepoint: Float, invert: Bool
     ) -> Table {
-        precondition(tableSize > 1)
-        let redMax: Float = 1
-        let greenMax = intensity
-        let blueMax = max(0, intensity * 2 - 1)
-        var result: Table = (
-            [CGGammaValue](repeating: 0, count: tableSize),
-            [CGGammaValue](repeating: 0, count: tableSize),
-            [CGGammaValue](repeating: 0, count: tableSize)
-        )
-
-        for i in 0..<tableSize {
-            let x = Float(i) / Float(tableSize - 1)
-            let input = invert ? 1 - x : x
-            let baseR = sample(original?.r, at: input) ?? input
-            let baseG = sample(original?.g, at: input) ?? input
-            let baseB = sample(original?.b, at: input) ?? input
-            result.r[i] = redMax * whitepointCurve(baseR, whitepoint: whitepoint)
-            result.g[i] = greenMax * whitepointCurve(baseG, whitepoint: whitepoint)
-            result.b[i] = blueMax * whitepointCurve(baseB, whitepoint: whitepoint)
-        }
+        let source = resample(original: original, tableSize: tableSize, invert: invert)
+        var result = makeTable(size: tableSize)
+        render(source, intensity: intensity, whitepoint: whitepoint, into: &result)
         return result
     }
 
-    private static func sample(_ table: [CGGammaValue]?, at position: Float) -> Float? {
-        guard let table, !table.isEmpty else { return nil }
+    static func makeTable(size: Int) -> Table {
+        let channel = [CGGammaValue](repeating: 0, count: size)
+        return (channel, channel, channel)
+    }
+
+    static func resample(original: Table?, tableSize: Int, invert: Bool) -> Table {
+        precondition(tableSize > 1)
+        let positions = (0..<tableSize).map { i in
+            let x = Float(i) / Float(tableSize - 1)
+            return invert ? 1 - x : x
+        }
+        guard let original else { return (positions, positions, positions) }
+        return (
+            positions.map { sample(original.r, at: $0) },
+            positions.map { sample(original.g, at: $0) },
+            positions.map { sample(original.b, at: $0) }
+        )
+    }
+
+    static func render(_ source: Table, intensity: Float, whitepoint: Float, into result: inout Table) {
+        renderChannel(source.r, whitepoint: whitepoint, gain: 1, into: &result.r)
+        renderChannel(source.g, whitepoint: whitepoint, gain: intensity, into: &result.g)
+        renderChannel(source.b, whitepoint: whitepoint, gain: max(0, intensity * 2 - 1), into: &result.b)
+    }
+
+    private static func sample(_ table: [CGGammaValue], at position: Float) -> Float {
+        guard !table.isEmpty else { return position }
         guard table.count > 1 else { return table[0] }
-        let p = min(1, max(0, position)) * Float(table.count - 1)
+        let p = position * Float(table.count - 1)
         let lower = Int(p.rounded(.down))
         let upper = min(table.count - 1, lower + 1)
         let fraction = p - Float(lower)
         return table[lower] + (table[upper] - table[lower]) * fraction
     }
 
-    private static func whitepointCurve(_ base: Float, whitepoint: Float) -> Float {
-        let oneMinusBase = 1 - base
-        return base * (whitepoint + (1 - whitepoint) * oneMinusBase * oneMinusBase)
+    private static func renderChannel(
+        _ source: [CGGammaValue], whitepoint: Float, gain: Float, into result: inout [CGGammaValue]
+    ) {
+        let reduction = 1 - whitepoint
+        result.withUnsafeMutableBufferPointer { result in
+            for i in result.indices {
+                let base = source[i]
+                let oneMinusBase = 1 - base
+                result[i] = gain * (base * (whitepoint + reduction * oneMinusBase * oneMinusBase))
+            }
+        }
     }
 }
 
@@ -69,16 +87,26 @@ enum GammaTableComposer {
 /// state (every slider tick loops all displays) can't degrade untouched displays.
 final class GammaController: GammaControlling {
     typealias Table = GammaTableComposer.Table
+    private struct Calibration {
+        let original: Table?
+        let sampled: Table
+        let isInverted: Bool
+    }
+
+    private static let tableSize = 256
+    private static let identity = GammaTableComposer.resample(original: nil, tableSize: tableSize, invert: false)
+    private static let invertedIdentity = GammaTableComposer.resample(original: nil, tableSize: tableSize, invert: true)
+
     private let readTable: (CGDirectDisplayID) -> Table?
-    private let writeTable: (CGDirectDisplayID, inout Table) -> CGError
+    private let writeTable: (CGDirectDisplayID, Table) -> CGError
     private let resetTables: () -> Void
-    private var originalTables: [CGDirectDisplayID: Table] = [:]
-    private var modified: Set<CGDirectDisplayID> = []
+    private var calibrations: [CGDirectDisplayID: Calibration] = [:]
+    private var output = GammaTableComposer.makeTable(size: tableSize)
 
     init(
         readTable: @escaping (CGDirectDisplayID) -> Table? = GammaController.readCalibration,
-        writeTable: @escaping (CGDirectDisplayID, inout Table) -> CGError = { id, table in
-            CGSetDisplayTransferByTable(id, UInt32(table.r.count), &table.r, &table.g, &table.b)
+        writeTable: @escaping (CGDirectDisplayID, Table) -> CGError = { id, table in
+            CGSetDisplayTransferByTable(id, UInt32(table.r.count), table.r, table.g, table.b)
         },
         resetTables: @escaping () -> Void = CGDisplayRestoreColorSyncSettings
     ) {
@@ -104,40 +132,46 @@ final class GammaController: GammaControlling {
         // areas absorb most of the whitepoint reduction.
         // A failed initial read uses the identity fallback for this entire session.
         // Once a write succeeds, a later read would capture our own filtered table.
-        let original = modified.contains(displayID) ? originalTables[displayID] : readTable(displayID)
-
-        let tableSize = 256
-        var table = GammaTableComposer.compose(
-            original: original, tableSize: tableSize,
-            intensity: intensity, whitepoint: whitepoint, invert: invert
-        )
-
-        if writeTable(displayID, &table) == .success {
-            modified.insert(displayID)
-            originalTables[displayID] = original
+        let cached = calibrations[displayID]
+        let calibration: Calibration
+        if let cached, cached.isInverted == invert {
+            calibration = cached
+        } else {
+            let original = if let cached { cached.original } else { readTable(displayID) }
+            let sampled = if let original {
+                GammaTableComposer.resample(original: original, tableSize: Self.tableSize, invert: invert)
+            } else {
+                invert ? Self.invertedIdentity : Self.identity
+            }
+            calibration = Calibration(original: original, sampled: sampled, isInverted: invert)
+        }
+        GammaTableComposer.render(calibration.sampled, intensity: intensity, whitepoint: whitepoint, into: &output)
+        if writeTable(displayID, output) == .success, cached?.isInverted != invert {
+            calibrations[displayID] = calibration
         }
     }
 
     func restore(_ displayID: CGDirectDisplayID) {
-        guard modified.contains(displayID) else { return }   // never touched → no-op
+        guard let calibration = calibrations[displayID] else { return }
         // Writing the captured table back via `CGSetDisplayTransferByTable` does not fully
         // reinstall ColorSync on some third-party monitors after a link retrain. When this
         // is the last display we own, ColorSync-restore everything — the same call Quit uses.
-        if modified == [displayID] {
+        if calibrations.count == 1 {
             restoreAll()
             return
         }
-        var table = originalTables[displayID] ?? GammaTableComposer.compose(
-            original: nil, intensity: 1, whitepoint: 1, invert: false)
-        if writeTable(displayID, &table) == .success {
-            modified.remove(displayID)
-            originalTables.removeValue(forKey: displayID)
+        if writeTable(displayID, calibration.original ?? Self.identity) == .success {
+            calibrations.removeValue(forKey: displayID)
         }
     }
 
     func restoreAll() {
-        originalTables.removeAll()
-        modified.removeAll()
+        guard !calibrations.isEmpty else { return }
+        resetForDisplayRecovery()
+    }
+
+    func resetForDisplayRecovery() {
+        calibrations.removeAll()
         resetTables()
     }
 
@@ -152,7 +186,10 @@ final class GammaController: GammaControlling {
         var sampleCount: UInt32 = 0
         guard CGGetDisplayTransferByTable(displayID, capacity, &r, &g, &b, &sampleCount) == .success,
               sampleCount > 0, sampleCount <= capacity else { return nil }
-        let n = Int(sampleCount)
-        return (Array(r[..<n]), Array(g[..<n]), Array(b[..<n]))
+        let unused = Int(capacity - sampleCount)
+        r.removeLast(unused)
+        g.removeLast(unused)
+        b.removeLast(unused)
+        return (r, g, b)
     }
 }

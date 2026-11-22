@@ -17,6 +17,18 @@ import Testing
         #expect(abs(coord.longitude - 139.69) < 1.5)
     }
 
+    @Test func legacyZoneNamesUseTheSameLocation() throws {
+        for (alias, canonical) in [("US/Alaska", "America/Anchorage"), ("NZ", "Pacific/Auckland"),
+                                   ("Asia/Calcutta", "Asia/Kolkata"), ("NZ-CHAT", "Pacific/Chatham")] {
+            let legacyZone = try #require(TimeZone(identifier: alias))
+            let canonicalZone = try #require(TimeZone(identifier: canonical))
+            let at = Date(timeIntervalSince1970: 1_750_000_000)
+            let legacy = ApproximateLocation.from(legacyZone, at: at)
+            let modern = ApproximateLocation.from(canonicalZone, at: at)
+            #expect(legacy == modern)
+        }
+    }
+
     @Test func unknownZoneFallsBackToOffsetDerivedLongitude() {
         // Etc/GMT-3 is UTC+3 (POSIX sign inversion), no DST: 3 h × 15° = 45° E.
         let tz = TimeZone(identifier: "Etc/GMT-3")!

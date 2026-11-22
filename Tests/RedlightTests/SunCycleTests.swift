@@ -102,6 +102,34 @@ import Foundation
         #expect(sunrise.timeIntervalSince(now) < 4 * 3_600)
     }
 
+    @Test func shortNightBetweenScanSamplesStillHasSunsetAndSunrise() throws {
+        // Near the Arctic Circle on the solstice, the sun dips below the horizon for seconds.
+        let now = date("2025-06-22T00:01:00Z")
+        let latitude = 66.5642325
+        func elevation(_ seconds: Double) -> Double {
+            SolarCalculator.elevation(at: now.addingTimeInterval(seconds), latitude: latitude, longitude: 0)
+        }
+        #expect(elevation(0) > 0 && elevation(60) < 0 && elevation(120) > 0)
+        let sunset = try #require(SunCycle.findNextEvent(now: now, latitude: latitude, longitude: 0,
+                                                         thresholds: [0], horizon: 120))
+        let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: latitude, longitude: 0))
+        #expect(sunset.label == "sunset")
+        #expect((50...57).contains(sunset.seconds))
+        #expect((63...70).contains(sunrise.timeIntervalSince(now)))
+    }
+
+    @Test func multipleCrossingsInOneStepChooseTheFirstInEitherDirection() throws {
+        for (time, isRising) in [("2025-03-20T06:00:00Z", true), ("2025-03-20T18:00:00Z", false)] {
+            let now = date(time)
+            let first = SolarCalculator.elevation(at: now.addingTimeInterval(30), latitude: 0, longitude: 0)
+            let second = SolarCalculator.elevation(at: now.addingTimeInterval(90), latitude: 0, longitude: 0)
+            let event = try #require(SunCycle.findNextEvent(now: now, latitude: 0, longitude: 0,
+                                                            thresholds: [second, first], rising: isRising))
+            #expect(event.elevation == first)
+            #expect(abs(event.seconds - 30) < 1)
+        }
+    }
+
     @Test func polarDayAndNightHaveNoSunrise() {
         #expect(SunCycle.nextSunrise(after: date("2025-06-21T12:00:00Z"), latitude: 89.9, longitude: 0) == nil)
         #expect(SunCycle.nextSunrise(after: date("2025-12-21T12:00:00Z"), latitude: 89.9, longitude: 0) == nil)

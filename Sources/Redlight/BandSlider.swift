@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Pure geometry + interaction rules for `BandSlider`, kept UI-free so the clamp and
@@ -30,70 +29,77 @@ enum BandSliderCore {
         return range.lowerBound + f * (range.upperBound - range.lowerBound)
     }
 
-    /// Equal limits pin the value: the band is a single point.
-    static func isPinned(lower: Double, upper: Double) -> Bool { lower == upper }
-
     /// Clamp a live value into the band (lo/hi order normalized).
     static func clampToBand(_ v: Double, lower: Double, upper: Double) -> Double {
         let lo = min(lower, upper), hi = max(lower, upper)
         return min(hi, max(lo, v))
     }
 
-    /// Which handle a press at (`x`, `dy` from the track's centerline) grabs.
+    static func editedValue(
+        _ proposed: Double, for handle: Handle, range: ClosedRange<Double>,
+        lower: Double, upper: Double, showBand: Bool, minGap: Double
+    ) -> Double {
+        let v = clampToBand(proposed, lower: range.lowerBound, upper: range.upperBound)
+        let gap = max(0, minGap)
+        switch handle {
+        case .value:
+            // The owner moves both limits when editing an existing pin.
+            return showBand && lower != upper ? clampToBand(v, lower: lower, upper: upper) : v
+        case .lower:
+            let ceiling = max(range.lowerBound, upper - gap)
+            // An existing narrow band can widen, and a move toward its other limit
+            // leaves it where it is instead of jumping in the opposite direction.
+            if lower > ceiling, v >= lower { return lower }
+            return min(v, ceiling)
+        case .upper:
+            let floor = min(range.upperBound, lower + gap)
+            if upper < floor, v <= upper { return upper }
+            return max(v, floor)
+        }
+    }
+
+    /// When both markers overlap, choose the one that can move in the drag's direction.
+    static func resolveStackedMarker(_ handle: Handle, dx: CGFloat, lower: Double, upper: Double) -> Handle {
+        guard handle != .value, lower == upper, dx != 0 else { return handle }
+        return dx < 0 ? .lower : .upper
+    }
+
+    /// Which handle a drag starting at (`x`, `dy` from the track's centerline) grabs.
     ///
-    /// The slider behaves like a normal slider: the thumb, or a click anywhere on the
-    /// track, moves the value. A limit is grabbed only by pressing the marker itself.
-    /// Markers are taller than the thumb, so when the thumb sits on one, the ends that
-    /// show above and below it grab the limit and the thumb's body grabs the thumb.
+    /// Markers are taller than the thumb, so their ends show as tabs above and below it.
+    /// A press in that tab zone, on a tab, always grabs the marker, so a limit stays
+    /// reachable even when the thumb sits right on it.
+    ///
+    /// Otherwise the nearest handle wins, with a deliberate tie-break for the case where
+    /// clamping has parked the thumb exactly on a bracket: grabbing at/inside the band
+    /// prefers the thumb (so it never becomes ungrabbable), grabbing outside the bracket
+    /// prefers the marker (the only handle that can move that way).
     static func hitHandle(
         atX x: CGFloat, dy: CGFloat = 0, width: CGFloat, inset: CGFloat,
         range: ClosedRange<Double>,
         value v: Double, lower: Double, upper: Double, showBand: Bool,
-        markerHitRadius: CGFloat = 5
+        markerHitRadius: CGFloat = 12, tabZone: CGFloat = 6, tabHitRadius: CGFloat = 6
     ) -> Handle {
         guard showBand else { return .value }
-        let vX = position(clampToBand(v, lower: lower, upper: upper), width: width, inset: inset, range: range)
+        let visibleValue = clampToBand(v, lower: lower, upper: upper)
+        let vX = position(visibleValue, width: width, inset: inset, range: range)
         let loX = position(lower, width: width, inset: inset, range: range)
         let hiX = position(upper, width: width, inset: inset, range: range)
-        let dLo = abs(loX - x), dHi = abs(hiX - x)
-        guard min(dLo, dHi) <= markerHitRadius else { return .value }
-        let marker: Handle = dLo <= dHi ? .lower : .upper
-        let markerX = marker == .lower ? loX : hiX
-        let thumbCoversMarker = abs(markerX - vX) < inset && abs(x - vX) <= inset
-        if thumbCoversMarker && abs(dy) < inset - 1 { return .value }
-        return marker
-    }
-
-    /// A thumb parked on a limit cannot move further out of the band, so a drag that
-    /// starts on it and heads outward moves that limit instead.
-    static func outwardMarker(
-        startX: CGFloat, dx: CGFloat, width: CGFloat, inset: CGFloat,
-        range: ClosedRange<Double>, value v: Double, lower: Double, upper: Double
-    ) -> Handle? {
-        // A pinned thumb moves the pin; its markers' tips pull the limits apart.
-        guard !isPinned(lower: lower, upper: upper) else { return nil }
-        let vX = position(clampToBand(v, lower: lower, upper: upper), width: width, inset: inset, range: range)
-        guard dx != 0, abs(startX - vX) <= inset else { return nil }
-        let loX = position(min(lower, upper), width: width, inset: inset, range: range)
-        let hiX = position(max(lower, upper), width: width, inset: inset, range: range)
-        if dx < 0, abs(vX - loX) < 0.5 { return lower <= upper ? .lower : .upper }
-        if dx > 0, abs(vX - hiX) < 0.5 { return lower <= upper ? .upper : .lower }
-        return nil
-    }
-
-    /// Markers on the same spot look like one, so the drag direction picks the limit:
-    /// left moves the minimum, right the maximum. Otherwise a pair stacked at the floor
-    /// would always grab the minimum, which cannot move right past the maximum.
-    static func stackedMarker(
-        _ grabbed: Handle, dx: CGFloat, width: CGFloat, inset: CGFloat,
-        range: ClosedRange<Double>, lower: Double, upper: Double
-    ) -> Handle {
-        guard grabbed != .value, dx != 0 else { return grabbed }
-        let loX = position(lower, width: width, inset: inset, range: range)
-        let hiX = position(upper, width: width, inset: inset, range: range)
-        guard abs(loX - hiX) < 0.5 else { return grabbed }
-        let leftward: Handle = lower <= upper ? .lower : .upper
-        return dx < 0 ? leftward : (leftward == .lower ? .upper : .lower)
+        let dV = abs(vX - x), dLo = abs(loX - x), dHi = abs(hiX - x)
+        let nearestMarker = min(dLo, dHi)
+        if abs(dy) >= tabZone, nearestMarker <= tabHitRadius {
+            return dLo <= dHi ? .lower : .upper
+        }
+        if lower == upper, hypot(dV, dy) <= inset { return .value }
+        // Brackets have a finite hit target. Elsewhere the track always moves the value.
+        guard nearestMarker <= markerHitRadius else { return .value }
+        if dV <= dLo && dV <= dHi {
+            // Tied with a coincident marker: outside the bracket means the marker.
+            if dV == dLo && x < loX { return .lower }
+            if dV == dHi && x > hiX { return .upper }
+            return .value
+        }
+        return dLo <= dHi ? .lower : .upper
     }
 }
 
@@ -125,13 +131,10 @@ struct SliderInteractionGate {
 /// both while dragging and when rendered. Thumb and markers share one value ⇄ pixel
 /// mapping, so a thumb at a bound sits exactly on its bracket.
 ///
-/// A press on a marker drags that limit; a press anywhere else drags the thumb or jumps it
-/// to the clicked position. A thumb parked on a limit hands the drag to that limit when
-/// pulled out of the band, so neither handle can become ungrabbable.
-///
-/// Equal limits pin the value. A pinned slider acts like a plain one: the thumb writes
-/// any value and the owner moves the pin with it, and the markers' tips (above and below
-/// the thumb) pull the limits apart again. While
+/// A single drag gesture routes to whichever handle (lower marker, upper marker, or thumb)
+/// is nearest where the drag began; ties on a coincident thumb/marker prefer the thumb
+/// inside the band and the marker outside it. Existing pinned bands can move together
+/// with the thumb or be widened by dragging a marker in the direction of either limit. While
 /// a marker is dragged, `onPreview` fires with its value so the caller can apply it live;
 /// `onPreviewEnd` fires on release so the caller can revert to the real value.
 struct BandSlider: View {
@@ -141,6 +144,7 @@ struct BandSlider: View {
     var range: ClosedRange<Double> = 0...1
     var showBand: Bool
     var label: String = "Value"
+    var minGap: Double = 0.05
     var onPreview: ((Double) -> Void)? = nil
     var onPreviewEnd: (() -> Void)? = nil
     /// Called when a drag starts; returns a token for that drag.
@@ -154,14 +158,10 @@ struct BandSlider: View {
     @State private var interactionGate = SliderInteractionGate()
     /// Handle position minus press position, so a grabbed handle doesn't jump to the pointer.
     @State private var grabOffset: CGFloat = 0
-    /// Identifies the press. Inside a menu, AppKit can swallow the mouse-up, so `onEnded`
-    /// may never run; a new start location means the previous gesture is over.
     @State private var gestureStart: CGPoint?
-    /// A press on a handle changes nothing until the pointer moves.
     @State private var hasMoved = false
-    /// Ends the gesture (and any limit preview) when the button is released, even if
-    /// the menu swallowed the mouse-up.
-    @State private var releaseWatch: Timer?
+    @State private var isPreviewing = false
+    @GestureState private var gestureInProgress = false
 
     private let thumbSize: CGFloat = 18
     private let markerW: CGFloat = 6
@@ -170,17 +170,17 @@ struct BandSlider: View {
     private let markerH: CGFloat = 28
     private let trackHeight: CGFloat = 4
     private var inset: CGFloat { thumbSize / 2 }
+    private var isPinned: Bool { showBand && lowerBound == upperBound }
+    // The model can briefly lag a marker drag. Keep the visual and accessible value in sync.
+    private var displayedValue: Double {
+        showBand ? BandSliderCore.clampToBand(value, lower: lowerBound, upper: upperBound) : value
+    }
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let midY = geo.size.height / 2
-            // Render the thumb clamped into the band even if the model briefly lags a
-            // marker drag — it must never draw outside the brackets.
-            let renderValue = showBand
-                ? BandSliderCore.clampToBand(value, lower: lowerBound, upper: upperBound)
-                : value
-            let valX = pos(renderValue, w)
+            let valX = pos(displayedValue, w)
             let loX = pos(lowerBound, w)
             let hiX = pos(upperBound, w)
             // The track spans exactly the travel range, so the range ends ARE the track ends:
@@ -189,10 +189,7 @@ struct BandSlider: View {
             // clipping — so a full-width track could never be reached at either end.)
             let trackLeft = pos(range.lowerBound, w)
             let trackRight = pos(range.upperBound, w)
-            // Value fill starts at the left bracket when a band is shown (stays within the
-            // band); otherwise it runs to the track's left end like a normal slider.
-            // A pinned band is a plain value, so it fills like a normal slider.
-            let fillLeft: CGFloat = showBand && !isPinned ? loX : trackLeft
+            let fillLeft = showBand && !isPinned ? loX : trackLeft
 
             ZStack {
                 Capsule()
@@ -213,15 +210,16 @@ struct BandSlider: View {
                     .position(x: (fillLeft + valX) / 2, y: midY)
 
                 if showBand {
-                    marker.position(x: loX, y: midY)
-                    marker.position(x: hiX, y: midY)
+                    keyboardHandle(marker, for: .lower).position(x: loX, y: midY)
+                    keyboardHandle(marker, for: .upper).position(x: hiX, y: midY)
                 }
 
-                thumb.position(x: valX, y: midY)
+                keyboardHandle(thumb, for: .value).position(x: valX, y: midY)
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($gestureInProgress) { _, inProgress, _ in inProgress = true }
                     .onChanged { g in
                         if active != nil, gestureStart != g.startLocation { finishInteraction() }
                         if active == nil {
@@ -235,76 +233,65 @@ struct BandSlider: View {
                             interactionToken = onInteractionBegin?()
                             interactionGate = SliderInteractionGate()
                             gestureStart = g.startLocation
-                            watchForRelease()
                             let start = g.startLocation.x
                             switch handle {
-                            case .lower: grabOffset = loX - start; hasMoved = false
-                            case .upper: grabOffset = hiX - start; hasMoved = false
+                            case .lower: grabOffset = loX - start
+                            case .upper: grabOffset = hiX - start
+                            // On the thumb: keep the grab point. On the bare track: jump there.
                             case .value:
-                                // On the thumb: keep the grab point. On the bare track: jump there.
                                 let onThumb = abs(valX - start) <= inset
                                 grabOffset = onThumb ? valX - start : 0
                                 hasMoved = !onThumb
                             }
                         }
-                        if !hasMoved {
-                            guard g.translation.width != 0 else { return }
-                            hasMoved = true
-                            if active == .value, let marker = BandSliderCore.outwardMarker(
-                                startX: g.startLocation.x, dx: g.translation.width,
-                                width: w, inset: inset, range: range,
-                                value: value, lower: lowerBound, upper: upperBound
-                            ), showBand {
-                                active = marker
-                                grabOffset = (marker == .lower ? loX : hiX) - g.startLocation.x
-                            } else if let grabbed = active {
-                                active = BandSliderCore.stackedMarker(
-                                    grabbed, dx: g.translation.width, width: w, inset: inset,
-                                    range: range, lower: lowerBound, upper: upperBound)
-                            }
-                        }
                         // Preserve the original token until release, including across
                         // redraws from the command that interrupted this gesture.
-                        guard acceptsInteractionMutation() else { return }
-                        let x = g.location.x + grabOffset
-                        switch active ?? .value {
+                        guard var handle = active, acceptsInteractionMutation() else { return }
+                        if !hasMoved {
+                            guard g.translation.width != 0 else { return }
+                            handle = BandSliderCore.resolveStackedMarker(
+                                handle, dx: g.translation.width, lower: lowerBound, upper: upperBound)
+                            active = handle
+                            hasMoved = true
+                        }
+                        let v = editedValue(val(g.location.x + grabOffset, w), for: handle)
+                        guard v != currentValue(for: handle) else { return }
+                        switch handle {
                         case .lower:
-                            let v = min(val(x, w), upperBound)
-                            lowerBound = max(range.lowerBound, v)
-                            onPreview?(lowerBound)
+                            lowerBound = v
+                            isPreviewing = true
+                            onPreview?(v)
                         case .upper:
-                            let v = max(val(x, w), lowerBound)
-                            upperBound = min(range.upperBound, v)
-                            onPreview?(upperBound)
+                            upperBound = v
+                            isPreviewing = true
+                            onPreview?(v)
                         case .value:
-                            // Hard limit: the thumb can never land outside the band, unless
-                            // the band is a pin, which moves with it.
-                            let v = val(x, w)
-                            value = showBand && !isPinned
-                                ? BandSliderCore.clampToBand(v, lower: lowerBound, upper: upperBound)
-                                : v
+                            value = v
                         }
                     }
-                    .onEnded { _ in finishInteraction() }
+                    .onEnded { g in
+                        if gestureStart == g.startLocation { finishInteraction() }
+                    }
             )
         }
         .frame(height: markerH + 2)
-        // DragGesture has no cancel callback. If the popover closes mid-drag, onEnded never
-        // runs and the next drag anywhere would route to the stale handle.
+        // A cancelled gesture resets GestureState even when SwiftUI skips onEnded.
+        .onChange(of: gestureInProgress) { _, inProgress in
+            if !inProgress, active != nil { finishInteraction() }
+        }
         .onDisappear { finishInteraction() }
         .accessibilityRepresentation {
             VStack {
-                Slider(value: accessibleValue, in: range) { Text(label) }
+                Slider(value: accessibleValue(for: .value), in: range) { Text(label) }
                     .accessibilityLabel("\(label) current value")
-                    .accessibilityValue(isPinned
-                        ? "\(Self.percentLabel(value)), fixed" : Self.percentLabel(value))
+                    .accessibilityValue(Self.percentLabel(displayedValue) + (isPinned ? ", fixed" : ""))
                 if showBand {
-                    Slider(value: accessibleLowerBound, in: range) {
+                    Slider(value: accessibleValue(for: .lower), in: range) {
                         Text("\(label) adaptive minimum")
                     }
                     .accessibilityLabel("\(label) adaptive minimum")
                     .accessibilityValue(Self.percentLabel(lowerBound))
-                    Slider(value: accessibleUpperBound, in: range) {
+                    Slider(value: accessibleValue(for: .upper), in: range) {
                         Text("\(label) adaptive maximum")
                     }
                     .accessibilityLabel("\(label) adaptive maximum")
@@ -319,27 +306,14 @@ struct BandSlider: View {
     private func finishInteraction() {
         interactionGate.endPreviewIfCurrent(
             token: interactionToken, isCurrent: isInteractionCurrent,
-            isPreviewing: active == .lower || active == .upper, onPreviewEnd: onPreviewEnd
+            isPreviewing: isPreviewing, onPreviewEnd: onPreviewEnd
         )
         active = nil
         interactionToken = nil
         interactionGate = SliderInteractionGate()
         gestureStart = nil
         hasMoved = false
-        releaseWatch?.invalidate()
-        releaseWatch = nil
-    }
-
-    private func watchForRelease() {
-        releaseWatch?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
-            MainActor.assumeIsolated {
-                if NSEvent.pressedMouseButtons & 1 == 0 { finishInteraction() }
-            }
-        }
-        // .common includes the menu's event-tracking run loop mode.
-        RunLoop.main.add(timer, forMode: .common)
-        releaseWatch = timer
+        isPreviewing = false
     }
 
     private func acceptsInteractionMutation() -> Bool {
@@ -355,12 +329,21 @@ struct BandSlider: View {
         BandSliderCore.value(atX: px, width: w, inset: inset, range: range)
     }
 
-    private var isPinned: Bool {
-        showBand && BandSliderCore.isPinned(lower: lowerBound, upper: upperBound)
-    }
-
     private static func percentLabel(_ value: Double) -> String {
         "\(Int((value * 100).rounded())) percent"
+    }
+
+    private func currentValue(for handle: BandSliderCore.Handle) -> Double {
+        switch handle {
+        case .lower: lowerBound
+        case .upper: upperBound
+        case .value: value
+        }
+    }
+
+    private func editedValue(_ proposed: Double, for handle: BandSliderCore.Handle) -> Double {
+        BandSliderCore.editedValue(proposed, for: handle, range: range, lower: lowerBound,
+                                   upper: upperBound, showBand: showBand, minGap: minGap)
     }
 
     /// Accessibility adjustments are individual edits, so they acquire a fresh token and
@@ -373,41 +356,32 @@ struct BandSlider: View {
         onPreviewEnd?()
     }
 
-    private var accessibleValue: Binding<Double> {
+    private func accessibleValue(for handle: BandSliderCore.Handle) -> Binding<Double> {
         Binding(
-            get: { value },
-            set: { newValue in
-                performAccessibilityEdit {
-                    let ranged = min(range.upperBound, max(range.lowerBound, newValue))
-                    value = showBand && !isPinned
-                        ? BandSliderCore.clampToBand(
-                            ranged, lower: lowerBound, upper: upperBound)
-                        : ranged
-                }
-            }
+            get: { handle == .value ? displayedValue : currentValue(for: handle) },
+            set: { setDiscreteValue($0, for: handle) }
         )
     }
 
-    private var accessibleLowerBound: Binding<Double> {
-        Binding(
-            get: { lowerBound },
-            set: { newValue in
-                performAccessibilityEdit {
-                    lowerBound = min(max(range.lowerBound, newValue), upperBound)
-                }
-            }
-        )
+    private func keyboardHandle<Content: View>(_ content: Content, for handle: BandSliderCore.Handle) -> some View {
+        content.focusable().onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+            let delta = press.key == .rightArrow || press.key == .upArrow ? 0.01 : -0.01
+            let current = handle == .value ? displayedValue : currentValue(for: handle)
+            setDiscreteValue(current + delta, for: handle)
+            return .handled
+        }
     }
 
-    private var accessibleUpperBound: Binding<Double> {
-        Binding(
-            get: { upperBound },
-            set: { newValue in
-                performAccessibilityEdit {
-                    upperBound = max(min(range.upperBound, newValue), lowerBound)
-                }
+    private func setDiscreteValue(_ proposed: Double, for handle: BandSliderCore.Handle) {
+        let v = editedValue(proposed, for: handle)
+        guard v != currentValue(for: handle) else { return }
+        performAccessibilityEdit {
+            switch handle {
+            case .lower: lowerBound = v
+            case .upper: upperBound = v
+            case .value: value = v
             }
-        )
+        }
     }
 
     // MARK: - Pieces

@@ -164,7 +164,7 @@ final class DisplayManager {
         OutputPair(intensity: intensity, whitepoint: whitepoint)
     }
     var commandElevation: Double? {
-        guard let coordinate else { return nil }
+        guard let coordinate = location.coordinate else { return nil }
         return SolarCalculator.elevation(
             at: now(), latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
@@ -382,9 +382,9 @@ final class DisplayManager {
         }
         if coordinate == nil || coordinate! != coord { coordinate = coord }   // avoid spurious invalidation
 
-        let elev = SolarCalculator.elevation(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        let (elev, rising) = SolarCalculator.position(
+            at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
-        let rising = SolarCalculator.isRising(at: date, longitude: coord.longitude)
         // Morning and evening curves differ above the horizon. Where the sun stays below the
         // Day anchor at noon (high-latitude winter) the switch is a step, so fade across it.
         if let lastAdaptiveRising, lastAdaptiveRising != rising { animateNextAdaptiveTarget = true }
@@ -593,6 +593,8 @@ final class DisplayManager {
     private let getDisplayPersistenceKey: (CGDirectDisplayID) -> String
     private let getMainDisplayID: () -> CGDirectDisplayID
     private let defaults: UserDefaults
+    @ObservationIgnored private let controlDefaults: UserDefaults
+    @ObservationIgnored private var lastPublishedControlState: Bool?
     @ObservationIgnored private let onMasterStateChange: (Bool) -> Void
     @ObservationIgnored private let locationPromptActivation: () -> Void
     @ObservationIgnored private let now: () -> Date
@@ -683,6 +685,7 @@ final class DisplayManager {
         transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         suspendedForApp: String? = nil,
         locationPromptActivation: @escaping () -> Void = { NSApplication.shared.activate() },
+        controlDefaults: UserDefaults? = nil,
         onMasterStateChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.gamma = gamma
@@ -691,6 +694,9 @@ final class DisplayManager {
         self.getDisplayPersistenceKey = getDisplayPersistenceKey
         self.getMainDisplayID = getMainDisplayID
         self.defaults = defaults
+        let controlDefaults = controlDefaults ?? defaults
+        self.controlDefaults = controlDefaults
+        self.lastPublishedControlState = controlDefaults.object(forKey: RedlightControlPreferences.stateKey) as? Bool
         self.onMasterStateChange = onMasterStateChange
         self.locationPromptActivation = locationPromptActivation
         self.location = location
@@ -841,15 +847,18 @@ final class DisplayManager {
 
     // MARK: - Displays
 
-    func refreshDisplays(apply: Bool = true) {
+    func refreshDisplays() {
+        refreshDisplays(apply: true)
+    }
+
+    private func refreshDisplays(apply: Bool, calibrationWasReset: Bool = false) {
         // Invalidate cached routing and compositor surfaces even when IDs remain
         // unchanged (for example, a resolution or backing-scale change).
         if apply { gamma.displaysDidChange() }
         // Dedupe defensively — a duplicate ID from the system would otherwise both trap
         // the uniquing dictionary and confuse SwiftUI's Identifiable ForEach.
-        var seen = Set<CGDirectDisplayID>()
-        let ids = getDisplayIDs().filter { seen.insert($0).inserted }
-        let currentIDs = Set(ids)
+        var currentIDs = Set<CGDirectDisplayID>()
+        let ids = getDisplayIDs().filter { currentIDs.insert($0).inserted }
         let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
         let keys = Dictionary(uniqueKeysWithValues: ids.map { id in
             let key = getDisplayPersistenceKey(id)
@@ -862,18 +871,21 @@ final class DisplayManager {
         // Screen-parameter notifications also include harmless desktop changes. Hardware
         // mode changes and display-only wake have their own recovery triggers below.
         let topologyChanged = Set(previous.keys) != currentIDs || !replaced.isEmpty
-        if apply, !isTerminating, topologyChanged {
-            gamma.restoreAll()
-            scheduleDisplayRecovery()
-        } else {
-            // Forget a disconnected display's captured gamma table. If the same CoreGraphics
-            // ID is reused when it reconnects, GammaController must snapshot its fresh
-            // calibration.
-            for display in displays where !currentIDs.contains(display.id)
-                && (display.isEnabled || display.isInverted || displayTransitions[display.id] != nil)
-            {
-                gamma.restore(display.id)
+        if topologyChanged, !calibrationWasReset {
+            if apply, !isTerminating {
+                gamma.resetForDisplayRecovery()
+                scheduleDisplayRecovery()
+            } else {
+                // Release a disconnected display during shutdown without resetting others mid-fade.
+                for display in displays where !currentIDs.contains(display.id)
+                    && (display.isEnabled || display.isInverted || displayTransitions[display.id] != nil)
+                {
+                    gamma.restore(display.id)
+                }
             }
+        }
+        if isTerminating, topologyChanged {
+            shutdownDisplayAmounts = shutdownDisplayAmounts.filter { currentIDs.contains($0.key) && !replaced.contains($0.key) }
         }
         for id in Array(displayTransitions.keys) where !currentIDs.contains(id) || replaced.contains(id) {
             cancelDisplayTransition(id)
@@ -900,9 +912,7 @@ final class DisplayManager {
         }
         if apply {
             synchronizeTransitionState(at: transitionUptime())
-            // Always re-write: a resolution or refresh-rate change can reset the LUT without
-            // changing the display set. Writing an identical table is invisible, so this
-            // costs nothing on the Dock/minimize notifications.
+            // A resolution or refresh-rate change can reset the LUT without changing display IDs.
             applyToActiveDisplays()
         }
         finishTerminationIfReady()
@@ -973,6 +983,7 @@ final class DisplayManager {
                 persist(false, key)
             }
             for id in displays.map(\.id) { setEnabled(false, for: id) }
+            if isPaused || isPeeking { endPauseIntoFadeOut() }
         }
         save()
     }
@@ -988,10 +999,14 @@ final class DisplayManager {
     }
 
     private func publishMasterState(_ value: Bool) {
-        guard defaults.object(forKey: "redlight.isOn") == nil
-                || defaults.bool(forKey: "redlight.isOn") != value else { return }
-        defaults.set(value, forKey: "redlight.isOn")
-        defaults.synchronize()
+        // The display owner is the sole writer. Slider saves need no preference reads.
+        guard lastPublishedControlState != value else { return }
+        controlDefaults.set(value, forKey: RedlightControlPreferences.stateKey)
+        guard controlDefaults.synchronize() else {
+            lastPublishedControlState = nil
+            return
+        }
+        lastPublishedControlState = value
         onMasterStateChange(value)
     }
 
@@ -1131,13 +1146,12 @@ final class DisplayManager {
             // second time and make the display jump immediately after Save.
             if let coord = location.coordinate {
                 let date = now()
-                let elev = SolarCalculator.elevation(
+                let (elev, rising) = SolarCalculator.position(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let minElev = SolarCalculator.elevationAtSolarMidnight(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let curve = adaptiveCurve(
-                    elevation: elev, minElevation: minElev,
-                    rising: SolarCalculator.isRising(at: date, longitude: coord.longitude),
+                    elevation: elev, minElevation: minElev, rising: rising,
                     time: (date: date, longitude: coord.longitude))
                 adaptiveIntensityOffset = desiredIntensity - curve.intensity
                 adaptiveWhitepointOffset = desiredWhitepoint - curve.whitepoint
@@ -1198,7 +1212,8 @@ final class DisplayManager {
         // A pause that ended during sleep must resume before the filter is reapplied.
         refreshPause()
         synchronizeTransitionState(at: transitionUptime())
-        if !isTerminating { gamma.restoreAll() }
+        guard !isTerminating else { return }
+        gamma.resetForDisplayRecovery()
         guard adaptiveEnabled else { applyToActiveDisplays(); return }
         requestLocationIfNeeded(at: now(), force: true)
         if location.coordinate == nil { applyToActiveDisplays() }
@@ -1209,26 +1224,24 @@ final class DisplayManager {
     func handleDisplayWake() {
         guard !isTerminating else { return }
         refreshPause()
-        gamma.restoreAll()
-        refreshDisplays()
+        gamma.resetForDisplayRecovery()
+        refreshDisplays(apply: true, calibrationWasReset: true)
         scheduleDisplayRecovery()
     }
 
     func handleDisplayReconfiguration(_ flags: CGDisplayChangeSummaryFlags) {
-        guard !isTerminating, !flags.contains(.beginConfigurationFlag) else { return }
-        let hardwareChanges: CGDisplayChangeSummaryFlags = [
-            .setModeFlag, .addFlag, .removeFlag, .enabledFlag, .disabledFlag,
-            .mirrorFlag, .unMirrorFlag,
-        ]
-        guard !flags.intersection(hardwareChanges).isEmpty else { return }
+        guard !isTerminating, DisplayReconfigurationObserver.isHardwareChange(flags) else { return }
         scheduleDisplayRecovery()
     }
 
     private func scheduleDisplayRecovery() {
         guard !isTerminating else { return }
-        displayRecoveryTimer?.invalidate()
         // Coalesce link-training events. Reset ColorSync again after the connection
         // settles, before capturing calibration, instead of layering onto a stale LUT.
+        if let displayRecoveryTimer {
+            displayRecoveryTimer.fireDate = Date(timeIntervalSinceNow: 2)
+            return
+        }
         let timer = Timer(timeInterval: 2, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.completeDisplayRecovery() }
         }
@@ -1242,8 +1255,8 @@ final class DisplayManager {
         displayRecoveryTimer?.invalidate()
         displayRecoveryTimer = nil
         guard !isTerminating else { return }
-        gamma.restoreAll()
-        refreshDisplays()
+        gamma.resetForDisplayRecovery()
+        refreshDisplays(apply: true, calibrationWasReset: true)
     }
 
     // MARK: - Output transition
@@ -1409,22 +1422,8 @@ final class DisplayManager {
         startTransitionTimerIfNeeded()
     }
 
-    private func currentDisplayAmount(
-        for displayID: CGDirectDisplayID,
-        fallback: Double
-    ) -> Double {
-        guard let transition = displayTransitions[displayID], displayTransitionDuration > 0
-        else { return fallback }
-        let elapsed = max(0, transitionUptime() - transition.startedAt)
-        let progress = min(1, elapsed / displayTransitionDuration)
-        let eased = Self.smoothstep(progress)
-        return transition.fromAmount
-            + (transition.toAmount - transition.fromAmount) * eased
-    }
-
     func tickDisplayTransitions() {
-        let changedIDs = updateDisplayTransitions(at: transitionUptime())
-        applyDisplayTransitionFrame(changedIDs)
+        applyDisplayTransitionFrame(at: transitionUptime())
         stopTransitionTimerIfIdle()
         finishTerminationIfReady()
     }
@@ -1432,15 +1431,7 @@ final class DisplayManager {
     /// Deterministic test hook. Production uses each display transition's own monotonic start
     /// time; tests can advance every active display to the same normalized point directly.
     func advanceDisplayTransitions(toProgress rawProgress: Double) {
-        var changedIDs = Set<CGDirectDisplayID>()
-        for (displayID, transition) in Array(displayTransitions) {
-            if updateDisplayTransition(
-                displayID, transition: transition, toProgress: rawProgress)
-            {
-                changedIDs.insert(displayID)
-            }
-        }
-        applyDisplayTransitionFrame(changedIDs)
+        applyDisplayTransitionFrame(at: 0, progress: rawProgress)
         stopTransitionTimerIfIdle()
         finishTerminationIfReady()
     }
@@ -1448,48 +1439,39 @@ final class DisplayManager {
     @discardableResult
     private func updateDisplayTransition(
         _ displayID: CGDirectDisplayID,
-        transition: DisplayTransition,
-        toProgress rawProgress: Double
+        at timestamp: TimeInterval,
+        progress explicitProgress: Double? = nil
     ) -> Bool {
-        guard displayTransitions[displayID] != nil else { return false }
+        guard var transition = displayTransitions[displayID] else { return false }
+        let rawProgress = explicitProgress ?? (timestamp - transition.startedAt) / displayTransitionDuration
         let progress = min(1, max(0, rawProgress))
         let eased = Self.smoothstep(progress)
-        var next = transition
-        next.currentAmount = transition.fromAmount
+        transition.currentAmount = transition.fromAmount
             + (transition.toAmount - transition.fromAmount) * eased
         if isTerminating {
-            shutdownDisplayAmounts[displayID] = next.currentAmount
+            shutdownDisplayAmounts[displayID] = transition.currentAmount
         }
 
         if progress >= 1 {
             displayTransitions.removeValue(forKey: displayID)
             fadingDisplayIDs.remove(displayID)
         } else {
-            displayTransitions[displayID] = next
+            displayTransitions[displayID] = transition
         }
         return true
     }
 
-    private func updateDisplayTransitions(
-        at timestamp: TimeInterval
-    ) -> Set<CGDirectDisplayID> {
-        var changedIDs = Set<CGDirectDisplayID>()
-        for (displayID, transition) in Array(displayTransitions) {
-            let elapsed = max(0, timestamp - transition.startedAt)
-            if updateDisplayTransition(
-                displayID,
-                transition: transition,
-                toProgress: elapsed / displayTransitionDuration)
-            {
-                changedIDs.insert(displayID)
-            }
+    private func applyDisplayTransitionFrame(
+        at timestamp: TimeInterval, progress: Double? = nil, applyAll: Bool = false
+    ) {
+        guard !displayTransitions.isEmpty else {
+            if applyAll { applyToActiveDisplays() }
+            return
         }
-        return changedIDs
-    }
-
-    private func applyDisplayTransitionFrame(_ displayIDs: Set<CGDirectDisplayID>) {
-        for display in displays where displayIDs.contains(display.id) {
-            applyToDisplay(display)
+        let rendered = currentRenderedOutput()
+        for display in displays {
+            let advanced = updateDisplayTransition(display.id, at: timestamp, progress: progress)
+            if advanced || applyAll { applyToDisplay(display, rendered: rendered) }
         }
     }
 
@@ -1530,14 +1512,8 @@ final class DisplayManager {
             outputChanged = updateOutputTransition(
                 toProgress: elapsed / adaptiveTransitionDuration)
         }
-        let changedDisplayIDs = updateDisplayTransitions(at: timestamp)
         if updatePauseTransition(at: timestamp) { outputChanged = true }
-
-        if outputChanged {
-            applyToActiveDisplays()
-        } else {
-            applyDisplayTransitionFrame(changedDisplayIDs)
-        }
+        applyDisplayTransitionFrame(at: timestamp, applyAll: outputChanged)
         stopTransitionTimerIfIdle()
         finishTerminationIfReady()
     }
@@ -1549,7 +1525,9 @@ final class DisplayManager {
             let elapsed = max(0, timestamp - transition.startedAt)
             updateOutputTransition(toProgress: elapsed / adaptiveTransitionDuration)
         }
-        _ = updateDisplayTransitions(at: timestamp)
+        if !displayTransitions.isEmpty {
+            for display in displays { updateDisplayTransition(display.id, at: timestamp) }
+        }
         updatePauseTransition(at: timestamp)
         stopTransitionTimerIfIdle()
     }
@@ -1567,23 +1545,26 @@ final class DisplayManager {
         shutdownCompletion = nil
         transitionTimer?.invalidate()
         transitionTimer = nil
+        shutdownDisplayAmounts.removeAll()
         gamma.restoreAll()
         completion()
     }
 
     private static func smoothstep(_ progress: Double) -> Double {
-        let p = min(1, max(0, progress))
-        return p * p * (3 - 2 * p)
+        progress * progress * (3 - 2 * progress)
     }
 
     // MARK: - Apply
 
     private func applyToActiveDisplays() {
-        for display in displays { applyToDisplay(display) }
+        let rendered = currentRenderedOutput()
+        for display in displays { applyToDisplay(display, rendered: rendered) }
     }
 
-    private func applyToDisplay(_ display: DisplayInfo) {
-        let rendered = currentRenderedOutput()
+    private func applyToDisplay(_ display: DisplayInfo, rendered: OutputPair? = nil) {
+        // A display that joined after shutdown started never participated in this fade.
+        if isTerminating, shutdownDisplayAmounts[display.id] == nil { return }
+        let rendered = rendered ?? currentRenderedOutput()
         let amount = pauseLevel * (shutdownDisplayAmounts[display.id]
             ?? displayTransitions[display.id]?.currentAmount
             ?? (display.isEnabled ? 1 : 0))
@@ -1604,13 +1585,16 @@ final class DisplayManager {
     private(set) var pausedUntil: Date?
     var isPaused: Bool { pausedUntil != nil }
     /// The current pause's total length, persisted beside `pausedUntil`. It anchors the
-    /// countdown's schedule and caps a pause that a clock change pushed further out.
+    /// countdown and caps duration-based pauses after a backward clock change.
     private(set) var pauseLength: TimeInterval = Defaults.pauseDuration
+    @ObservationIgnored private var pauseUsesDeadline = false
 
     /// Whole minutes left, rounded up so the countdown reads 1 until the pause ends.
     /// The CLI and Siri status say "N min left" at any length, so scripts parse one form.
     nonisolated static func pauseMinutesLeft(until: Date, now: Date) -> Int {
-        max(1, Int((until.timeIntervalSince(now) / 60).rounded(.up)))
+        let minutes = until.timeIntervalSince(now) / 60
+        guard minutes > 1 else { return 1 }
+        return Int(exactly: minutes.rounded(.up)) ?? Int.max
     }
 
     /// Popover countdown: "30 min" under an hour, then "1 h 12 m", from the same rounded-up
@@ -1630,30 +1614,42 @@ final class DisplayManager {
 
     /// A pause length in the same words, such as "30 min" or "2 h".
     nonisolated static func pauseLengthText(_ seconds: TimeInterval) -> String {
-        durationText(minutes: seconds.isFinite ? max(1, Int((seconds / 60).rounded())) : 1)
+        let minutes = (seconds / 60).rounded()
+        return durationText(minutes: minutes.isFinite && minutes > 1 ? Int(exactly: minutes) ?? Int.max : 1)
     }
 
     nonisolated private static func durationText(minutes: Int) -> String {
         minutes < 60 ? "\(minutes) min" : hoursText(minutes)
     }
 
-    /// Time to the next sunrise at the current coordinate (manual, fix or time zone); nil
-    /// without a coordinate or when the sun does not rise within 24 hours.
-    func secondsUntilSunrise() -> TimeInterval? {
+    /// The next sunrise at the current coordinate (manual, fix or time zone).
+    func nextSunrise() -> Date? {
         guard let coord = location.coordinate else { return nil }
-        let date = now()
-        return SunCycle.nextSunrise(after: date, latitude: coord.latitude, longitude: coord.longitude)
-            .map { $0.timeIntervalSince(date) }
+        return SunCycle.nextSunrise(after: now(), latitude: coord.latitude, longitude: coord.longitude)
     }
 
     /// Suspend the tint (not Invert) for `duration`, clamped to one minute through one day.
     /// Replaces a pause already running. Requires a filter to pause.
     @discardableResult
     func pause(for duration: TimeInterval = Defaults.pauseDuration) -> Bool {
+        let length = duration.isFinite ? clamp(duration, to: Defaults.pauseLengthRange) : Defaults.pauseDuration
+        return startPause(until: now().addingTimeInterval(length), length: length, usesDeadline: false)
+    }
+
+    /// Pause to an absolute event time, which may be nearer or farther than a fixed duration allows.
+    @discardableResult
+    func pause(until deadline: Date) -> Bool {
+        let length = deadline.timeIntervalSince(now())
+        guard length.isFinite, length > 0 else { return false }
+        return startPause(until: deadline, length: length, usesDeadline: true)
+    }
+
+    private func startPause(until deadline: Date, length: TimeInterval, usesDeadline: Bool) -> Bool {
         guard !isTerminating, isOn else { return false }
         isPeeking = false
-        pauseLength = duration.isFinite ? clamp(duration, to: Defaults.pauseLengthRange) : Defaults.pauseDuration
-        pausedUntil = now().addingTimeInterval(pauseLength)
+        pauseLength = length
+        pauseUsesDeadline = usesDeadline
+        pausedUntil = deadline
         persistPause()
         startPauseTransition(to: pauseTarget, duration: displayTransitionDuration)
         publishMasterState()
@@ -1721,12 +1717,12 @@ final class DisplayManager {
         guard let pausedUntil, !isTerminating else { return }
         let current = now()
         if pausedUntil <= current { resume(); return }
-        let latest = current.addingTimeInterval(pauseLength)
-        if pausedUntil > latest {
-            self.pausedUntil = latest
+        if !pauseUsesDeadline, pausedUntil.timeIntervalSince(current) > pauseLength {
+            self.pausedUntil = current.addingTimeInterval(pauseLength)
             persistPause()
+        } else {
+            schedulePauseTimer()
         }
-        schedulePauseTimer()
     }
 
     private func loadPause() {
@@ -1735,8 +1731,16 @@ final class DisplayManager {
         let current = now()
         let until = Date(timeIntervalSince1970: raw)
         if until > current, isOn {
-            pauseLength = Self.loadPauseLength(defaults)
-            pausedUntil = min(until, current.addingTimeInterval(pauseLength))
+            pauseUsesDeadline = defaults.bool(forKey: "redlight.pauseUsesDeadline")
+            if pauseUsesDeadline {
+                let length = defaults.object(forKey: "redlight.pauseLength") as? Double
+                pauseLength = length.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+                    ?? until.timeIntervalSince(current)
+                pausedUntil = until
+            } else {
+                pauseLength = Self.loadPauseLength(defaults)
+                pausedUntil = min(until, current.addingTimeInterval(pauseLength))
+            }
             pauseLevel = 0
         }
         persistPause()
@@ -1753,6 +1757,7 @@ final class DisplayManager {
     private func persistPause() {
         persist(pausedUntil?.timeIntervalSince1970, "redlight.pausedUntil")
         persist(pausedUntil == nil ? nil : pauseLength, "redlight.pauseLength")
+        persist(pausedUntil != nil && pauseUsesDeadline ? true : nil, "redlight.pauseUsesDeadline")
         schedulePauseTimer()
     }
 

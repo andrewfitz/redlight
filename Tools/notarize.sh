@@ -5,10 +5,19 @@
 #   Tools/notarize.sh path/to/Redlight.app TEAM_ID
 set -euo pipefail
 
+if [[ $# -ne 2 || -z "${2:-}" || ! -d "${1:-}/Contents" ]]; then
+    echo "usage: $0 path/to/Redlight.app TEAM_ID" >&2
+    exit 2
+fi
 APP="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 TEAM="$2"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/redlight-notarize.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+REPLACEMENT=""
+cleanup() {
+    if [[ -n "$REPLACEMENT" ]]; then rm -rf "$REPLACEMENT"; fi
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
 ARCHIVE="$WORK/Redlight.xcarchive"
 
 # xcodebuild only distributes archives, so wrap the SwiftPM-built app in a minimal one.
@@ -44,7 +53,8 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$WORK/upload" \
     || { cat "$WORK/upload.log" >&2; exit 1; }
 
 # The upload returns before Apple's verdict; the stapled export succeeds once accepted.
-for attempt in $(seq 1 960); do
+START=$SECONDS
+while true; do
     if xcodebuild -exportNotarizedApp -archivePath "$ARCHIVE" \
         -exportPath "$WORK/notarized" >"$WORK/notary.log" 2>&1; then
         break
@@ -54,17 +64,30 @@ for attempt in $(seq 1 960); do
         echo "error: notarization failed; see the Xcode Organizer for Apple's log." >&2
         exit 1
     fi
-    if (( attempt == 960 )); then
+    REMAINING=$((14400 - (SECONDS - START)))
+    if (( REMAINING <= 0 )); then
         cat "$WORK/notary.log" >&2
         echo "error: notarization did not finish within four hours." >&2
         exit 1
     fi
-    sleep 15
+    sleep "$((REMAINING < 15 ? REMAINING : 15))"
 done
 
 NOTARIZED="$WORK/notarized/Redlight.app"
 xcrun stapler validate "$NOTARIZED"
 spctl --assess --type execute "$NOTARIZED"
-rm -rf "$APP"
-ditto "$NOTARIZED" "$APP"
+# Stage the verified app on the destination volume and atomically exchange paths.
+REPLACEMENT="$(mktemp -d "$(dirname "$APP")/.redlight-notarized.XXXXXX")"
+ditto "$NOTARIZED" "$REPLACEMENT/Redlight.app"
+python3 - "$REPLACEMENT/Redlight.app" "$APP" <<'PY'
+import ctypes, os, sys
+
+rename = ctypes.CDLL(None, use_errno=True).renamex_np
+rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+rename.restype = ctypes.c_int
+RENAME_SWAP = 0x00000002
+if rename(os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2]), RENAME_SWAP) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error), sys.argv[2])
+PY
 echo "Notarized and stapled: $APP"

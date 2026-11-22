@@ -33,9 +33,12 @@ enum SidecarBenchmark {
             else { return nil }
             return (screen, id)
         }
-        guard let (screen, id) = displays.first(where: { DisplayFilterController.isSidecarDisplay($0.1) }),
-              let window = SidecarFilterWindow(screen: screen) else {
+        guard let (screen, id) = displays.first(where: { DisplayFilterController.isSidecarDisplay($0.1) }) else {
             print("Connect a Sidecar iPad to run this benchmark.")
+            exit(1)
+        }
+        guard let window = SidecarFilterWindow(screen: screen) else {
+            print("The Sidecar filter window is unavailable on this Mac.")
             exit(1)
         }
         defer { window.close() }
@@ -45,6 +48,8 @@ enum SidecarBenchmark {
         let routedWindow = DisplayFilterController(gamma: Sink(), sidecar: WindowSink(window: window, screen: screen))
 
         func measure(_ name: String, run: () -> Void) {
+            // Warm each operation before timing, including initial route discovery.
+            for _ in 0..<100 { autoreleasepool { run() } }
             var samples: [Double] = []
             for _ in 0..<5 {
                 let start = ProcessInfo.processInfo.systemUptime

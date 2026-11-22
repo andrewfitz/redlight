@@ -4,13 +4,14 @@ import Carbon.HIToolbox
 /// A global shortcut as a physical key plus Carbon modifier flags, the form
 /// `RegisterEventHotKey` takes. The key's label follows the current keyboard layout.
 struct KeyShortcut: Codable, Hashable, Sendable {
-    var keyCode: UInt32
-    var modifiers: UInt32
+    let keyCode: UInt32
+    let modifiers: UInt32
 
     enum Problem: Equatable {
         /// Global shortcuts with a single modifier would steal ordinary app and text keys.
         case needsModifiers
         case reservedBySystem
+        case invalidKey
     }
 
     /// Extra keys (often mapped by Stream Deck and similar devices) that apps never use.
@@ -25,6 +26,16 @@ struct KeyShortcut: Codable, Hashable, Sendable {
 
     init(keyCode: UInt16, flags: NSEvent.ModifierFlags) {
         self.init(keyCode: UInt32(keyCode), modifiers: Self.carbonModifiers(flags))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case keyCode, modifiers
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(keyCode: values.decode(UInt32.self, forKey: .keyCode),
+                      modifiers: values.decode(UInt32.self, forKey: .modifiers))
     }
 
     static let supportedModifiers = UInt32(controlKey | optionKey | shiftKey | cmdKey)
@@ -50,6 +61,7 @@ struct KeyShortcut: Codable, Hashable, Sendable {
     /// F13–F19 may stand alone. Anything else needs ⌘ or ⌃ plus a second modifier, which
     /// also excludes the ⌥/⌥⇧-only combinations macOS no longer delivers as hotkeys.
     func problem(reserved: Set<KeyShortcut>) -> Problem? {
+        guard UInt16(exactly: keyCode) != nil else { return .invalidKey }
         if reserved.contains(self) { return .reservedBySystem }
         if Self.standaloneKeys.contains(keyCode) { return nil }
         let count = modifiers.nonzeroBitCount
@@ -91,7 +103,8 @@ struct KeyShortcut: Codable, Hashable, Sendable {
 
     /// The unmodified character for a key on the active layout (Dvorak, AZERTY, …).
     private static func layoutCharacter(_ keyCode: UInt32) -> String? {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+        guard let keyCode = UInt16(exactly: keyCode),
+              let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
               let property = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
         else { return nil }
         let layoutData = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue() as Data
@@ -103,8 +116,8 @@ struct KeyShortcut: Codable, Hashable, Sendable {
                 return OSStatus(paramErr)
             }
             return UCKeyTranslate(
-                layout, UInt16(keyCode), UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
-                OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState,
+                layout, keyCode, UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                OptionBits(kUCKeyTranslateNoDeadKeysMask), &deadKeyState,
                 characters.count, &length, &characters)
         }
         guard status == noErr, length > 0 else { return nil }

@@ -73,8 +73,9 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
 @Observable
 final class ShortcutStore {
     private(set) var shortcuts: [ShortcutAction: KeyShortcut] = [:]
-    /// Assigned but refused by macOS, usually because another app owns the combination.
+    /// Assigned but unavailable because the system or another app owns the combination.
     var unavailable: Set<ShortcutAction> = []
+    private(set) var systemReserved: Set<KeyShortcut>
     /// True while a recorder listens, so pressing an assigned shortcut records it.
     var isRecording = false {
         didSet { if isRecording != oldValue { onChange?() } }
@@ -83,15 +84,21 @@ final class ShortcutStore {
     private(set) var layoutGeneration = 0
     @ObservationIgnored var onChange: (() -> Void)?
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let reservedShortcuts: () -> Set<KeyShortcut>
     @ObservationIgnored nonisolated(unsafe) private var layoutObserver: NSObjectProtocol?
     private static let key = "redlight.shortcuts"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, reserved: @escaping () -> Set<KeyShortcut> = KeyShortcut.systemReserved) {
         self.defaults = defaults
+        reservedShortcuts = reserved
+        systemReserved = reserved()
         if let data = defaults.data(forKey: Self.key),
            let saved = try? JSONDecoder().decode([String: KeyShortcut].self, from: data) {
-            for (name, shortcut) in saved {
-                if let action = ShortcutAction(rawValue: name) { shortcuts[action] = shortcut }
+            var used = Set<KeyShortcut>()
+            for action in ShortcutAction.allCases {
+                guard let shortcut = saved[action.rawValue], shortcut.problem(reserved: []) == nil,
+                      used.insert(shortcut).inserted else { continue }
+                shortcuts[action] = shortcut
             }
         }
         layoutObserver = DistributedNotificationCenter.default().addObserver(
@@ -108,9 +115,23 @@ final class ShortcutStore {
 
     func shortcut(for action: ShortcutAction) -> KeyShortcut? { shortcuts[action] }
 
+    func refreshSystemShortcuts() {
+        let current = reservedShortcuts()
+        if systemReserved != current {
+            systemReserved = current
+            onChange?()
+        } else if unavailable.contains(where: { action in
+            shortcuts[action].map { !current.contains($0) } ?? false
+        }) {
+            // Another app may have released its hotkey since the last window opening.
+            onChange?()
+        }
+    }
+
     /// Assigns `shortcut`, taking it from any other action. Returns that previous owner.
     @discardableResult
     func set(_ shortcut: KeyShortcut?, for action: ShortcutAction) -> ShortcutAction? {
+        guard shortcut?.problem(reserved: []) == nil, shortcuts[action] != shortcut else { return nil }
         var previousOwner: ShortcutAction?
         if let shortcut,
            let owner = shortcuts.first(where: { $0.value == shortcut && $0.key != action })?.key {
@@ -123,6 +144,7 @@ final class ShortcutStore {
     }
 
     func useSuggested(reserved: Set<KeyShortcut>) {
+        let previous = shortcuts
         for action in ShortcutAction.allCases {
             guard let suggested = action.suggested, suggested.problem(reserved: reserved) == nil else { continue }
             // As in `set`: a combination belongs to one action, so take it from another.
@@ -131,10 +153,11 @@ final class ShortcutStore {
             }
             shortcuts[action] = suggested
         }
-        commit()
+        if shortcuts != previous { commit() }
     }
 
     func clearAll() {
+        guard !shortcuts.isEmpty else { return }
         shortcuts.removeAll()
         commit()
     }

@@ -13,49 +13,79 @@ protocol ValueReadout: AnyObject {
 final class ValueHUD: ValueReadout {
     private var panel: NSPanel?
     private var host: NSHostingView<ValueHUDView>?
+    private var size = CGSize.zero
     private var hideTask: Task<Void, Never>?
+    private var isFading = false
 
     func show(_ text: String, level: Double?) {
         let panel = panel ?? makePanel()
         self.panel = panel
-        // A held step shortcut calls this at the key repeat rate. Building a hosting view
-        // costs well over a millisecond each time; updating the existing one does not.
+        // Reuse the hosting view and avoid resizing or ordering the panel on each key repeat.
         let view = ValueHUDView(text: text, level: level)
-        let host: NSHostingView<ValueHUDView>
-        if let existing = self.host {
-            existing.rootView = view
-            host = existing
+        let shouldAnnounce = host?.rootView.text != text || !panel.isVisible
+        if let host {
+            if host.rootView != view {
+                host.rootView = view
+                updateSize(from: host)
+            }
         } else {
-            host = NSHostingView(rootView: view)
+            let host = NSHostingView(rootView: view)
             self.host = host
             panel.contentView = host
+            updateSize(from: host)
         }
-        let fitting = host.fittingSize
-        let size = CGSize(width: fitting.width.rounded(.up), height: fitting.height.rounded(.up))
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) }
             ?? NSScreen.main
         if let visible = screen?.visibleFrame {
-            panel.setFrame(CGRect(x: visible.midX - size.width / 2, y: visible.minY + visible.height * 0.16,
-                                  width: size.width, height: size.height), display: true)
+            let frame = CGRect(x: (visible.midX - size.width / 2).rounded(),
+                               y: (visible.minY + visible.height * 0.16).rounded(),
+                               width: size.width, height: size.height)
+            if panel.frame != frame { panel.setFrame(frame, display: true) }
         }
-        panel.alphaValue = 1
-        panel.orderFrontRegardless()
-        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
-            .announcement: text,
-            .priority: NSAccessibilityPriorityLevel.high.rawValue,
-        ])
 
         hideTask?.cancel()
+        if isFading {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                panel.animator().alphaValue = 1
+            }
+            isFading = false
+        }
+        if !panel.isVisible {
+            panel.alphaValue = 1
+            panel.orderFrontRegardless()
+        }
+        if shouldAnnounce, let application = NSApp {
+            NSAccessibility.post(element: application, notification: .announcementRequested, userInfo: [
+                .announcement: text,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ])
+        }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))
             guard !Task.isCancelled, let panel = self?.panel else { return }
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                panel.orderOut(nil)
-            } else {
-                await NSAnimationContext.runAnimationGroup { $0.duration = 0.25; panel.animator().alphaValue = 0 }
-                if !Task.isCancelled { panel.orderOut(nil) }
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                self?.isFading = true
+                await NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.25
+                    panel.animator().alphaValue = 0
+                }
             }
+            guard !Task.isCancelled else { return }
+            self?.isFading = false
+            panel.orderOut(nil)
         }
+    }
+
+    private func updateSize(from host: NSHostingView<ValueHUDView>) {
+        let fitting = host.fittingSize
+        size = CGSize(width: fitting.width.rounded(.up), height: fitting.height.rounded(.up))
+    }
+
+    isolated deinit {
+        hideTask?.cancel()
+        panel?.orderOut(nil)
     }
 
     private func makePanel() -> NSPanel {
@@ -74,7 +104,7 @@ final class ValueHUD: ValueReadout {
     }
 }
 
-private struct ValueHUDView: View {
+private struct ValueHUDView: View, Equatable {
     let text: String
     let level: Double?
 
@@ -84,6 +114,7 @@ private struct ValueHUDView: View {
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
             if let level {
                 Capsule()
                     .fill(Color.primary.opacity(0.15))

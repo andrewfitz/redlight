@@ -8,10 +8,14 @@ enum AboutInfo {
     static let repositoryURL = URL(string: "https://github.com/andrewfitz/redlight")!
     static let repositoryDisplay = "github.com/andrewfitz/redlight"
 
-    static func version(
-        shortVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-        build: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-    ) -> String {
+    private static let bundledVersion = version(
+        shortVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+        build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    )
+
+    static func version() -> String { bundledVersion }
+
+    static func version(shortVersion: String?, build: String?) -> String {
         let short = normalized(shortVersion) ?? "development"
         guard let build = normalized(build), build != short else { return short }
         return "\(short) (\(build))"

@@ -20,7 +20,8 @@ private final class OwnershipBundleLocator: NSObject {}
             // Models, recovery, preference writes and gamma writes are represented by
             // distinct injected callbacks. A duplicate cannot enter any of them.
             for name in ["recovery", "manager", "preferences", "gamma", "entered"] { record(name) }
-            while !FileManager.default.fileExists(atPath: folder.appendingPathComponent("stop").path) {
+            // Reap the worker even if the test runner crashes before signaling it.
+            while getppid() != 1, !FileManager.default.fileExists(atPath: folder.appendingPathComponent("stop").path) {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
             }
             record("termination")
@@ -41,20 +42,20 @@ private final class OwnershipBundleLocator: NSObject {}
         let process = Process()
         let host = try CommandClient.realExecutableURL()
         process.executableURL = host
-        process.arguments = ["--testing-library", "swift-testing", "--filter", "OwnershipWorkerSuite.worker"]
+        var arguments: [String] = []
         if host.lastPathComponent == "swiftpm-testing-helper" {
-            // The helper consumes this leading pair before forwarding the rest
-            // to the test entry point. It dlopens the Mach-O file, not the .xctest
-            // directory. An appended flag silently launches no tests on Xcode 27.
+            // The helper consumes this leading pair and opens the bundle's executable.
             let executable = try #require(Bundle(for: OwnershipBundleLocator.self).executableURL)
-            process.arguments?.insert(contentsOf: ["--test-bundle-path", executable.path], at: 0)
+            arguments = ["--test-bundle-path", executable.path]
         }
+        arguments += ["--testing-library", "swift-testing", "--filter", "OwnershipWorkerSuite/worker"]
+        process.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         environment["REDLIGHT_OWNERSHIP_WORKER_DIRECTORY"] = directory.path
         environment["REDLIGHT_OWNERSHIP_WORKER_PORT"] = portName
         process.environment = environment
         let logURL = directory.appendingPathComponent("worker.log")
-        let invocation = "Host: \(host.path)\nArguments: \(process.arguments ?? [])\n"
+        let invocation = "Host: \(host.path)\nArguments: \(arguments)\n"
         FileManager.default.createFile(atPath: logURL.path, contents: Data(invocation.utf8))
         let log = try FileHandle(forWritingTo: logURL)
         try log.seekToEnd()
@@ -87,12 +88,15 @@ private final class OwnershipBundleLocator: NSObject {}
         let a = directory.appendingPathComponent("a")
         let b = directory.appendingPathComponent("b")
         let name = "com.redlight.test.\(UUID().uuidString)"
-        let first = try worker(directory: a, portName: name)
-        let second = try worker(directory: b, portName: name)
+        var processes: [Process] = []
         defer {
-            for process in [first, second] where process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            for process in processes where process.isRunning { kill(process.processIdentifier, SIGKILL) }
             try? FileManager.default.removeItem(at: directory)
         }
+        let first = try worker(directory: a, portName: name)
+        processes.append(first)
+        let second = try worker(directory: b, portName: name)
+        processes.append(second)
         try await waitUntil(diagnostics: [a, b]) {
             (exists(a, "entered") && exists(b, "result")) || (exists(b, "entered") && exists(a, "result"))
         }

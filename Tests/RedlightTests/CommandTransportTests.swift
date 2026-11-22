@@ -33,7 +33,7 @@ import Testing
         withExtendedLifetime(server) {}
     }
 
-    @Test @MainActor func requestReplyOnMainRunLoopFromDetachedClient() async throws {
+    @Test @MainActor func requestReplyOnMainRunLoopFromDefaultClient() async throws {
         let name = "com.redlight.test.\(UUID().uuidString)"
         let server = try CommandServer.reserve(name: name)
         var received: [RedlightCommand] = []
@@ -41,9 +41,7 @@ import Testing
             received.append(command)
             return Status(on: true, color: .init(set: 42, target: 42))
         }
-        let result = try await Task.detached {
-            try CommandClient.sendSynchronously(.color(42), portName: name)
-        }.value
+        let result = try await CommandClient(portName: name).execute(.color(42))
         #expect(result.on && result.color.set == 42)
         #expect(received == [.color(42)])
         withExtendedLifetime(server) {}

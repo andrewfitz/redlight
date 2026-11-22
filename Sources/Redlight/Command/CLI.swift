@@ -15,8 +15,9 @@ private struct CommandArguments: ParsableArguments {
 enum CLIParser {
     static let help = """
     Usage: redlight <command> [--json]
-      on | off | toggle | status | pause | resume
+      on | off | toggle | status | resume
       pause [minutes|until sunrise]
+        Use 1–1440 minutes (default 30) or the next sunrise within 25 hours.
       color <0-100> | whitepoint <25-100>
       color <up|down> [step] | whitepoint <up|down> [step]
       reset <color|whitepoint>

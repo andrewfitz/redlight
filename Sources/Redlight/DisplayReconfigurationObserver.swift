@@ -14,8 +14,16 @@ final class DisplayReconfigurationObserver: @unchecked Sendable {
         CGDisplayRemoveReconfigurationCallback(Self.callback, Unmanaged.passUnretained(self).toOpaque())
     }
 
+    static func isHardwareChange(_ flags: CGDisplayChangeSummaryFlags) -> Bool {
+        let hardwareChanges: CGDisplayChangeSummaryFlags = [
+            .setModeFlag, .addFlag, .removeFlag, .enabledFlag, .disabledFlag,
+            .mirrorFlag, .unMirrorFlag,
+        ]
+        return !flags.contains(.beginConfigurationFlag) && !flags.intersection(hardwareChanges).isEmpty
+    }
+
     private static let callback: CGDisplayReconfigurationCallBack = { _, flags, context in
-        guard let context else { return }
+        guard let context, DisplayReconfigurationObserver.isHardwareChange(flags) else { return }
         let observer = Unmanaged<DisplayReconfigurationObserver>.fromOpaque(context).takeUnretainedValue()
         DispatchQueue.main.async { [weak observer] in
             observer?.changed(flags)

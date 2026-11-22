@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 /// A plain AppKit window: SwiftUI's Settings scene would appear whenever Sparkle activates
@@ -6,13 +7,10 @@ import SwiftUI
 @MainActor
 final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     private let store: ShortcutStore
-    private let reserved: () -> Set<KeyShortcut>
     private var window: NSWindow?
-    private var host: NSHostingView<ShortcutsView>?
 
-    init(store: ShortcutStore, reserved: @escaping () -> Set<KeyShortcut> = { KeyShortcut.systemReserved() }) {
+    init(store: ShortcutStore) {
         self.store = store
-        self.reserved = reserved
     }
 
     /// Hotkeys stay unregistered while a recorder listens. Leaving the window (closing it,
@@ -21,6 +19,7 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { stopRecording() }
 
     private func stopRecording() {
+        guard store.isRecording else { return }
         window?.makeFirstResponder(nil)
         store.isRecording = false
     }
@@ -28,7 +27,7 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
     func show() {
         // The window is kept between openings. System Settings may have gained or lost
         // shortcuts meanwhile, so re-read them rather than validate against a stale set.
-        host?.rootView = ShortcutsView(store: store, reserved: reserved())
+        store.refreshSystemShortcuts()
         let window = window ?? makeWindow()
         self.window = window
         NSApp.activate()
@@ -40,19 +39,28 @@ final class ShortcutsWindowController: NSObject, NSWindowDelegate {
                               backing: .buffered, defer: false)
         window.title = "Keyboard Shortcuts"
         window.isReleasedWhenClosed = false
+        window.autorecalculatesKeyViewLoop = true
         window.delegate = self
-        let host = NSHostingView(rootView: ShortcutsView(store: store, reserved: reserved()))
-        self.host = host
-        window.contentView = host
-        window.setContentSize(window.contentView?.fittingSize ?? CGSize(width: 440, height: 480))
-        window.center()
+        window.contentView = NSHostingView(rootView: ShortcutsView(store: store, stopRecording: { [weak self] in
+            self?.stopRecording()
+        }))
+        let pointer = NSEvent.mouseLocation
+        let visible = (NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main)?.visibleFrame
+        let availableHeight = max(1, (visible?.height ?? 600) - 50)
+        window.setContentSize(CGSize(width: 460, height: min(550, availableHeight)))
+        if let visible {
+            window.setFrameOrigin(CGPoint(x: visible.midX - window.frame.width / 2,
+                                          y: visible.midY - window.frame.height / 2))
+        } else {
+            window.center()
+        }
         return window
     }
 }
 
 struct ShortcutsView: View {
     @Bindable var store: ShortcutStore
-    let reserved: Set<KeyShortcut>
+    let stopRecording: () -> Void
     @State private var notes: [ShortcutAction: String] = [:]
 
     var body: some View {
@@ -62,52 +70,57 @@ struct ShortcutsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                ForEach(ShortcutAction.allCases, id: \.self) { action in
-                    GridRow {
-                        Text(action.title)
-                            .gridColumnAlignment(.trailing)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                ShortcutRecorder(
-                                    shortcut: store.shortcut(for: action),
-                                    layoutGeneration: store.layoutGeneration,
-                                    reserved: reserved,
-                                    isRecording: $store.isRecording,
-                                    onRecord: { record($0, for: action) },
-                                    onClear: { clear(action) },
-                                    onRejected: { notes[action] = $0 }
-                                )
-                                .frame(width: 150, height: 24)
-                                .accessibilityLabel("\(action.title) shortcut")
-                                Button {
-                                    clear(action)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.secondary)
+            ScrollView {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    ForEach(ShortcutAction.allCases, id: \.self) { action in
+                        GridRow {
+                            Text(action.title)
+                                .gridColumnAlignment(.trailing)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    ShortcutRecorder(
+                                        title: action.title,
+                                        shortcut: store.shortcut(for: action),
+                                        layoutGeneration: store.layoutGeneration,
+                                        reserved: store.systemReserved,
+                                        isRecording: $store.isRecording,
+                                        onRecord: { record($0, for: action) },
+                                        onClear: { clear(action) },
+                                        onRejected: { notes[action] = $0 }
+                                    )
+                                    .frame(width: 150, height: 24)
+                                    Button {
+                                        clear(action)
+                                        stopRecording()
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .opacity(store.shortcut(for: action) == nil ? 0 : 1)
+                                    .disabled(store.shortcut(for: action) == nil)
+                                    .accessibilityLabel("Clear \(action.title) shortcut")
                                 }
-                                .buttonStyle(.plain)
-                                .opacity(store.shortcut(for: action) == nil ? 0 : 1)
-                                .disabled(store.shortcut(for: action) == nil)
-                                .accessibilityLabel("Clear \(action.title) shortcut")
-                            }
-                            if let note = note(for: action) {
-                                Text(note)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                if let note = note(for: action) {
+                                    Text(note)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
 
             HStack {
                 Button("Use Suggested Shortcuts") {
                     notes.removeAll()
-                    store.useSuggested(reserved: reserved)
+                    store.useSuggested(reserved: store.systemReserved)
+                    stopRecording()
                     for action in ShortcutAction.allCases {
-                        if let suggested = action.suggested, reserved.contains(suggested) {
+                        if let suggested = action.suggested, store.systemReserved.contains(suggested) {
                             notes[action] = "macOS already uses \(suggested.label())."
                         }
                     }
@@ -116,6 +129,7 @@ struct ShortcutsView: View {
                 Button("Clear All") {
                     notes.removeAll()
                     store.clearAll()
+                    stopRecording()
                 }
             }
         }
@@ -124,9 +138,11 @@ struct ShortcutsView: View {
     }
 
     private func note(for action: ShortcutAction) -> String? {
-        if let note = notes[action] { return note }
+        if let shortcut = store.shortcut(for: action), store.systemReserved.contains(shortcut) {
+            return "macOS already uses \(shortcut.label())."
+        }
         if store.unavailable.contains(action) { return "Another app is using this shortcut." }
-        return nil
+        return notes[action]
     }
 
     private func clear(_ action: ShortcutAction) {
@@ -145,6 +161,7 @@ struct ShortcutsView: View {
 
 /// Click to record, then press a combination. Esc cancels; Delete clears.
 private struct ShortcutRecorder: NSViewRepresentable {
+    let title: String
     let shortcut: KeyShortcut?
     let layoutGeneration: Int
     let reserved: Set<KeyShortcut>
@@ -154,11 +171,13 @@ private struct ShortcutRecorder: NSViewRepresentable {
     let onRejected: (String) -> Void
 
     func makeNSView(context: Context) -> RecorderField {
-        RecorderField()
+        let field = RecorderField()
+        field.setAccessibilityElement(true)
+        return field
     }
 
     func updateNSView(_ field: RecorderField, context: Context) {
-        field.shortcut = shortcut
+        field.updateShortcut(shortcut, layoutGeneration: layoutGeneration)
         field.reserved = reserved
         field.onRecord = onRecord
         field.onClear = onClear
@@ -166,17 +185,19 @@ private struct ShortcutRecorder: NSViewRepresentable {
         field.onRecordingChange = { recording in
             if isRecording != recording { isRecording = recording }
         }
-        field.needsDisplay = true
+        field.setAccessibilityLabel("\(title) shortcut")
     }
 }
 
 final class RecorderField: NSView {
-    var shortcut: KeyShortcut?
     var reserved: Set<KeyShortcut> = []
     var onRecord: ((KeyShortcut) -> Void)?
     var onClear: (() -> Void)?
     var onRejected: ((String) -> Void)?
     var onRecordingChange: ((Bool) -> Void)?
+    private var shortcut: KeyShortcut?
+    private var layoutGeneration = 0
+    private var shortcutLabel = "Record Shortcut"
     private var liveModifiers: NSEvent.ModifierFlags = []
     private var isRecording = false {
         didSet {
@@ -184,7 +205,6 @@ final class RecorderField: NSView {
             liveModifiers = []
             onRecordingChange?(isRecording)
             needsDisplay = true
-            setAccessibilityValue(label)
         }
     }
 
@@ -193,13 +213,23 @@ final class RecorderField: NSView {
     override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() }
 
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
-    override func accessibilityPerformPress() -> Bool { startRecording(); return true }
+    override func accessibilityValue() -> Any? { label }
+    override func accessibilityPerformPress() -> Bool { startRecording() }
 
-    override func mouseDown(with event: NSEvent) { startRecording() }
+    override func mouseDown(with event: NSEvent) { _ = startRecording() }
 
-    private func startRecording() {
-        window?.makeFirstResponder(self)
+    func updateShortcut(_ shortcut: KeyShortcut?, layoutGeneration: Int) {
+        guard self.shortcut != shortcut || self.layoutGeneration != layoutGeneration else { return }
+        self.shortcut = shortcut
+        self.layoutGeneration = layoutGeneration
+        shortcutLabel = shortcut?.label() ?? "Record Shortcut"
+        needsDisplay = true
+    }
+
+    private func startRecording() -> Bool {
+        guard let window, window.makeFirstResponder(self) else { return false }
         isRecording = true
+        return true
     }
 
     override func resignFirstResponder() -> Bool {
@@ -221,15 +251,24 @@ final class RecorderField: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard isRecording else { return super.keyDown(with: event) }
         let modifiers = event.modifierFlags.intersection([.control, .option, .shift, .command])
-        if modifiers.isEmpty, event.keyCode == 53 { // Escape
+        let code = Int(event.keyCode)
+        guard isRecording else {
+            if modifiers.isEmpty, code == kVK_Space || code == kVK_Return {
+                if !event.isARepeat { _ = startRecording() }
+            } else {
+                super.keyDown(with: event)
+            }
+            return
+        }
+        guard !event.isARepeat else { return }
+        if modifiers.isEmpty, code == kVK_Escape {
             isRecording = false
             return
         }
-        if modifiers.isEmpty, event.keyCode == 51 || event.keyCode == 117 { // Delete, Forward Delete
-            isRecording = false
+        if modifiers.isEmpty, code == kVK_Delete || code == kVK_ForwardDelete {
             if shortcut != nil { onClear?() }
+            isRecording = false
             return
         }
         let candidate = KeyShortcut(keyCode: event.keyCode, flags: modifiers)
@@ -240,9 +279,12 @@ final class RecorderField: NSView {
         case .reservedBySystem:
             onRejected?("macOS already uses \(candidate.label()).")
             NSSound.beep()
+        case .invalidKey:
+            onRejected?("This key cannot be used as a shortcut.")
+            NSSound.beep()
         case nil:
-            isRecording = false
             onRecord?(candidate)
+            isRecording = false
         }
     }
 
@@ -251,7 +293,7 @@ final class RecorderField: NSView {
             return liveModifiers.isEmpty ? "Type Shortcut…"
                 : KeyShortcut(keyCode: 0, flags: liveModifiers).label { _ in "" }
         }
-        return shortcut?.label() ?? "Record Shortcut"
+        return shortcutLabel
     }
 
     override func draw(_ dirtyRect: NSRect) {

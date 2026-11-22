@@ -44,7 +44,7 @@ Free open source blue light filter mac app that:
 - **Deepest by** sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
 - **Manual location**: enter a latitude and longitude instead of granting Location access
 - **Band limits**: drag the red bracket markers on each slider to set a hard minimum and maximum. Moving a slider inside the band shifts the curve without turning Adaptive off
-- **Fixed values**: drag one bracket onto the other to pin that slider, so Adaptive leaves it alone while the other one keeps following the sun. Moving a pinned slider moves the pin; drag a bracket tip (above or below the knob) to pull the limits apart again
+- **Fixed values**: set equal limits with the CLI to keep one slider fixed while the other follows the sun. For example, `redlight limits whitepoint 80 80` holds White Point at 80%
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
 
 **Displays**
@@ -68,6 +68,13 @@ Free open source blue light filter mac app that:
 - Optional **Launch at Login**, off by default and never registered behind your back
 - **Automatic updates** through Sparkle, plus an **Updates…** button
 
+## New in 1.6
+
+- Type coordinates directly into the menu bar popover and press Return to save. On shorter displays, scroll to reach all the controls.
+- Adjust a focused slider or band limit with the arrow keys. Drag the center of an existing pinned slider to move its fixed value.
+- **Until sunrise** follows the actual sunrise deadline across sleep, relaunch, and clock changes.
+- Display fades reuse calibration samples. Global shortcuts and Control Center toggles handle repeated input more reliably.
+
 ## New in 1.5
 
 - **Pause for apps**: the tint steps aside while color-critical apps are in front, and returns when you switch away
@@ -86,13 +93,13 @@ Free open source blue light filter mac app that:
 - **Command line steps and pause**: `redlight color down 5`, `redlight pause`, `redlight resume`
 - **Siri**: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter)
 - **Smoother sliders**: clicking the track moves the value, and limits no longer stick after release
-- **Fixed values under Adaptive**: drag a slider's brackets together to pin it, all the way to 0 or 100%
+- **Fixed values under Adaptive**: set equal minimum and maximum limits to pin a value
 - The Color slider is now called **Color Temp**
 
 ## Using it
 
 Click the menu bar icon (a sun behind a monitor) to open the popover. The icon's screen is
-solid while a filter is showing and faint when it is off or paused.
+solid while a filter or inversion is showing and faint when both are off.
 
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
 - The **pause** button beside it suspends the tint for 30 minutes; click it again to resume early. The chevron next to it offers 1 hour, 2 hours and Until sunrise
@@ -107,13 +114,13 @@ solid while a filter is showing and faint when it is off or paused.
 
 Pausing hides the tint without changing which displays are enabled, so Invert stays on. The
 header counts down the time left, and the filter fades back when the time is up. A pause
-survives sleep and relaunch, and changing the clock cannot make it longer than the length
-you chose. A pause lasts from 1 minute to 24 hours. **Until sunrise** needs a location and
-a sunrise within the next 24 hours.
+survives sleep and relaunch. A fixed-duration pause lasts from 1 minute to 24 hours, and a
+clock change cannot extend it beyond the length you chose. **Until sunrise** needs a
+location and looks up to 25 hours ahead to allow for changes in sunrise time between days.
 
-While paused, Redlight counts as off: the menu bar icon, Control Center and `redlight status`
-all show off. Turning Redlight on, from anywhere, ends the pause. Slider and preset changes
-made while paused are saved and appear on resume. Pause is unavailable while Redlight is off.
+While paused, Control Center and `redlight status` show off. The menu bar icon dims once
+the fade finishes unless a display still uses Invert. Turning Redlight on ends the pause.
+Slider and preset changes made while paused are saved and appear on resume. Pause is unavailable while Redlight is off.
 
 ### Pause for apps
 
@@ -288,6 +295,9 @@ the previous build; lower or repeated values are rejected. The counter lives in
 `.build/redlight-build-number.json` and is seeded from Git history and existing Redlight
 bundles, so failed builds may leave gaps.
 
+The release script packages the current Git commit and uses its source, changelog, and
+locked dependencies. Commit any changes you want included before running the release script.
+
 ## Requirements
 
 - A Mac with Apple silicon (there is no Intel build)
@@ -307,6 +317,13 @@ so its lowest point still reaches Deep Red.
 ```bash
 swift test
 python3 -m unittest discover -s Tools/tests
+```
+
+To exercise keyboard entry in a native popover, run the following in a logged-in macOS
+session. The test opens a temporary popover backed by simulated displays.
+
+```bash
+REDLIGHT_TEST_POPOVER_KEYBOARD=1 swift test --filter PopoverKeyboardSmokeTests
 ```
 
 Swift tests cover display behavior with mock gamma, Sidecar routing and pointer handling,

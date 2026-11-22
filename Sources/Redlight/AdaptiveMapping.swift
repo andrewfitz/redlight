@@ -135,14 +135,14 @@ struct Bedtime: Equatable, Hashable, Sendable {
 /// midnight the sun is rising and the morning is the sun curve alone.
 enum BedtimeRamp {
     static let rampLength: TimeInterval = 2 * 3_600
-    /// The last stretch before solar midnight, over which the floor eases back to the sun's
-    /// own value there. That only matters under the midnight sun; see `AdaptiveMapping.target`.
+    /// The maximum time allowed for the floor to ease back to the sun's midnight value.
+    /// The release starts after bedtime and only matters when the sun's value is above the floor.
     static let releaseLength: TimeInterval = 3_600
 
     struct Weights: Equatable, Sendable {
         /// 0 until the ramp starts, smoothstep to 1 at bedtime, 1 until solar midnight.
         var progress: Double
-        /// 0, then smoothstep to 1 across the last `releaseLength` before solar midnight.
+        /// 0 until bedtime or the last `releaseLength` before solar midnight, whichever is later.
         var release: Double
 
         static let inactive = Weights(progress: 0, release: 0)
@@ -172,8 +172,10 @@ enum BedtimeRamp {
               at <= solarMidnight else { return .inactive }
         let progress = smoothstep(date.timeIntervalSince(at.addingTimeInterval(-rampLength)) / rampLength)
         guard progress > 0 else { return .inactive }
-        let release = smoothstep(
-            date.timeIntervalSince(solarMidnight.addingTimeInterval(-releaseLength)) / releaseLength)
+        let releaseStart = max(at, solarMidnight.addingTimeInterval(-releaseLength))
+        let release = date > releaseStart
+            ? smoothstep(date.timeIntervalSince(releaseStart) / solarMidnight.timeIntervalSince(releaseStart))
+            : 0
         return Weights(progress: progress, release: release)
     }
 

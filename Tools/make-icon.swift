@@ -52,7 +52,7 @@ func topRoundedPath(_ r: CGRect, radius: CGFloat) -> CGPath {
 /// Sized off the screen rather than the icon so it scales with the monitor. Below ~64px the
 /// glyphs turn to mush, so at those sizes we draw the *shape* of a prompt — a caret and a
 /// bar of text — which is what the eye resolves at 16pt anyway.
-func drawTerminalLine(ctx: CGContext, screen: CGRect, pad: CGFloat, s: CGFloat) {
+func drawTerminalLine(ctx: CGContext, screen: CGRect, pad: CGFloat) {
     let text = "> redlight" as NSString
     let targetW = screen.width * 0.80
 
@@ -210,7 +210,7 @@ func drawIcon(px: Int) -> NSBitmapImageRep {
         options: []
     )
 
-    drawTerminalLine(ctx: ctx, screen: screen, pad: screen.width * 0.10, s: s)
+    drawTerminalLine(ctx: ctx, screen: screen, pad: screen.width * 0.10)
     ctx.restoreGState()
 
     // Recessed rim: a dark stroke sunk into the bezel around the glass, so the screen
@@ -237,22 +237,24 @@ func drawIcon(px: Int) -> NSBitmapImageRep {
 
 let outDir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Redlight.iconset"
 let outURL = URL(fileURLWithPath: outDir)
-try? FileManager.default.removeItem(at: outURL)
 try FileManager.default.createDirectory(at: outURL, withIntermediateDirectories: true)
 
-let variants: [(name: String, px: Int)] = [
-    ("icon_16x16.png", 16), ("icon_16x16@2x.png", 32),
-    ("icon_32x32.png", 32), ("icon_32x32@2x.png", 64),
-    ("icon_128x128.png", 128), ("icon_128x128@2x.png", 256),
-    ("icon_256x256.png", 256), ("icon_256x256@2x.png", 512),
-    ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024),
+let variants: [(px: Int, names: [String])] = [
+    (16, ["icon_16x16.png"]),
+    (32, ["icon_16x16@2x.png", "icon_32x32.png"]),
+    (64, ["icon_32x32@2x.png"]),
+    (128, ["icon_128x128.png"]),
+    (256, ["icon_128x128@2x.png", "icon_256x256.png"]),
+    (512, ["icon_256x256@2x.png", "icon_512x512.png"]),
+    (1024, ["icon_512x512@2x.png"]),
 ]
 
-for (name, px) in variants {
-    let rep = drawIcon(px: px)
-    guard let png = rep.representation(using: .png, properties: [:]) else {
-        fatalError("could not encode \(name)")
+for (px, names) in variants {
+    guard let png = drawIcon(px: px).representation(using: .png, properties: [:]) else {
+        fatalError("could not encode \(px)px icon")
     }
-    try png.write(to: outURL.appendingPathComponent(name))
+    for name in names {
+        try png.write(to: outURL.appendingPathComponent(name), options: .atomic)
+    }
 }
-print("wrote \(variants.count) PNGs to \(outURL.path)")
+print("wrote \(variants.reduce(0) { $0 + $1.names.count }) PNGs to \(outURL.path)")

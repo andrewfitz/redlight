@@ -2,6 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="${REDLIGHT_BUILD_WORKSPACE:-$ROOT}"
+if [[ -n "${REDLIGHT_BUILD_WORKSPACE:-}" ]]; then
+    # release.sh keeps the committed sources alongside the extracted metadata inputs.
+    INVOCATION_DIR="$(dirname "$ROOT")"
+    if [[ "$ROOT" != "$INVOCATION_DIR/source" ||
+          "$INVOCATION_DIR" != "$WORKSPACE"/.build/command-control-build.* ]]; then
+        echo "error: the release source must belong to this build invocation." >&2
+        exit 1
+    fi
+fi
 VERSION_ARGS=(--root "$ROOT")
 if [[ -n "${VERSION:-}" ]]; then VERSION_ARGS+=(--override "$VERSION"); fi
 VERSION="$(python3 "$ROOT/Tools/build-version.py" release "${VERSION_ARGS[@]}")"
@@ -11,7 +21,7 @@ VERSION="$(python3 "$ROOT/Tools/build-version.py" release "${VERSION_ARGS[@]}")"
 #   SIGN_IDENTITY="Developer ID Application: …" ./build.sh
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 # Set this to build without replacing the app/DMG in the repository root.
-OUTPUT_DIR="${REDLIGHT_BUILD_OUTPUT_DIR:-$ROOT}"
+OUTPUT_DIR="${REDLIGHT_BUILD_OUTPUT_DIR:-$WORKSPACE}"
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 OUTPUT_APP="$OUTPUT_DIR/Redlight.app"
@@ -25,6 +35,7 @@ if [[ "$XCODE_DEVELOPER_DIR" != */Contents/Developer ]] || \
     echo "error: build.sh requires full Xcode, not Command Line Tools. Select Xcode.app with xcode-select." >&2
     exit 1
 fi
+export DEVELOPER_DIR="$XCODE_DEVELOPER_DIR"
 if ! xcrun --find appintentsmetadataprocessor >/dev/null 2>&1; then
     echo "error: the selected Xcode does not include appintentsmetadataprocessor." >&2
     exit 1
@@ -40,43 +51,28 @@ XCODE_VERSION="$(xcodebuild -version | sed -n 's/^Build version //p')"
 
 # Every build reserves a new number, including attempts that later fail compilation.
 # Seed from prior bundles so removing .build does not downgrade an installed build.
-BUILD_NUMBER_ARGS=(--root "$ROOT" --state "$ROOT/.build/redlight-build-number.json"
-    --seed-app "$ROOT/Redlight.app" --seed-app "$OUTPUT_APP"
+BUILD_NUMBER_ARGS=(--root "$WORKSPACE" --state "$WORKSPACE/.build/redlight-build-number.json"
+    --seed-app "$WORKSPACE/Redlight.app" --seed-app "$OUTPUT_APP"
     --seed-app "/Applications/Redlight.app" --seed-app "$HOME/Applications/Redlight.app")
 if [[ -n "${BUILD_NUMBER:-}" ]]; then BUILD_NUMBER_ARGS+=(--override "$BUILD_NUMBER"); fi
 BUILD_NUMBER="$(python3 "$ROOT/Tools/build-version.py" next "${BUILD_NUMBER_ARGS[@]}")"
 
 # Keep compiler outputs and metadata inputs from one invocation together. Dependencies
 # never receive the app's const-values path: Package.swift scopes flags to Redlight.
-mkdir -p "$ROOT/.build"
-INVOCATION_DIR="$(mktemp -d "$ROOT/.build/command-control-build.XXXXXX")"
-SWIFTPM_DIR="$INVOCATION_DIR/swiftpm"
-PROTOCOLS="$INVOCATION_DIR/AppIntents.protocols.json"
-python3 "$ROOT/Tools/app-intents-metadata.py" prepare \
-    --toolchain-dir "$TOOLCHAIN_DIR" --output "$PROTOCOLS"
-export REDLIGHT_APP_CONST_VALUES_PATH="$INVOCATION_DIR/Redlight.swiftconstvalues"
-export REDLIGHT_APP_CONST_PROTOCOLS_PATH="$PROTOCOLS"
-
-# Apple silicon only. The embedded Sparkle framework stays universal (it ships that way).
-ARCH_FLAGS=(--arch arm64)
-BUILD_FLAGS=(-c release "${ARCH_FLAGS[@]}" --package-path "$ROOT" --scratch-path "$SWIFTPM_DIR")
-BIN_DIR="$(swift build "${BUILD_FLAGS[@]}" --show-bin-path)"
-swift build "${BUILD_FLAGS[@]}"
-
-# App icon: regenerated from Tools/make-icon.swift each build (fast, no deps).
-# Fail soft — if the generator or iconutil breaks, keep a previously generated
-# Resources/Redlight.icns, or warn and build without an icon.
-ICONSET="$INVOCATION_DIR/Redlight.iconset"
-ICNS="$ROOT/Resources/Redlight.icns"
-mkdir -p "$ROOT/Resources"
-if ! { swift "$ROOT/Tools/make-icon.swift" "$ICONSET" && iconutil -c icns "$ICONSET" -o "$ICNS"; }; then
-    echo "warning: icon generation failed; using existing Redlight.icns if present" >&2
+if [[ -z "${REDLIGHT_BUILD_WORKSPACE:-}" ]]; then
+    mkdir -p "$WORKSPACE/.build"
+    INVOCATION_DIR="$(mktemp -d "$WORKSPACE/.build/command-control-build.XXXXXX")"
 fi
-
-STAGE="$(mktemp -d "$OUTPUT_DIR/.redlight-package.XXXXXX")"
-cleanup_stage() {
-    # An interrupted publication or failed rollback can leave the only copy here.
-    if [[ $? -ne 0 ]]; then
+SWIFTPM_DIR="$INVOCATION_DIR/swiftpm"
+STAGE=""
+KEEP_INVOCATION=0
+cleanup_build() {
+    local status=$?
+    if (( !KEEP_INVOCATION )) && [[ -z "${REDLIGHT_BUILD_WORKSPACE:-}" ]]; then
+        rm -rf "$INVOCATION_DIR"
+    fi
+    if [[ -z "$STAGE" ]]; then return; fi
+    if (( status != 0 )); then
         for backup in "$STAGE"/previous-*; do
             if [[ -e "$backup" || -L "$backup" ]]; then
                 echo "Previous build artifacts retained in $STAGE" >&2
@@ -86,7 +82,30 @@ cleanup_stage() {
     fi
     rm -rf "$STAGE"
 }
-trap cleanup_stage EXIT
+trap cleanup_build EXIT
+PROTOCOLS="$INVOCATION_DIR/AppIntents.protocols.json"
+python3 "$ROOT/Tools/app-intents-metadata.py" prepare \
+    --toolchain-dir "$TOOLCHAIN_DIR" --output "$PROTOCOLS"
+export REDLIGHT_APP_CONST_VALUES_PATH="$INVOCATION_DIR/Redlight.swiftconstvalues"
+export REDLIGHT_APP_CONST_PROTOCOLS_PATH="$PROTOCOLS"
+
+# Apple silicon only. The embedded Sparkle framework stays universal (it ships that way).
+ARCH_FLAGS=(--arch arm64)
+BUILD_FLAGS=(-c release "${ARCH_FLAGS[@]}" --package-path "$ROOT" --scratch-path "$SWIFTPM_DIR")
+if [[ -n "${REDLIGHT_BUILD_SNAPSHOT_DIR:-}" ]]; then BUILD_FLAGS+=(--force-resolved-versions); fi
+BIN_DIR="$(xcrun swift build "${BUILD_FLAGS[@]}" --show-bin-path)"
+xcrun swift build "${BUILD_FLAGS[@]}"
+
+# App icon: regenerated from Tools/make-icon.swift each build (fast, no deps).
+# Fall back to the checked-in icon if generation fails.
+ICONSET="$INVOCATION_DIR/Redlight.iconset"
+ICNS="$INVOCATION_DIR/Redlight.icns"
+if ! { xcrun swift "$ROOT/Tools/make-icon.swift" "$ICONSET" && iconutil -c icns "$ICONSET" -o "$ICNS"; }; then
+    echo "warning: icon generation failed; using existing Redlight.icns if present" >&2
+    ICNS="$ROOT/Resources/Redlight.icns"
+fi
+
+STAGE="$(mktemp -d "$OUTPUT_DIR/.redlight-package.XXXXXX")"
 VOLUME="$STAGE/volume"
 APP="$VOLUME/Redlight.app"
 CONTENTS="$APP/Contents"
@@ -224,44 +243,31 @@ codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN_IDENTITY" \
 # Optional: notarize and staple with the given team (NOTARIZE_TEAM=<team id>).
 if [[ -n "${NOTARIZE_TEAM:-}" ]]; then
     "$ROOT/Tools/notarize.sh" "$APP" "$NOTARIZE_TEAM"
+    "$ROOT/Tools/verify-command-control.sh" "$APP"
 fi
 
 ln -s /Applications "$VOLUME/Applications"
 hdiutil create -volname "Redlight" -srcfolder "$VOLUME" -ov -format UDZO \
     -imagekey zlib-level=9 "$STAGE/Redlight.dmg" >/dev/null
 
+# Keep the invocation's inputs and matched appcast tool, and discard its compile cache.
+SPARKLE_APPCAST_TOOL="$INVOCATION_DIR/generate_appcast"
+cp -p "$SWIFTPM_DIR/artifacts/sparkle/Sparkle/bin/generate_appcast" "$SPARKLE_APPCAST_TOOL"
+rm -rf "$SWIFTPM_DIR" "$ICONSET" "$INVOCATION_DIR/Redlight.icns"
+
 python3 "$ROOT/Tools/app-intents-metadata.py" build-info \
-    --output-dir "$STAGE" --invocation-dir "$INVOCATION_DIR" --swiftpm-dir "$SWIFTPM_DIR" \
+    --output-dir "$STAGE" --invocation-dir "$INVOCATION_DIR" --sparkle-tool "$SPARKLE_APPCAST_TOOL" \
     --app "$OUTPUT_APP" --dmg "$DMG" --version "$VERSION" --build "$BUILD_NUMBER"
 
-python3 - "$STAGE" "$OUTPUT_DIR" "$DMG" <<'PUBLISH'
-import fcntl, os, pathlib, sys
-
-stage, output, dmg = map(pathlib.Path, sys.argv[1:])
-# Serialize the short publication step when builds share an output directory.
-directory = os.open(output, os.O_RDONLY)
-fcntl.flock(directory, fcntl.LOCK_EX)
-backups = []
-installed = []
-try:
-    for source, target in ((stage / "volume/Redlight.app", output / "Redlight.app"),
-                           (stage / "Redlight.dmg", dmg),
-                           (stage / ".redlight-build-info.json", output / ".redlight-build-info.json")):
-        if target.exists() or target.is_symlink():
-            if target.is_dir() and (target.name != "Redlight.app" or target.is_symlink()):
-                raise IsADirectoryError(target)
-            backup = stage / ("previous-" + target.name)
-            target.rename(backup)
-            backups.append((backup, target))
-        source.rename(target)
-        installed.append((target, source))
-except BaseException:
-    for target, source in reversed(installed):
-        target.rename(source)
-    for backup, target in reversed(backups):
-        backup.rename(target)
-    raise
-PUBLISH
+PUBLISH_ARGS=(--stage "$STAGE" --output-dir "$OUTPUT_DIR" --version "$VERSION" --build "$BUILD_NUMBER")
+if [[ -n "${REDLIGHT_BUILD_SNAPSHOT_DIR:-}" ]]; then
+    PUBLISH_ARGS+=(--snapshot-dir "$REDLIGHT_BUILD_SNAPSHOT_DIR")
+fi
+KEEP_INVOCATION=1
+if ! python3 "$ROOT/Tools/build-version.py" publish "${PUBLISH_ARGS[@]}"; then
+    KEEP_INVOCATION=0
+    exit 1
+fi
 
 echo "Version: $VERSION (build $BUILD_NUMBER)"
 echo "Built: $OUTPUT_APP"

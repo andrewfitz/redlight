@@ -1,56 +1,42 @@
 import SwiftUI
 
-/// Memoizes the expensive `SunCycle` construction (73 solar elevation evaluations plus a
-/// bisected forward scan) and the per-sample applied-intensity mapping, so they run once
-/// per timeline tick / input change instead of on every SwiftUI body evaluation. A plain
-/// reference type: mutating it inside `body` is safe because the result is deterministic
-/// for a given key and never feeds back into view identity.
+/// Reuses the same day's sampled solar curve between timeline ticks and keeps the color
+/// mapping tied to the exact snapshot. The cache does not publish changes to the view.
 private final class SunArcCache {
-    struct IntensityKey: Equatable {
+    struct CycleKey: Equatable {
         var date: Date, lat: Double, lon: Double
-        var presets: [Preset]
-        var iMin: Double, iMax: Double, wMin: Double, wMax: Double
-        var intensityAdjustment: Double
-        var bedtime: Bedtime?
-
-        /// Same as `==` except the date only has to fall within one timeline tick.
-        func matches(_ other: IntensityKey) -> Bool {
-            abs(date.timeIntervalSince(other.date)) < SunArcCache.tickTolerance
-                && lat == other.lat && lon == other.lon && presets == other.presets
-                && iMin == other.iMin && iMax == other.iMax
-                && wMin == other.wMin && wMax == other.wMax
-                && intensityAdjustment == other.intensityAdjustment
-                && bedtime == other.bedtime
-        }
+        var calendar: Calendar
     }
 
-    private var cycleKey: (date: Date, lat: Double, lon: Double)?
+    struct IntensityKey: Equatable {
+        var cycle: CycleKey
+        var presets: [Preset]
+        var iMin: Double, iMax: Double
+        var intensityAdjustment: Double
+        var bedtime: Bedtime?
+    }
+
+    private var cycleKey: CycleKey?
     private var cycleValue: SunCycle?
     private(set) var minElevation: Double = 0
     private var intensityKey: IntensityKey?
     private var intensityValue: [Double] = []
 
-    /// The graphic is rebuilt on a 20 s timeline. Treat any date within that window as the
-    /// same tick, so a body re-evaluation that happens to restart the timeline (a slider
-    /// drag) does not throw the memo away. The sun moves ~0.08° in 20 s — invisible here.
-    static let tickTolerance: TimeInterval = 20
+    static let refreshInterval: TimeInterval = 20
 
-    func cycle(now: Date, latitude: Double, longitude: Double) -> SunCycle {
-        if let cycleValue, let k = cycleKey,
-           abs(k.date.timeIntervalSince(now)) < Self.tickTolerance,
-           k.lat == latitude, k.lon == longitude {
-            return cycleValue
-        }
-        let fresh = SunCycle(now: now, latitude: latitude, longitude: longitude)
+    func cycle(for key: CycleKey) -> SunCycle {
+        if let cycleValue, cycleKey == key { return cycleValue }
+        let fresh = SunCycle(now: key.date, latitude: key.lat, longitude: key.lon,
+                             calendar: key.calendar, reusing: cycleValue)
         minElevation = SolarCalculator.elevationAtSolarMidnight(
-            at: now, latitude: latitude, longitude: longitude)
-        cycleKey = (now, latitude, longitude)
+            at: key.date, latitude: key.lat, longitude: key.lon)
+        cycleKey = key
         cycleValue = fresh
         return fresh
     }
 
     func intensities(key: IntensityKey, compute: () -> [Double]) -> [Double] {
-        if let k = intensityKey, k.matches(key) { return intensityValue }
+        if intensityKey == key { return intensityValue }
         intensityValue = compute()
         intensityKey = key
         return intensityValue
@@ -77,7 +63,8 @@ struct MenuBarView: View {
     @State private var locationError: String?
     @State private var choosingApps = false
     @State private var runningApps: [RunningApp] = []
-    @Environment(\.closeMenu) private var closeMenu
+    @Environment(\.closeRedlightPopover) private var closePopover
+    @Environment(\.calendar) private var calendar
     // Fixed anchor: `.periodic(from: .now, …)` would build a new schedule on every body
     // evaluation and restart the timeline (and its date) on each slider tick.
     @State private var sunArcScheduleStart = Date()
@@ -93,17 +80,14 @@ struct MenuBarView: View {
         .disabled(manager.isTerminating)
         .padding()
         .frame(width: 300)
-        .onDisappear {
-            if !manager.isTerminating { manager.endPreview() }
-            // Reopening the popover should land on the controls, not a stale About page.
-            showingAbout = false
-        }
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Redlight").font(.headline)
+                Text("Redlight")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
                 if let pausedUntil = manager.pausedUntil {
                     // Ticks on the pause's own minute boundaries, from when it started. A
                     // sunrise pause is not whole minutes, so round back to one.
@@ -112,6 +96,8 @@ struct MenuBarView: View {
                         Text(DisplayManager.pauseCountdownText(until: pausedUntil, now: context.date))
                             .font(.caption)
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                             .foregroundStyle(.secondary)
                             .accessibilityLabel(DisplayManager.pauseCountdownAccessibilityText(
                                 until: pausedUntil, now: context.date))
@@ -130,11 +116,9 @@ struct MenuBarView: View {
                     dispatch(.pause(manager.isPaused ? .off : .on))
                 }
                 .disabled(!manager.isOn && !manager.isPaused)
-                // Inline like Save to Preset: no menu can open while the menu bar menu is
-                // tracking, so other lengths unfold as a row below the header.
+                // Other lengths unfold below the header.
                 Button {
-                    // Checked once per opening: the scan behind it is ~720 solar evaluations.
-                    if !choosingPauseLength { sunriseAvailable = manager.secondsUntilSunrise() != nil }
+                    if !choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
                     choosingPauseLength.toggle()
                 } label: {
                     Image(systemName: choosingPauseLength && canChoosePauseLength ? "chevron.up" : "chevron.down")
@@ -147,6 +131,7 @@ struct MenuBarView: View {
                 .disabled(!canChoosePauseLength)
                 .help("Pause for another length")
                 .accessibilityLabel("Pause lengths")
+                .accessibilityValue(choosingPauseLength ? "Expanded" : "Collapsed")
                 Toggle("Enable Redlight", isOn: Binding(
                     get: { manager.isOn },
                     set: { dispatch(.master($0 ? .on : .off)) }
@@ -156,9 +141,8 @@ struct MenuBarView: View {
                 .accessibilityLabel("Enable Redlight")
                 AppearanceSwitch(isDark: appearance.isDark) { dispatch(.appearance(.toggle)) }
             }
-            // A pause from anywhere (shortcut, CLI) folds the row, so it stays shut on resume.
-            .onChange(of: manager.isPaused) { _, paused in
-                if paused { choosingPauseLength = false }
+            .onChange(of: canChoosePauseLength) { _, available in
+                if !available { choosingPauseLength = false }
             }
 
             if choosingPauseLength && canChoosePauseLength {
@@ -175,6 +159,8 @@ struct MenuBarView: View {
                         get: { display.isEnabled },
                         set: { dispatch(.display(.key(display.persistenceKey), $0 ? .on : .off)) }
                     ))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .accessibilityLabel(display.name)
                     Spacer()
                     Toggle("Invert", isOn: Binding(
@@ -268,8 +254,7 @@ struct MenuBarView: View {
                     }
                 }
 
-                // Inline rather than a pop-up menu: no menu can open while the menu bar
-                // menu is tracking. The preset row itself becomes the list of targets.
+                // The preset row itself becomes the list of save targets.
                 HStack(spacing: 6) {
                     Button(choosingSaveTarget ? "Cancel" : "Save to Preset…") {
                         choosingSaveTarget.toggle()
@@ -301,6 +286,7 @@ struct MenuBarView: View {
                     if manager.adaptiveStatusText == "Location needed" {
                         Button {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+                                closePopover()
                                 NSWorkspace.shared.open(url)
                             }
                         } label: {
@@ -328,15 +314,13 @@ struct MenuBarView: View {
                 }
 
                 if manager.adaptiveEnabled, let coord = manager.coordinate {
-                    TimelineView(.periodic(from: sunArcScheduleStart, by: SunArcCache.tickTolerance)) { context in
-                        let cycle = sunCache.cycle(
-                            now: context.date,
-                            latitude: coord.latitude,
-                            longitude: coord.longitude
-                        )
+                    TimelineView(.periodic(from: sunArcScheduleStart, by: SunArcCache.refreshInterval)) { context in
+                        let key = SunArcCache.CycleKey(date: context.date, lat: coord.latitude,
+                                                       lon: coord.longitude, calendar: calendar)
+                        let cycle = sunCache.cycle(for: key)
                         SunArcView(
                             cycle: cycle,
-                            intensities: appliedIntensities(cycle, at: context.date, coord: coord)
+                            intensities: appliedIntensities(cycle, key: key)
                         )
                     }
                 }
@@ -358,6 +342,7 @@ struct MenuBarView: View {
                         .accessibilityLabel("Launch Redlight at login")
                     if launchAtLogin.requiresApproval {
                         Button {
+                            closePopover()
                             launchAtLogin.openSystemSettings()
                         } label: {
                             Label("Approval needed — open Login Items",
@@ -384,8 +369,7 @@ struct MenuBarView: View {
                     .accessibilityLabel("About Redlight")
                 if Updater.shared.isAvailable {
                     Button(Updater.shared.hasPendingUpdate ? "Update Available" : "Updates…") {
-                        // Close the menu first; it floats above Sparkle's window.
-                        if dispatch(.update) { closeMenu() }
+                        if dispatch(.update) { closePopover() }
                     }
                     .disabled(!Updater.shared.canCheckForUpdates)
                     .accessibilityLabel(Updater.shared.hasPendingUpdate
@@ -394,8 +378,7 @@ struct MenuBarView: View {
                 Spacer()
                 if let openShortcuts {
                     Button {
-                        // Close first: the menu keeps the keyboard while it is open.
-                        closeMenu()
+                        closePopover()
                         openShortcuts()
                     } label: {
                         Image(systemName: "keyboard")
@@ -450,8 +433,7 @@ struct MenuBarView: View {
     /// Other lengths only make sense with a filter to pause and no pause running.
     private var canChoosePauseLength: Bool { manager.isOn && !manager.isPaused }
 
-    /// A checkbox rather than a menu or picker: no menu can open while the menu bar menu is
-    /// tracking. Coordinates apply only on Set, after the same validation as the CLI.
+    /// Coordinates apply only on submission, using the same validation as the CLI.
     private var manualLocationControl: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle("Manual location", isOn: Binding(
@@ -479,22 +461,12 @@ struct MenuBarView: View {
                         .accessibilityLabel("Latitude, -90 to 90")
                     TextField("Longitude", text: $longitudeText)
                         .accessibilityLabel("Longitude, -180 to 180")
-                    Button("Set") {
-                        do {
-                            let coordinate = try ManualLocation.parse(latitude: latitudeText, longitude: longitudeText)
-                            locationError = nil
-                            if dispatch(.location(.manual(latitude: coordinate.latitude,
-                                                          longitude: coordinate.longitude))) {
-                                editingLocation = false
-                            }
-                        } catch {
-                            locationError = error.localizedDescription
-                        }
-                    }
-                    .accessibilityLabel("Set manual location")
+                    Button("Set", action: setManualLocation)
+                        .accessibilityLabel("Set manual location")
                 }
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
+                .onSubmit(setManualLocation)
                 .onAppear {
                     // Reopening the menu shows the saved coordinate, not stale typing.
                     if !editingLocation, let manual = manager.manualLocation {
@@ -514,6 +486,18 @@ struct MenuBarView: View {
         .foregroundStyle(.secondary)
     }
 
+    private func setManualLocation() {
+        do {
+            let coordinate = try ManualLocation.parse(latitude: latitudeText, longitude: longitudeText)
+            locationError = nil
+            if dispatch(.location(.manual(latitude: coordinate.latitude, longitude: coordinate.longitude))) {
+                editingLocation = false
+            }
+        } catch {
+            locationError = error.localizedDescription
+        }
+    }
+
     /// The live app always supplies the shared handler. Keeping it optional permits
     /// isolated view previews without constructing services that change macOS settings.
     @discardableResult
@@ -525,13 +509,11 @@ struct MenuBarView: View {
     /// Applied adaptive intensity at each sample time — the same mapping the live filter
     /// uses. Memoized: recomputed only when the timeline ticks or the band/presets change.
     @MainActor
-    private func appliedIntensities(_ cycle: SunCycle, at date: Date,
-                                    coord: (latitude: Double, longitude: Double)) -> [Double] {
+    private func appliedIntensities(_ cycle: SunCycle, key cycleKey: SunArcCache.CycleKey) -> [Double] {
         let key = SunArcCache.IntensityKey(
-            date: date, lat: coord.latitude, lon: coord.longitude,
+            cycle: cycleKey,
             presets: manager.presets,
             iMin: manager.adaptiveMin, iMax: manager.adaptiveMax,
-            wMin: manager.adaptiveWpMin, wMax: manager.adaptiveWpMax,
             intensityAdjustment: manager.adaptiveIntensityAdjustment,
             bedtime: manager.bedtime
         )
@@ -540,7 +522,7 @@ struct MenuBarView: View {
             cycle.samples.map { sample in
                 manager.adaptiveIntensity(
                     at: sample.elevation, minElevation: minElev, rising: sample.rising,
-                    time: (date: sample.date, longitude: coord.longitude))
+                    time: (date: sample.date, longitude: cycleKey.lon))
             }
         }
     }
@@ -664,7 +646,7 @@ struct PauseLengthRow: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .disabled(disabled)
-                    .help(disabled ? "No sunrise in the next 24 hours here" : option.accessibility)
+                    .help(disabled ? "Sunrise is unavailable for the current location" : option.accessibility)
                     .accessibilityLabel(option.accessibility)
             }
         }
@@ -675,8 +657,7 @@ struct PauseLengthRow: View {
 // MARK: - Pause for Apps
 
 /// "Pause for apps": the chosen apps, each with a remove button, then running apps to add.
-/// Inline like the pause lengths, since no menu or sheet can open while the menu bar menu
-/// is tracking. The list has a fixed height and scrolls, so it cannot stretch the popover.
+/// The list has a fixed height and scrolls, so it cannot stretch the popover.
 struct PauseForAppsRow: View {
     static let rowHeight: CGFloat = 20
     static let visibleRows = 6
@@ -699,7 +680,8 @@ struct PauseForAppsRow: View {
             return true
         }
         return apps.sorted { a, b in
-            let aRecent = a.bundleID == recent, bRecent = b.bundleID == recent
+            let aRecent = recent.map { id in a.bundleID.map { AppBundleID.matches($0, id) } ?? false } ?? false
+            let bRecent = recent.map { id in b.bundleID.map { AppBundleID.matches($0, id) } ?? false } ?? false
             if aRecent != bRecent { return aRecent }
             return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
@@ -752,9 +734,7 @@ struct PauseForAppsRow: View {
 
 // MARK: - Bedtime Row
 
-/// "Deepest by" for Adaptive: a checkbox and an inline stepper time field. No pop-up or
-/// menu can open while the menu bar menu is tracking, so the field edits in place. The
-/// field remembers its time while the checkbox is off.
+/// "Deepest by" for Adaptive: a checkbox and a time field that remembers its draft.
 struct BedtimeRow: View {
     static let suggested = Bedtime(hour: 22, minute: 30)!
 
@@ -882,6 +862,7 @@ struct PresetButton: View {
         .buttonStyle(.plain)
         .help(name)
         .accessibilityLabel(name)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 }
 

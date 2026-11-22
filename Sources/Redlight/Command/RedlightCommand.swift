@@ -30,7 +30,7 @@ enum CommandPreset: String, Codable, Sendable, CaseIterable {
 enum CommandPauseLength: Codable, Sendable, Equatable {
     /// Whole minutes, 1 through 1440 (24 hours).
     case minutes(Int)
-    /// The next sunrise at the current location, within 24 hours.
+    /// The next sunrise at the current location, within 25 hours.
     case untilSunrise
 
     static let minuteRange = 1...1440
@@ -264,11 +264,28 @@ struct CommandRequest: Codable, Sendable, Equatable {
     /// `Status.apps`.
     /// An older app answers "update Redlight" instead of failing to decode.
     static let currentVersion = 3
-    var v: Int = currentVersion
+    var v: Int
     var command: RedlightCommand
 
+    init(v: Int = currentVersion, command: RedlightCommand) {
+        self.v = v
+        self.command = command
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        v = try values.decode(Int.self, forKey: .v)
+        // A future client may send a command this version cannot decode.
+        try Self.validateVersion(v)
+        command = try values.decode(RedlightCommand.self, forKey: .command)
+    }
+
     func validateVersion() throws {
-        guard v == Self.currentVersion else {
+        try Self.validateVersion(v)
+    }
+
+    private static func validateVersion(_ version: Int) throws {
+        guard version == currentVersion else {
             throw CommandError.system("Command protocol version mismatch; update Redlight.")
         }
     }

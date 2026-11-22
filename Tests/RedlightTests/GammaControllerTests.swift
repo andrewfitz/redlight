@@ -24,7 +24,35 @@ import Testing
             resetTables: { resets += 1 })
         controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: false)
         controller.restore(1)
+        controller.restoreAll()
         #expect(resets == 0)
+        controller.resetForDisplayRecovery()
+        #expect(resets == 1)
+    }
+
+    @Test func inversionResamplesFromCalibrationAndRestoreUsesTheNativeTable() {
+        let original: GammaTableComposer.Table = (r: [0, 0.4, 0.8], g: [0, 0.6, 1], b: [0, 1, 1])
+        var reads = 0
+        var displayOne: GammaTableComposer.Table?
+        let controller = GammaController(
+            readTable: { _ in reads += 1; return original },
+            writeTable: { id, table in
+                if id == 1 { displayOne = table }
+                return .success
+            },
+            resetTables: {})
+        controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: false)
+        controller.applyFilter(to: 2, intensity: 0.5, whitepoint: 1, invert: false)
+        controller.applyFilter(to: 1, intensity: 0.5, whitepoint: 1, invert: true)
+        #expect(reads == 2)
+        #expect(displayOne?.r.first == 0.8)
+        #expect(displayOne?.g.first == 0.5)
+        #expect(displayOne?.b.first == 0)
+
+        controller.restore(1)
+        #expect(displayOne?.r == original.r)
+        #expect(displayOne?.g == original.g)
+        #expect(displayOne?.b == original.b)
     }
 
     @Test func identityCalibrationKeepsLegacyFilterShape() {

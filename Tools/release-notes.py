@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import pathlib
 import re
@@ -51,9 +52,16 @@ def release_markdown(changelog: str, version: str) -> str:
 
 
 def inline_html(text: str) -> str:
-    pieces = re.split(r"(`[^`\n]+`)", text)
-    return "".join(f"<code>{html.escape(piece[1:-1])}</code>" if piece.startswith("`") and piece.endswith("`")
-                   else html.escape(piece) for piece in pieces)
+    pieces = re.split(r"(`[^`\n]+`|\*\*[^*\n]+\*\*)", text)
+    rendered = []
+    for index, piece in enumerate(pieces):
+        if index % 2 == 0:
+            rendered.append(html.escape(piece))
+        elif piece.startswith("`"):
+            rendered.append(f"<code>{html.escape(piece[1:-1])}</code>")
+        else:
+            rendered.append(f"<strong>{inline_html(piece[2:-2])}</strong>")
+    return "".join(rendered)
 
 
 def markdown_html(markdown: str) -> str:
@@ -126,16 +134,33 @@ def markdown_html(markdown: str) -> str:
             + "\n".join(blocks) + "\n</main>\n</body>\n</html>\n")
 
 
-def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str, history_url: str) -> None:
+def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str, history_url: str,
+                   dmg_file: pathlib.Path | None = None, version: str | None = None) -> None:
     root = ET.parse(path).getroot()
     items = [item for item in root.findall("./channel/item")
              if any(enclosure.get("url") == dmg_url for enclosure in item.findall("enclosure"))]
     if len(items) != 1:
         raise ValueError("Appcast must contain exactly one item for the release DMG.")
-    links = items[0].findall(f"{{{SPARKLE_NAMESPACE}}}releaseNotesLink")
+    item = items[0]
+    enclosures = item.findall("enclosure")
+    if len(enclosures) != 1:
+        raise ValueError("Appcast must contain exactly one primary enclosure for the release DMG.")
+    enclosure = enclosures[0]
+    signature = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature", "")
+    try:
+        signature_bytes = base64.b64decode(signature, validate=True)
+    except ValueError:
+        signature_bytes = b""
+    if len(signature_bytes) != 64:
+        raise ValueError("The release DMG enclosure is missing a valid Sparkle EdDSA signature field.")
+    if dmg_file is not None and enclosure.get("length") != str(dmg_file.stat().st_size):
+        raise ValueError("The appcast length does not match the release DMG.")
+    if version is not None and item.findtext(f"{{{SPARKLE_NAMESPACE}}}shortVersionString") != version:
+        raise ValueError("The appcast version does not match the release version.")
+    links = item.findall(f"{{{SPARKLE_NAMESPACE}}}releaseNotesLink")
     if len(links) != 1 or (links[0].text or "").strip() != notes_url:
         raise ValueError("Appcast does not link to the hosted HTML release notes.")
-    history_links = items[0].findall(f"{{{SPARKLE_NAMESPACE}}}fullReleaseNotesLink")
+    history_links = item.findall(f"{{{SPARKLE_NAMESPACE}}}fullReleaseNotesLink")
     if len(history_links) != 1 or (history_links[0].text or "").strip() != history_url:
         raise ValueError("Appcast does not link Version History to the release history page.")
 
@@ -151,6 +176,8 @@ def main() -> None:
     verify = commands.add_parser("verify-appcast")
     verify.add_argument("--appcast", required=True, type=pathlib.Path)
     verify.add_argument("--dmg-url", required=True)
+    verify.add_argument("--dmg-file", type=pathlib.Path)
+    verify.add_argument("--version")
     verify.add_argument("--notes-url", required=True)
     verify.add_argument("--history-url", required=True)
     args = parser.parse_args()
@@ -161,7 +188,7 @@ def main() -> None:
             args.markdown.write_text(markdown)
             args.html.write_text(html_document)
         else:
-            verify_appcast(args.appcast, args.dmg_url, args.notes_url, args.history_url)
+            verify_appcast(args.appcast, args.dmg_url, args.notes_url, args.history_url, args.dmg_file, args.version)
     except (OSError, ValueError, ET.ParseError) as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

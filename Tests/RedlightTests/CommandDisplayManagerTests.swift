@@ -50,6 +50,7 @@ final class TestDefaultsRegistry {
         fadeDuration: TimeInterval = 0,
         uptime: @escaping () -> TimeInterval = { 0 },
         locationPromptActivation: @escaping () -> Void = {},
+        controlDefaults: UserDefaults? = nil,
         onChange: @escaping (Bool) -> Void = { _ in }
     ) -> DisplayManager {
         DisplayManager(
@@ -59,7 +60,7 @@ final class TestDefaultsRegistry {
             now: { ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")! },
             adaptiveTransitionDuration: fadeDuration, displayTransitionDuration: fadeDuration,
             transitionUptime: uptime, locationPromptActivation: locationPromptActivation,
-            onMasterStateChange: onChange)
+            controlDefaults: controlDefaults, onMasterStateChange: onChange)
     }
 
     @Test func persistedAdaptiveRequestsPermissionWithLaunchControlledActivation() {
@@ -105,6 +106,19 @@ final class TestDefaultsRegistry {
         #expect(publications == [true])
         manager.setEnabled(false, for: 2)
         #expect(publications == [true, false])
+    }
+
+    @Test func controlExtensionReadsOwnerStateFromExplicitDomain() {
+        let settings = freshDefaults()
+        let domain = "RedlightControlTests-\(UUID().uuidString)"
+        let shared = UserDefaults(suiteName: domain)!
+        defer { shared.removePersistentDomain(forName: domain) }
+        let manager = makeManager(defaults: settings, controlDefaults: shared)
+        manager.setEnabled(true, for: 1)
+        #expect(RedlightControlPreferences.currentValue(domain: domain))
+        #expect(settings.object(forKey: RedlightControlPreferences.stateKey) == nil)
+        manager.publishStoppedState()
+        #expect(!RedlightControlPreferences.currentValue(domain: domain))
     }
 
     @Test func topologyPublishesDisconnectAndReconnectWithoutSettingsSave() {

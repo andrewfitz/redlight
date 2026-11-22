@@ -17,26 +17,39 @@ protocol HotkeyRegistering: AnyObject {
 
 @MainActor
 final class CarbonHotkeys: HotkeyRegistering {
+    @MainActor
+    fileprivate final class CallbackContext {
+        weak var owner: CarbonHotkeys?
+    }
+
     var onEvent: ((UInt32, Bool) -> Void)?
     private var registered: [UInt32: EventHotKeyRef] = [:]
     private var handler: EventHandlerRef?
+    private let context = CallbackContext()
     private nonisolated static let signature: OSType = 0x5244_4C54 // 'RDLT'
 
     init() {
+        context.owner = self
+    }
+
+    private func installHandler() -> Bool {
+        if handler != nil { return true }
         var types = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
-        InstallEventHandler(
+        let status = InstallEventHandler(
             GetEventDispatcherTarget(), hotkeyCallback, types.count, &types,
-            Unmanaged.passUnretained(self).toOpaque(), &handler)
+            Unmanaged.passUnretained(context).toOpaque(), &handler)
+        return status == noErr && handler != nil
     }
 
     func register(_ shortcut: KeyShortcut, id: UInt32) -> Bool {
+        guard registered[id] == nil, installHandler() else { return false }
         var reference: EventHotKeyRef?
         let status = RegisterEventHotKey(
             shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: Self.signature, id: id),
-            GetEventDispatcherTarget(), 0, &reference)
+            GetEventDispatcherTarget(), OptionBits(kEventHotKeyExclusive), &reference)
         guard status == noErr, let reference else { return false }
         registered[id] = reference
         return true
@@ -48,11 +61,19 @@ final class CarbonHotkeys: HotkeyRegistering {
     }
 
     func isKeyDown(_ shortcut: KeyShortcut) -> Bool {
-        CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(shortcut.keyCode))
+        guard let code = CGKeyCode(exactly: shortcut.keyCode) else { return false }
+        return CGEventSource.keyState(.combinedSessionState, key: code)
     }
 
-    fileprivate func receive(id: UInt32, pressed: Bool) {
+    fileprivate func receive(id: UInt32, pressed: Bool) -> Bool {
+        guard registered[id] != nil else { return false }
         onEvent?(id, pressed)
+        return true
+    }
+
+    isolated deinit {
+        if let handler { RemoveEventHandler(handler) }
+        unregisterAll()
     }
 
     /// Decoded off the actor so only plain values cross into it.
@@ -71,7 +92,9 @@ private let hotkeyCallback: EventHandlerUPP = { _, event, userData in
     guard let event, let userData, let hotkey = CarbonHotkeys.decode(event) else {
         return OSStatus(eventNotHandledErr)
     }
-    let owner = Unmanaged<CarbonHotkeys>.fromOpaque(userData).takeUnretainedValue()
-    MainActor.assumeIsolated { owner.receive(id: hotkey.id, pressed: hotkey.pressed) }
-    return noErr
+    let context = Unmanaged<CarbonHotkeys.CallbackContext>.fromOpaque(userData).takeUnretainedValue()
+    return MainActor.assumeIsolated {
+        let handled = context.owner?.receive(id: hotkey.id, pressed: hotkey.pressed) == true
+        return handled ? noErr : OSStatus(eventNotHandledErr)
+    }
 }

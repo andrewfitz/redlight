@@ -166,7 +166,7 @@ struct PauseRedlightIntent: AppIntent {
 
 struct PauseRedlightUntilSunriseIntent: AppIntent {
     static let title: LocalizedStringResource = "Pause Redlight Until Sunrise"
-    static let description = IntentDescription("Suspends the color filter until the next sunrise at Redlight's location. Invert stays on.")
+    static let description = IntentDescription("Suspends the color filter until the next sunrise at Redlight's location, if one occurs within 25 hours. Invert stays on.")
     static let openAppWhenRun = false
     init() {}
     @MainActor func perform() async throws -> some IntentResult {

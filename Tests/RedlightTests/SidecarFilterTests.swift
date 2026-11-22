@@ -287,7 +287,11 @@ import Testing
         controller.displaysDidChange() // geometry unknown until the next apply
         #expect(pointer.showCount == 2)
         #expect(pointer.changed != nil)
+        controller.applyFilter(to: 7, intensity: 0.6, whitepoint: 1, invert: false)
+        #expect(pointer.hideCount == 3)
+        #expect(overlay.pointer?.cursor === pointer.cursor)
         controller.restoreAll()
+        #expect(pointer.showCount == 3)
         #expect(pointer.stopCount == 2)
     }
 

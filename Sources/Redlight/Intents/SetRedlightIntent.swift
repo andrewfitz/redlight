@@ -84,13 +84,19 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 @MainActor final class ControlHandoff {
     static let shared = ControlHandoff()
     struct Request: Equatable { let id: UUID; let on: Bool }
+    private struct Completion {
+        let receipt: ControlReceipt
+        var recorded = false
+    }
+
     private var pending: [Request] = []
     private var execute: ((Bool) throws -> Bool)?
     private let read: (UUID) -> ControlReceipt?
     private let record: (ControlReceipt) throws -> Void
     private let publish: @MainActor (Bool) throws -> Void
     private let now: () -> Date
-    private var completed: [UUID] = []
+    private var executing: Set<UUID> = []
+    private var completed: [Completion] = []
 
     init(read: @escaping (UUID) -> ControlReceipt? = { RedlightControlPreferences.receipt($0) },
          record: @escaping (ControlReceipt) throws -> Void = { try RedlightControlPreferences.record($0) },
@@ -117,17 +123,19 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 
     @discardableResult func handle(url: URL) -> Bool {
         guard let request = Self.parse(url) else { return false }
-        guard !completed.contains(request.id), read(request.id) == nil,
-              !pending.contains(where: { $0.id == request.id }) else { return true }
+        guard !executing.contains(request.id), !pending.contains(where: { $0.id == request.id }) else { return true }
+        if let completion = completed.first(where: { $0.receipt.request == request.id }) {
+            if !completion.recorded { recordCompletion(completion.receipt) }
+            return true
+        }
+        guard read(request.id)?.request != request.id else { return true }
         if execute != nil { complete(request) } else { pending.append(request) }
         return true
     }
 
     func install(setOn: @escaping (Bool) throws -> Bool) {
         execute = setOn
-        let requests = pending
-        pending.removeAll()
-        for request in requests { complete(request) }
+        while execute != nil, !pending.isEmpty { complete(pending.removeFirst()) }
     }
 
     func uninstall() {
@@ -136,6 +144,8 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 
     private func complete(_ request: Request) {
         guard let execute else { return }
+        executing.insert(request.id)
+        defer { executing.remove(request.id) }
         var on = request.on
         var error: String?
         do {
@@ -143,10 +153,17 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
             try publish(on)
         } catch let failure { error = failure.localizedDescription }
         let receipt = ControlReceipt(request: request.id, on: on, error: error, completedAt: now())
+        completed.append(Completion(receipt: receipt))
+        if completed.count > 128 { completed.removeFirst() }
+        recordCompletion(receipt)
+    }
+
+    private func recordCompletion(_ receipt: ControlReceipt) {
         do {
             try record(receipt)
-            completed.append(request.id)
-            if completed.count > 128 { completed.removeFirst(completed.count - 128) }
+            if let index = completed.firstIndex(where: { $0.receipt.request == receipt.request }) {
+                completed[index].recorded = true
+            }
         } catch {
             NSLog("Redlight control receipt failed: %@", error.localizedDescription)
         }
@@ -175,13 +192,13 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
         }
         while true {
             try Task.checkCancellation()
+            guard now() < deadline else { throw ControlHandoffError.timeout }
             if let receipt = read(id) {
                 guard receipt.request == id else { throw ControlHandoffError.failed("Redlight returned an invalid receipt.") }
                 if let error = receipt.error { throw ControlHandoffError.failed(error) }
                 guard receipt.on == on else { throw ControlHandoffError.failed("Redlight could not apply the requested state.") }
                 return
             }
-            guard now() < deadline else { throw ControlHandoffError.timeout }
             try await sleep()
         }
     }
@@ -270,8 +287,4 @@ struct SetRedlightIntent: SetValueIntent {
 
 @MainActor func reloadRedlightControls() {
     if #available(macOS 26.0, *) { ControlCenter.shared.reloadControls(ofKind: RedlightControlPreferences.kind) }
-}
-
-@MainActor func publishStopped() {
-    if RedlightControlPreferences.publish(false) { reloadRedlightControls() }
 }

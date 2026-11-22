@@ -1,24 +1,56 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import Redlight
 
 @MainActor @Suite struct MenuBarViewTests {
-    @Test func deferredMenuCloseOnlyRemovesTheViewThatClosed() async {
-        let item = NSMenuItem()
-        item.view = NSView()
-        StatusItemController.removeClosedView(from: item)
-        let reopened = NSView()
-        item.view = reopened
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
-        #expect(item.view === reopened)
+    @Test func hostedPopoverRendersAndScrollsWhenAdaptiveExpands() async throws {
+        _ = NSApplication.shared
+        let defaultsRegistry = TestDefaultsRegistry()
+        let defaults = defaultsRegistry.makeDefaults()
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = DisplayManager(
+            gamma: MockGammaController(), getDisplayIDs: { [1, 2] },
+            getDisplayName: { "Display \($0)" }, getDisplayPersistenceKey: { String($0) },
+            getMainDisplayID: { 1 }, defaults: defaults, location: location,
+            adaptiveTransitionDuration: 0, displayTransitionDuration: 0)
+        let view = MenuBarView(manager: manager).defaultAppStorage(defaults)
+        let ordinary = StatusItemController.makePopover(content: view)
+        let originalSize = ordinary.contentSize
+        #expect(originalSize.width == 300)
+        #expect(originalSize.height > 200)
 
-        StatusItemController.removeClosedView(from: item)
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
+        let maximumHeight = originalSize.height + 40
+        let expanded = StatusItemController.makePopover(maximumHeight: maximumHeight, content: view)
+        let controller = try #require(expanded.contentViewController)
+        let scroll = try #require(controller.view as? NSScrollView)
+        let document = try #require(scroll.documentView)
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: originalSize),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        document.layoutSubtreeIfNeeded()
+        #expect(!scroll.hasVerticalScroller)
+
+        manager.adaptiveEnabled = true
+        for _ in 0..<3 {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            document.layoutSubtreeIfNeeded()
         }
-        #expect(item.view == nil)
+        #expect(expanded.contentSize == CGSize(width: 300, height: maximumHeight))
+        #expect(scroll.hasVerticalScroller)
+        #expect(document.frame.height > maximumHeight)
+        let bitmap = try #require(document.bitmapImageRepForCachingDisplay(in: document.bounds))
+        document.cacheDisplay(in: document.bounds, to: bitmap)
+        #expect(bitmap.pixelsWide >= 300)
+        #expect(bitmap.pixelsHigh > Int(maximumHeight))
+        let bytes = try #require(bitmap.bitmapData)
+        #expect(UnsafeBufferPointer(start: bytes, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+            .contains { $0 != 0 })
     }
 
     @Test func sunArcAccessibilityReportsCurrentElevationWithoutPhaseJargon() {

@@ -104,6 +104,17 @@ private final class ClientProbe: @unchecked Sendable {
         #expect(probe.launchCount == 0 && probe.sentCommands == [.master(.toggle)])
     }
 
+    @Test func concurrentStartupCanSupplyThePortDespiteALaunchError() async throws {
+        let probe = ClientProbe()
+        let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
+                                   launch: {
+            probe.makePortAvailable()
+            throw CommandError.system("Another copy started first")
+        }, send: { probe.sent($0) })
+        #expect(try await client.execute(.master(.toggle)).on)
+        #expect(probe.sentCommands == [.master(.on)])
+    }
+
     @Test func bundleResolutionUsesExecutableRatherThanSymlinkDirectory() throws {
         let executable = URL(fileURLWithPath: "/Applications/Redlight.app/Contents/MacOS/Redlight")
         #expect(try CommandClient.appBundleURL(forExecutable: executable).path == "/Applications/Redlight.app")

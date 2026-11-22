@@ -23,7 +23,8 @@ private struct CommandFixture {
     let handler: CommandHandler
     let defaults: UserDefaults
 
-    init(defaults: UserDefaults, location: LocationProviding? = nil, fadeDuration: TimeInterval = 0) {
+    init(defaults: UserDefaults, location: LocationProviding? = nil, fadeDuration: TimeInterval = 0,
+         now: Date = Date(timeIntervalSince1970: 1_780_000_000)) {
         let gamma = MockGammaController()
         let state = CommandServiceState()
         let manager = DisplayManager(
@@ -31,7 +32,7 @@ private struct CommandFixture {
             getDisplayName: { $0 == 10 ? "Built-in Retina" : $0 == 20 ? "Studio Display Left" : "Studio Display Right" },
             getDisplayPersistenceKey: { "stable-\($0)" },
             defaults: defaults, location: location ?? FakeLocationProvider(),
-            now: { Date(timeIntervalSince1970: 1_780_000_000) },
+            now: { now },
             adaptiveTransitionDuration: fadeDuration, displayTransitionDuration: 0
         )
         self.defaults = defaults
@@ -144,11 +145,30 @@ private struct CommandFixture {
             } catch { Issue.record("Unexpected error: \(error)") }
             return ""
         }
-        #expect(message().contains("24 hours"))
+        #expect(message().contains("25 hours"))
         #expect(!f.manager.isPaused)
         location.coordinate = nil
         #expect(message().contains("location"))
         #expect(!f.manager.isPaused)
+    }
+
+    @Test(arguments: [-30.0, 5.0]) func sunrisePauseKeepsDeadlinesOutsideTimedPauseLimits(offset: TimeInterval) throws {
+        let location = FakeLocationProvider()
+        let latitude = 41.88, longitude = -87.63
+        location.coordinate = (latitude: latitude, longitude: longitude)
+        let septemberMorning = Date(timeIntervalSince1970: 1_789_430_400) // September 15, 2026, 00:00 UTC
+        let firstSunrise = try #require(SunCycle.nextSunrise(after: septemberMorning, latitude: latitude, longitude: longitude))
+        let now = firstSunrise.addingTimeInterval(offset)
+        let expected = try #require(SunCycle.nextSunrise(after: now, latitude: latitude, longitude: longitude))
+        let seconds = expected.timeIntervalSince(now)
+        #expect(offset < 0 ? seconds < 60 : seconds > 86_400)
+
+        let fixture = CommandFixture(defaults: defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests"),
+                                     location: location, now: now)
+        _ = try fixture.handler.execute(.master(.on))
+        let status = try fixture.handler.execute(.pauseFor(.untilSunrise))
+        #expect(status.pausedUntil == expected)
+        #expect(fixture.manager.pauseLength == seconds)
     }
 
     @Test func locationCommandsSetManualAndReportTheSource() throws {

@@ -51,7 +51,7 @@ final class AppearanceController {
             setTheme = nil
         }
 
-        isDark = Self.readSystemIsDark()
+        isDark = getTheme?() ?? Self.readSystemIsDark()
 
         // Posted to the distributed center whenever the system theme changes,
         // from any source (Settings, other apps, our own toggle).
@@ -80,17 +80,23 @@ final class AppearanceController {
     func setDark(_ target: Bool) throws {
         refresh()
         guard isDark != target else { return }
-        if let injectedWrite {
-            try injectedWrite(target)
-        } else if let setTheme {
-            setTheme(target)
-        } else {
-            try setDarkViaAppleScript(target)
+        do {
+            if let injectedWrite {
+                try injectedWrite(target)
+            } else if let setTheme {
+                setTheme(target)
+            } else {
+                try setDarkViaAppleScript(target)
+            }
+        } catch {
+            refresh()
+            throw error
         }
-        if let actual = injectedRead?() ?? getTheme?(), actual != target {
+        let actual = injectedRead?() ?? getTheme?() ?? target
+        if isDark != actual { isDark = actual }
+        guard actual == target else {
             throw CommandError.system("macOS did not apply the requested appearance.")
         }
-        isDark = target
     }
 
     func refresh() {

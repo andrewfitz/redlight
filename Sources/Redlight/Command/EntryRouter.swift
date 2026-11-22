@@ -20,11 +20,6 @@ struct RedlightRunningPeer: Sendable {
 
 /// Decides the process role before any app object, recovery hook or display owner exists.
 enum EntryRouter {
-    static let commands: Set<String> = [
-        "on", "off", "toggle", "status", "color", "whitepoint", "reset", "preset",
-        "adaptive", "limits", "display", "appearance", "login", "update", "quit",
-    ]
-
     /// A previous version has no reservation port. Refuse to become a second gamma
     /// owner even if this version successfully reserved the new port.
     @MainActor
@@ -38,15 +33,9 @@ enum EntryRouter {
         guard let executable = arguments.first else { return false }
         if URL(fileURLWithPath: executable).lastPathComponent == "redlight" { return true }
         guard let first = arguments.dropFirst().first else { return false }
-        if commands.contains(first) || ["--help", "-h", "--version", "--json"].contains(first) {
-            return true
-        }
         // LaunchServices supplies options such as -psn_…, -NSDocumentRevisionsDebugMode.
         // A bare positional argument is a mistyped CLI command, not an app launch.
-        if first.hasPrefix("-psn_") || first.hasPrefix("-NS") || first.hasPrefix("-Apple") {
-            return false
-        }
-        return true
+        return !first.hasPrefix("-psn_") && !first.hasPrefix("-NS") && !first.hasPrefix("-Apple")
     }
 
     @MainActor
@@ -64,7 +53,7 @@ enum EntryRouter {
             withExtendedLifetime(owner) { runApplication(owner) }
             return 0
         } catch {
-            reportError(String(describing: error))
+            reportError(error.localizedDescription)
             return 2
         }
     }

@@ -165,8 +165,9 @@ import Testing
     }
 
     @Test func invalidCommandPayloadIsRejected() {
-        #expect(throws: (any Error).self) {
-            try JSONDecoder().decode(CommandRequest.self, from: Data("{\"v\":1,\"command\":{\"unknown\":{}}}".utf8))
+        let data = Data(#"{"v":\#(CommandRequest.currentVersion),"command":{"unknown":{}}}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(CommandRequest.self, from: data)
         }
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(CommandRequest.self, from: Data("{\"command\":{\"status\":{}}}".utf8))

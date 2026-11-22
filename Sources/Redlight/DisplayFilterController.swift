@@ -53,6 +53,12 @@ final class DisplayFilterController: @preconcurrency GammaControlling {
         gamma.restoreAll()
     }
 
+    func resetForDisplayRecovery() {
+        routes.removeAll()
+        sidecar.restoreAll()
+        gamma.resetForDisplayRecovery()
+    }
+
     func displaysDidChange() {
         routes.removeAll()
         sidecar.displaysDidChange()
@@ -77,8 +83,10 @@ final class DisplayFilterController: @preconcurrency GammaControlling {
 /// highlight-reduction polynomial fits exactly, including inversion and RGB gains.
 enum SidecarTransferCurve {
     static func controls(gain: Float, whitepoint: Float, invert: Bool) -> [Float] {
-        let values: [Float] = [0, gain / 3, gain * 2 * whitepoint / 3, gain * whitepoint]
-        return invert ? Array(values.reversed()) : values
+        let low = gain / 3
+        let high = gain * 2 * whitepoint / 3
+        let end = gain * whitepoint
+        return invert ? [end, high, low, 0] : [0, low, high, end]
     }
 }
 
@@ -140,18 +148,23 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
     func applyFilter(to id: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
         guard intensity != 1 || whitepoint != 1 || invert else { restore(id); return }
         guard !unavailable.contains(id) else { return }
-        guard let screen = screens[id] ?? getScreen(id) else { restore(id); return }
-        screens[id] = screen
-        if overlays[id] == nil {
+        let cachedScreen = screens[id]
+        guard let screen = cachedScreen ?? getScreen(id) else { restore(id); return }
+        let overlay: any SidecarOverlay
+        if let existing = overlays[id] {
+            overlay = existing
+        } else {
             guard let window = makeOverlay(screen) else {
                 unavailable.insert(id)
                 NSLog("Redlight: Sidecar compositor filter is unavailable for display %u", id)
                 return
             }
             overlays[id] = window
+            overlay = window
         }
-        overlays[id]?.apply(screen: screen, intensity: intensity, whitepoint: whitepoint, invert: invert)
-        if !isMonitoringPointer { syncPointer() }
+        if cachedScreen == nil { screens[id] = screen }
+        overlay.apply(screen: screen, intensity: intensity, whitepoint: whitepoint, invert: invert)
+        if cachedScreen == nil { syncPointer() }
     }
 
     func restore(_ id: CGDirectDisplayID) {
@@ -410,10 +423,13 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
         // nearly neutral frame of a startup fade). Submit a new snapshot each time.
         if output != lastOutput {
             guard let filter = curve.copy() as? NSObject else { return }
-            let gains: [Float] = [1, intensity, max(0, intensity * 2 - 1)]
-            for (key, gain) in zip(["inputRedValues", "inputGreenValues", "inputBlueValues"], gains) {
-                filter.setValue(SidecarTransferCurve.controls(gain: gain, whitepoint: whitepoint, invert: invert), forKey: key)
-            }
+            let red = SidecarTransferCurve.controls(gain: 1, whitepoint: whitepoint, invert: invert)
+            let green = SidecarTransferCurve.controls(gain: intensity, whitepoint: whitepoint, invert: invert)
+            let blue = SidecarTransferCurve.controls(
+                gain: max(0, intensity * 2 - 1), whitepoint: whitepoint, invert: invert)
+            filter.setValue(red, forKey: "inputRedValues")
+            filter.setValue(green, forKey: "inputGreenValues")
+            filter.setValue(blue, forKey: "inputBlueValues")
             backdrop.filters = [filter]
             lastOutput = output
         }
@@ -433,12 +449,18 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
     }
 
     func updatePointer(_ cursor: NSCursor?, at location: NSPoint) {
-        guard cursor != nil || !pointer.isHidden else { return }
+        let hidden = pointer.isHidden
+        if cursor == nil, hidden { return }
+        let frame = frame
+        let position = CGPoint(x: location.x - frame.minX, y: location.y - frame.minY)
+        let positionChanged = pointer.position != position
+        let cursorChanged = cursor !== pointerCursor
+        guard cursor == nil || hidden || positionChanged || cursorChanged else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         guard let cursor else { pointer.isHidden = true; return }
-        if cursor !== pointerCursor {
+        if cursorChanged {
             let size = cursor.image.size
             pointer.contents = cursor.image
             pointer.bounds = CGRect(origin: .zero, size: size)
@@ -448,8 +470,8 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
                 : .zero
             pointerCursor = cursor
         }
-        pointer.position = CGPoint(x: location.x - frame.minX, y: location.y - frame.minY)
-        pointer.isHidden = false
+        if positionChanged { pointer.position = position }
+        if hidden { pointer.isHidden = false }
     }
 
     private func rebuildLayerSurface() {

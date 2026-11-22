@@ -100,10 +100,11 @@ enum SolarCurve {
         ease((upper - elevation) / (upper - lower))
     }
 
-    /// Smoothstep, clamped to [0, 1].
+    /// Quadratic ease-in-out, clamped to [0, 1].
     private static func ease(_ t: Double) -> Double {
         let c = min(1, max(0, t))
-        return c < 0.5 ? 2 * c * c : 1 - pow(-2 * c + 2, 2) / 2
+        let remaining = 1 - c
+        return c < 0.5 ? 2 * c * c : 1 - 2 * remaining * remaining
     }
 
     private static func values(_ preset: Preset) -> (intensity: Double, whitepoint: Double) {

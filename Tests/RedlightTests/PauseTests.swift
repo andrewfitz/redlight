@@ -79,7 +79,7 @@ private final class Clock {
         #expect(manager.isFiltering)
     }
 
-    @Test func masterOnTurnsAFilterOnWhenThePausedDisplayWasUnplugged() {
+    @Test(arguments: [true, false]) func masterSwitchEndsPauseAfterPausedDisplayWasUnplugged(on: Bool) {
         let clock = clock
         let manager = DisplayManager(
             gamma: mock,
@@ -104,12 +104,13 @@ private final class Clock {
         #expect(manager.isPaused)
         #expect(!manager.isOn)
 
-        // One request, not two: resuming alone would leave Redlight off.
         mock.applyCalls.removeAll()
-        manager.setAll(on: true)
+        manager.setAll(on: on)
         #expect(!manager.isPaused)
-        #expect(manager.isFiltering)
-        #expect(mock.applyCalls.last { $0.displayID == 1 }?.intensity == Float(0.4))
+        #expect(manager.isFiltering == on)
+        if on {
+            #expect(mock.applyCalls.last { $0.displayID == 1 }?.intensity == Float(0.4))
+        }
     }
 
     @Test func turningOffEndsThePauseWithoutReshowingTheFilter() {
@@ -217,6 +218,41 @@ private final class Clock {
         #expect(relaunched.pauseLength == 3 * 3_600)
     }
 
+    @Test(arguments: [30.0, 43_200.0, 86_900.0])
+    func absolutePausePreservesItsDeadlineAcrossClockChangesAndRelaunch(length: TimeInterval) {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "PauseTests")
+        let manager = makeManager(defaults: defaults)
+        manager.setEnabled(true, for: 1)
+        let deadline = clock.date.addingTimeInterval(length)
+        #expect(manager.pause(until: deadline))
+        #expect(manager.pausedUntil == deadline)
+        #expect(manager.pauseLength == length)
+
+        clock.date = clock.date.addingTimeInterval(-120)
+        manager.refreshPause()
+        #expect(manager.pausedUntil == deadline)
+        let relaunched = makeManager(defaults: defaults)
+        #expect(relaunched.pausedUntil == deadline)
+        #expect(relaunched.pauseLength == length)
+
+        clock.date = deadline
+        relaunched.refreshPause()
+        #expect(!relaunched.isPaused)
+        #expect(defaults.object(forKey: "redlight.pauseUsesDeadline") == nil)
+    }
+
+    @Test func absolutePauseRequiresAFutureDeadlineAndAFixedPauseReplacesItsMode() {
+        let manager = makeManager()
+        manager.setEnabled(true, for: 1)
+        #expect(!manager.pause(until: clock.date))
+        #expect(!manager.pause(until: Date(timeIntervalSince1970: .infinity)))
+        #expect(manager.pause(until: clock.date.addingTimeInterval(30)))
+        #expect(manager.pause(for: 60))
+        clock.date = clock.date.addingTimeInterval(-120)
+        manager.refreshPause()
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(60))
+    }
+
     @Test func pauseSavedByAnOlderVersionKeepsTheThirtyMinuteCap() {
         for storedLength: Any? in [nil, Double.nan, 1e9, -5.0, "long"] {
             let defaults = defaultsRegistry.makeDefaults(prefix: "PauseTests")
@@ -255,7 +291,7 @@ private final class Clock {
         #expect(DisplayManager.pauseLengthText(14.5 * 3_600) == "14 h 30 m")
     }
 
-    @Test func secondsUntilSunriseUsesTheProviderCoordinate() throws {
+    @Test func nextSunriseUsesTheProviderCoordinate() throws {
         let location = FakeLocationProvider()
         let clock = clock
         clock.date = ISO8601DateFormatter().date(from: "2025-03-20T15:00:00Z")!
@@ -265,13 +301,13 @@ private final class Clock {
             defaults: defaultsRegistry.makeDefaults(prefix: "PauseTests"),
             location: location, now: { clock.date },
             adaptiveTransitionDuration: 0, displayTransitionDuration: 0)
-        #expect(manager.secondsUntilSunrise() == nil)
+        #expect(manager.nextSunrise() == nil)
         location.setManualCoordinate((latitude: 0, longitude: 0))
         let expected = try #require(SunCycle.nextSunrise(after: clock.date, latitude: 0, longitude: 0))
-        #expect(manager.secondsUntilSunrise() == expected.timeIntervalSince(clock.date))
+        #expect(manager.nextSunrise() == expected)
         clock.date = ISO8601DateFormatter().date(from: "2025-06-21T12:00:00Z")!
         location.setManualCoordinate((latitude: 89.9, longitude: 0))   // polar day
-        #expect(manager.secondsUntilSunrise() == nil)
+        #expect(manager.nextSunrise() == nil)
     }
 
     @Test func peekShowsTrueColorsOnlyWhileHeld() {

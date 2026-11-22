@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import Redlight
 
+/// Stubbed handoffs advance their deadline only while polling. Other main-actor tests
+/// can keep the run loop busy for longer than the production timeout.
+@MainActor func makePollingTestClient() -> ControlHandoffClient {
+    var client = ControlHandoffClient()
+    var instant = ContinuousClock.now
+    client.now = { instant }
+    client.sleep = {
+        instant = instant.advanced(by: .milliseconds(50))
+        await Task.yield()
+    }
+    return client
+}
+
 @MainActor @Suite struct ControlHandoffTests {
     func url(_ on: Bool, _ id: UUID) -> URL {
         URL(string: "redlight://\(on ? "on" : "off")?request=\(id.uuidString)")!
@@ -43,7 +56,7 @@ import Testing
         let handoff = ControlHandoff(read: { receipts[$0] }, record: { receipts[$0.request] = $0 }, publish: { state = $0 })
         if running { handoff.install(setOn: { $0 }) }
         var opens = 0
-        var client = ControlHandoffClient()
+        var client = makePollingTestClient()
         client.open = { url in
             opens += 1
             #expect(handoff.handle(url: url))
@@ -60,7 +73,7 @@ import Testing
         let handoff = ControlHandoff(read: { receipts[$0] }, record: { receipts[$0.request] = $0 }, publish: { state = $0 })
         handoff.install(setOn: { $0 })
         let first = UUID(), second = UUID()
-        var onClient = ControlHandoffClient()
+        var onClient = makePollingTestClient()
         onClient.open = { _ in
             #expect(handoff.handle(url: url(true, first)))
             #expect(handoff.handle(url: url(false, second)))
@@ -76,6 +89,31 @@ import Testing
         #expect(receipts[first]?.on == true)
         #expect(receipts[second]?.on == false)
         #expect(!state) // Current state may reflect the later request when the first returns.
+    }
+
+    @Test func redeliveryRetriesReceiptWithoutReapplyingAnEarlierState() {
+        let first = UUID(), second = UUID()
+        var failFirstRecord = true
+        var receipts: [UUID: ControlReceipt] = [:]
+        var applied: [Bool] = []
+        let handoff = ControlHandoff(
+            read: { receipts[$0] },
+            record: { receipt in
+                if receipt.request == first, failFirstRecord {
+                    failFirstRecord = false
+                    throw ControlHandoffError.failed("Receipt storage unavailable")
+                }
+                receipts[receipt.request] = receipt
+            },
+            publish: { _ in }
+        )
+        handoff.install(setOn: { on in applied.append(on); return on })
+        #expect(handoff.handle(url: url(true, first)))
+        #expect(receipts[first] == nil)
+        #expect(handoff.handle(url: url(false, second)))
+        #expect(handoff.handle(url: url(true, first)))
+        #expect(applied == [true, false])
+        #expect(receipts[first]?.on == true && receipts[second]?.on == false)
     }
 
     @Test func launchErrorsCommandErrorsAndTimeoutNeverReportSuccess() async {
@@ -94,6 +132,13 @@ import Testing
         client.now = { instant }
         client.sleep = { instant = instant.advanced(by: .seconds(1)); sleeps += 1 }
         await #expect(throws: (any Error).self) { try await client.setOn(true) }
+        #expect(sleeps == 5)
+
+        sleeps = 0
+        client.read = { _ in
+            sleeps == 5 ? ControlReceipt(request: id, on: true, error: nil, completedAt: Date()) : nil
+        }
+        await #expect(throws: ControlHandoffError.self) { try await client.setOn(true) }
         #expect(sleeps == 5)
     }
 

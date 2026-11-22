@@ -172,7 +172,7 @@ import Testing
         var receipts: [UUID: ControlReceipt] = [:]
         let coordinator = ControlHandoff(read: { receipts[$0] }, record: { receipts[$0.request] = $0 }, publish: { _ in })
         if running { coordinator.install(setOn: { $0 }) }
-        var client = ControlHandoffClient()
+        var client = makePollingTestClient()
         client.open = { url in
             #expect(coordinator.handle(url: url))
             if !running { coordinator.install(setOn: { $0 }) }

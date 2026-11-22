@@ -37,7 +37,9 @@ enum CLIPrivilegedResult {
 final class CLIInstaller {
     static let declinedKey = "redlight.cliInstallDeclined"
     static let attemptedKey = "redlight.cliInstallPromptAttempted"
-    private static let directories = ["/opt/homebrew/bin", "/usr/local/bin"]
+    private static let homebrewDirectory = "/opt/homebrew/bin"
+    private static let privilegedDirectory = "/usr/local/bin"
+    private static let directories = [homebrewDirectory, privilegedDirectory]
 
     private let executablePath: String?
     private let homeDirectory: String
@@ -110,7 +112,13 @@ final class CLIInstaller {
 
         do {
             guard let target = try eligibleExecutable() else { return record(.ineligibleLocation) }
-            let path = "/usr/local/bin/redlight"
+            let homebrewPath = Self.homebrewDirectory + "/redlight"
+            if case let .symlink(link) = try? fileSystem.entry(at: homebrewPath),
+               Self.absoluteLinkTarget(link, at: homebrewPath) == target {
+                return record(.alreadyInstalled(homebrewPath))
+            }
+
+            let path = Self.privilegedDirectory + "/redlight"
             let existing: String?
             switch try fileSystem.entry(at: path) {
             case .missing: existing = nil

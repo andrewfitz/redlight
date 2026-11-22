@@ -86,21 +86,10 @@ import CoreGraphics
         #expect(hit(pos(0.78), value: 0.8, lower: 0.2, upper: 0.8) == .value)
     }
 
-    @Test func parkedThumbHandsAnOutwardDragToItsLimit() {
-        func outward(_ startX: CGFloat, _ dx: CGFloat, value: Double) -> BandSliderCore.Handle? {
-            BandSliderCore.outwardMarker(startX: startX, dx: dx, width: width, inset: inset,
-                                         range: range, value: value, lower: 0.2, upper: 0.8)
-        }
-        // Pressing beside a parked thumb grabs the thumb; pulling it out of the band
-        // can only mean moving the limit it rests on.
-        #expect(hit(pos(0.83), value: 0.8, lower: 0.2, upper: 0.8) == .value)
-        #expect(outward(pos(0.83), 3, value: 0.8) == .upper)
-        #expect(outward(pos(0.8), -3, value: 0.2) == nil) // thumb is elsewhere
-        #expect(outward(pos(0.2), -3, value: 0.2) == .lower)
-        // Inward drags keep moving the value, as do drags of a thumb inside the band.
-        #expect(outward(pos(0.8), -3, value: 0.8) == nil)
-        #expect(outward(pos(0.5), 3, value: 0.5) == nil)
-        #expect(outward(pos(0.8), 0, value: 0.8) == nil)
+    @Test func markerGrabbableFromOutsideTheBand() {
+        // Grabbing beyond the bracket picks the marker — the only handle that can move there.
+        #expect(hit(pos(0.83), value: 0.8, lower: 0.2, upper: 0.8) == .upper)
+        #expect(hit(pos(0.17), value: 0.2, lower: 0.2, upper: 0.8) == .lower)
     }
 
     @Test func tabAboveOrBelowAParkedThumbGrabsTheLimit() {
@@ -120,40 +109,34 @@ import CoreGraphics
     @Test func distantTrackClickMovesValueInsteadOfBand() {
         #expect(hit(pos(0.1), value: 0.5, lower: 0.0, upper: 1.0) == .value)
         #expect(hit(pos(0.9), value: 0.5, lower: 0.0, upper: 1.0) == .value)
-        // Clicks on the track near a limit, but not on its marker, still move the value.
-        #expect(hit(pos(0.24), value: 0.5, lower: 0.2, upper: 0.8) == .value)
-        #expect(hit(pos(0.75), value: 0.5, lower: 0.2, upper: 0.8) == .value)
+        #expect(hit(pos(0.1), value: 0.2, lower: 0.2, upper: 0.8) == .value)
+        #expect(hit(pos(0.9), value: 0.8, lower: 0.2, upper: 0.8) == .value)
     }
 
-    @Test func pinnedThumbMovesThePinInsteadOfSplittingIt() {
-        #expect(BandSliderCore.isPinned(lower: 0.6, upper: 0.6))
-        #expect(!BandSliderCore.isPinned(lower: 0.6, upper: 0.61))
-        // The thumb's body on a pin is still the thumb, and dragging it either way never
-        // hands off to a limit.
-        #expect(hit(pos(0.6), value: 0.6, lower: 0.6, upper: 0.6) == .value)
-        for dx: CGFloat in [-3, 3] {
-            #expect(BandSliderCore.outwardMarker(startX: pos(0.6), dx: dx, width: width, inset: inset,
-                                                 range: range, value: 0.6, lower: 0.6, upper: 0.6) == nil)
+    @Test func existingPinsMoveWithTheThumbAndWidenUsingEitherMarker() {
+        for pin in [0.0, 0.5, 1.0] {
+            #expect(hit(pos(pin), value: pin, lower: pin, upper: pin) == .value)
+            #expect(hit(pos(pin) - 4, value: pin, lower: pin, upper: pin) == .value)
+            #expect(hit(pos(pin) + 4, value: pin, lower: pin, upper: pin) == .value)
+            #expect(BandSliderCore.editedValue(0.3, for: .value, range: range,
+                lower: pin, upper: pin, showBand: true, minGap: 0.05) == 0.3)
+            #expect(BandSliderCore.resolveStackedMarker(.lower, dx: 3, lower: pin, upper: pin) == .upper)
+            #expect(BandSliderCore.resolveStackedMarker(.upper, dx: -3, lower: pin, upper: pin) == .lower)
         }
+        #expect(BandSliderCore.editedValue(0.01, for: .upper, range: range,
+            lower: 0, upper: 0, showBand: true, minGap: 0.05) == 0.05)
+        #expect(BandSliderCore.editedValue(0.99, for: .lower, range: range,
+            lower: 1, upper: 1, showBand: true, minGap: 0.05) == 0.95)
     }
 
-    @Test func stackedMarkersFollowTheDragDirection() {
-        func stacked(_ grabbed: BandSliderCore.Handle, _ dx: CGFloat, _ lower: Double, _ upper: Double)
-            -> BandSliderCore.Handle
-        {
-            BandSliderCore.stackedMarker(grabbed, dx: dx, width: width, inset: inset,
-                                         range: range, lower: lower, upper: upper)
-        }
-        // A pin at the floor grabs the minimum, which could never move right.
-        #expect(BandSliderCore.hitHandle(atX: pos(0), dy: -11, width: width, inset: inset, range: range,
-                                         value: 0, lower: 0, upper: 0, showBand: true) == .lower)
-        #expect(stacked(.lower, 3, 0, 0) == .upper)
-        #expect(stacked(.lower, -3, 1, 1) == .lower)
-        #expect(stacked(.upper, -3, 0.5, 0.5) == .lower)
-        // Separate markers and the thumb keep what was grabbed.
-        #expect(stacked(.lower, 3, 0.2, 0.8) == .lower)
-        #expect(stacked(.value, 3, 0.5, 0.5) == .value)
-        #expect(stacked(.lower, 0, 0.5, 0.5) == .lower)
+    @Test func editingAnExistingNarrowBandNeverMovesTheMarkerOppositeTheRequestedDirection() {
+        #expect(BandSliderCore.editedValue(0.53, for: .lower, range: range,
+            lower: 0.5, upper: 0.52, showBand: true, minGap: 0.05) == 0.5)
+        #expect(BandSliderCore.editedValue(0.49, for: .upper, range: range,
+            lower: 0.5, upper: 0.52, showBand: true, minGap: 0.05) == 0.52)
+        let expanded = BandSliderCore.editedValue(0.49, for: .lower, range: range,
+            lower: 0.5, upper: 0.52, showBand: true, minGap: 0.05)
+        #expect(abs(expanded - 0.47) < 1e-9)
     }
 
     @Test func hitTestingUsesTheVisibleBandClampedThumb() {

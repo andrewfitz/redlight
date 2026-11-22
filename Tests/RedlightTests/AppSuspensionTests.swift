@@ -347,6 +347,25 @@ private final class Clock {
         #expect(makeController(source: FakeAppSource(), defaults: defaults).bundleIDs.isEmpty)
     }
 
+    @Test func sanitizingPreservesTheFirstSpellingOfEachBundleID() {
+        let ids = ["test.Straße", "TEST.STRASSE", "org.Notes", "org.notes"]
+        #expect(AppSuspensionController.sanitized(ids) == ["test.Straße", "org.Notes"])
+    }
+
+    @Test func identicalActivationsDoNotRepublishTheSuspension() throws {
+        let source = FakeAppSource(frontmost: .safari)
+        let controller = makeController(source: source)
+        try controller.add("com.adobe.Photoshop")
+        var decisions: [String?] = []
+        controller.onChange = { decisions.append($0) }
+        source.activate(.safari)
+        source.activate(.photoshop)
+        source.wake()
+        source.activate(.redlight)
+        source.activate(.safari)
+        #expect(decisions == ["Photoshop", nil])
+    }
+
     @Test func bundleIDValidationIsLoose() throws {
         for valid in ["com.adobe.Photoshop", "org.mozilla.firefox", "Photoshop", String(repeating: "a", count: 255)] {
             #expect(try AppBundleID.validate(valid) == valid)

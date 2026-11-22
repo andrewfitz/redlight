@@ -51,12 +51,6 @@ final class CommandServer {
     fileprivate func receive(_ data: Data) -> Data {
         let reply: CommandReply
         do {
-            // Inspect the envelope before decoding command cases: a future client
-            // can send an enum unknown to this version and still needs update advice.
-            let header = try JSONDecoder().decode(CommandProtocolHeader.self, from: data)
-            guard header.v == CommandRequest.currentVersion else {
-                return encode(.failure(.system("Unsupported command protocol version; update Redlight.")))
-            }
             let request = try JSONDecoder().decode(CommandRequest.self, from: data)
             guard let handler else {
                 throw CommandError.unreachable("Redlight is still starting.")

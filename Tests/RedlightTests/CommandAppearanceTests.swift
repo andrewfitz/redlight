@@ -66,4 +66,14 @@ import Testing
         #expect(throws: CommandError.self) { try appearance.setDark(true) }
         #expect(!appearance.isDark)
     }
+
+    @Test func writeErrorKeepsTheObservedAppearanceCurrent() {
+        var dark = false
+        let appearance = AppearanceController(read: { dark }, write: {
+            dark = $0
+            throw CommandError.system("Follow-up failed.")
+        })
+        #expect(throws: CommandError.self) { try appearance.setDark(true) }
+        #expect(appearance.isDark)
+    }
 }

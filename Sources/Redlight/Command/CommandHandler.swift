@@ -43,7 +43,6 @@ final class CommandHandler {
         // Resolve every display and validate every argument before touching a drag,
         // preferences, gamma, or a system service.
         let addressed: [CGDirectDisplayID]
-        var pauseLength: TimeInterval?
         switch command {
         case .color(let value):
             try validate(value, channel: .color)
@@ -62,9 +61,7 @@ final class CommandHandler {
             }
             addressed = []
         case .pauseFor(let length):
-            guard manager.isOn else { throw CommandError.invalidInput("Turn Redlight on before pausing.") }
-            pauseLength = try resolve(length)
-            addressed = []
+            return try pause(for: length)
         case .location(.manual(let latitude, let longitude)):
             try ManualLocation.validate(latitude: latitude, longitude: longitude)
             addressed = []
@@ -124,8 +121,6 @@ final class CommandHandler {
                 } else {
                     manager.resume()
                 }
-            case .pauseFor:
-                manager.pause(for: pauseLength ?? DisplayManager.Defaults.pauseDuration)
             case .location(.automatic):
                 manager.setManualLocation(nil)
             case .location(.manual(let latitude, let longitude)):
@@ -186,7 +181,7 @@ final class CommandHandler {
                 services.deferAction(services.quit)
             case .apps(let change):
                 try services.changeApps(change)
-            case .status, .displayList, .appsList:
+            case .pauseFor, .status, .displayList, .appsList:
                 break
             }
         } catch let error as CommandError {
@@ -243,24 +238,29 @@ final class CommandHandler {
         }
     }
 
-    /// Seconds for a requested pause. Sunrise is found now, before anything changes, so a
-    /// missing location or a polar day fails without pausing or interrupting a drag.
-    private func resolve(_ length: CommandPauseLength) throws -> TimeInterval {
+    /// Validate the requested pause before interrupting a drag or replacing an active pause.
+    private func pause(for length: CommandPauseLength) throws -> Status {
+        guard manager.isOn else { throw CommandError.invalidInput("Turn Redlight on before pausing.") }
         switch length {
         case .minutes(let minutes):
             guard CommandPauseLength.minuteRange.contains(minutes) else {
                 throw CommandError.invalidInput("A pause must be a whole number of minutes from 1 to 1440 (24 hours).")
             }
-            return TimeInterval(minutes * 60)
+            manager.interruptSliderInteraction()
+            manager.pause(for: TimeInterval(minutes * 60))
         case .untilSunrise:
             guard manager.hasLocation else {
                 throw CommandError.invalidInput("Redlight has no location to find sunrise from. Set one under Adaptive or with redlight location.")
             }
-            guard let seconds = manager.secondsUntilSunrise() else {
-                throw CommandError.invalidInput("The sun does not rise here in the next 24 hours, so Redlight cannot pause until sunrise.")
+            guard let sunrise = manager.nextSunrise() else {
+                throw CommandError.invalidInput("The sun does not rise here in the next 25 hours, so Redlight cannot pause until sunrise.")
             }
-            return seconds
+            manager.interruptSliderInteraction()
+            guard manager.pause(until: sunrise) else {
+                throw CommandError.invalidInput("The sunrise deadline passed before Redlight could pause. Try again.")
+            }
         }
+        return snapshot()
     }
 
     private func resolve(_ selector: CommandDisplaySelector) throws -> [CGDirectDisplayID] {

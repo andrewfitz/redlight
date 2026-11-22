@@ -59,10 +59,17 @@ def action_identifiers(metadata: pathlib.Path) -> set[str]:
     actions_file = metadata / "extract.actionsdata"
     if not actions_file.is_file():
         fail(f"Missing extracted App Intents actions: {actions_file}")
-    actions = json.loads(actions_file.read_text()).get("actions")
+    document = json.loads(actions_file.read_text())
+    actions = document.get("actions") if isinstance(document, dict) else None
     if not isinstance(actions, dict):
         fail(f"Invalid App Intents action dictionary: {actions_file}")
-    return {action.get("identifier", key) for key, action in actions.items()}
+    identifiers = set()
+    for key, action in actions.items():
+        identifier = action.get("identifier", key) if isinstance(action, dict) else None
+        if not isinstance(identifier, str) or not identifier:
+            fail(f"Invalid App Intents action identifier: {actions_file}")
+        identifiers.add(identifier)
+    return identifiers
 
 
 def verify_actions(bundle: pathlib.Path, expected: set[str]) -> None:
@@ -72,19 +79,31 @@ def verify_actions(bundle: pathlib.Path, expected: set[str]) -> None:
         fail(f"App Intents metadata in {bundle.name} is missing: {', '.join(sorted(missing))}")
 
 
-def verify_extension_entrypoint(executable: pathlib.Path) -> None:
-    symbols = subprocess.run(["nm", "-nm", str(executable)], capture_output=True, text=True, check=True).stdout
-    if not re.search(r"\(undefined\).*\b_NSExtensionMain\b", symbols):
-        fail("The control extension must import Foundation's _NSExtensionMain entry point.")
-    loads = subprocess.run(["otool", "-l", str(executable)], capture_output=True, text=True, check=True).stdout
+def verify_executable(executable: pathlib.Path, deployment_target: str) -> str:
+    architectures = subprocess.check_output(["lipo", "-archs", str(executable)], text=True).split()
+    if architectures != ["arm64"]:
+        fail(f"{executable.name} must contain one arm64 slice.")
+    loads = subprocess.check_output(["otool", "-vl", str(executable)], text=True)
+    build = re.search(r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform (?:MACOS|1)\s+minos ([\d.]+)", loads)
+    if not build or build.group(1) != deployment_target:
+        fail(f"{executable.name} must target macOS {deployment_target}.")
+    return loads
+
+
+def verify_extension_entrypoint(executable: pathlib.Path, loads: str) -> None:
     text_segment = re.search(r"segname __TEXT\s+vmaddr (0x[0-9a-fA-F]+)", loads)
     entry = re.search(r"cmd LC_MAIN\s+cmdsize \d+\s+entryoff (\d+)", loads)
-    swift_main = re.search(r"^([0-9a-fA-F]+) .*\b_main$", symbols, re.MULTILINE)
     if not text_segment or not entry:
         fail("Unable to verify the control extension's Mach-O entry point.")
     entry_address = int(text_segment.group(1), 16) + int(entry.group(1))
-    if swift_main and entry_address == int(swift_main.group(1), 16):
-        fail("The control extension starts at Swift main instead of macOS extension bootstrap.")
+    symbols = subprocess.check_output(["otool", "-Iv", str(executable)], text=True)
+    stubs = re.search(r"Indirect symbols for \(__TEXT,__stubs\)[^\n]*\n(.*?)(?:\nIndirect symbols for |\Z)",
+                      symbols, re.DOTALL)
+    if stubs:
+        symbol = re.search(r"^(0x[0-9a-fA-F]+)\s+\d+\s+_NSExtensionMain\s*$", stubs.group(1), re.MULTILINE)
+        if symbol and entry_address == int(symbol.group(1), 16):
+            return
+    fail("The control extension must start at Foundation's _NSExtensionMain entry point.")
 
 
 def extract(args: argparse.Namespace) -> None:
@@ -130,9 +149,13 @@ def verify(args: argparse.Namespace) -> None:
         subprocess.run(["plutil", "-lint", str(bundle / "Contents/Info.plist")], check=True)
     app_info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     extension_info = plistlib.loads((extension / "Contents/Info.plist").read_bytes())
-    verify_extension_entrypoint(extension / "Contents/MacOS" / extension_info["CFBundleExecutable"])
     if app_info.get("CFBundleIdentifier") != "com.redlight.app" or app_info.get("LSUIElement") is not True:
         fail("App identity or menu-bar-only configuration is missing.")
+    if app_info.get("CFBundleExecutable") != "Redlight" or app_info.get("CFBundlePackageType") != "APPL":
+        fail("The app must package the Redlight executable.")
+    if (extension_info.get("CFBundleIdentifier"), extension_info.get("CFBundleExecutable"),
+            extension_info.get("CFBundlePackageType")) != ("com.redlight.app.RedlightControl", "RedlightControl", "XPC!"):
+        fail("The Control Center extension must package the RedlightControl executable and bundle identity.")
     schemes = {scheme for entry in app_info.get("CFBundleURLTypes", []) for scheme in entry.get("CFBundleURLSchemes", [])}
     if "redlight" not in schemes:
         fail("The Redlight control URL scheme is missing from the app.")
@@ -152,6 +175,9 @@ def verify(args: argparse.Namespace) -> None:
         fail("The Control Center extension must require macOS 26.")
     if extension_info.get("NSExtension", {}).get("NSExtensionPointIdentifier") != "com.apple.widgetkit-extension":
         fail("The control bundle must register as a WidgetKit extension.")
+    verify_executable(app / "Contents/MacOS/Redlight", "14.0")
+    extension_executable = extension / "Contents/MacOS/RedlightControl"
+    verify_extension_entrypoint(extension_executable, verify_executable(extension_executable, "26.0"))
     entitlements = subprocess.run(
         ["codesign", "-d", "--entitlements", ":-", str(extension)],
         capture_output=True, check=True,
@@ -166,20 +192,25 @@ def verify(args: argparse.Namespace) -> None:
     print(f"Verified command metadata, bundle configuration, entitlements and signatures: {app}")
 
 
+def invocation_tool(path: str, invocation: str) -> pathlib.Path:
+    tool = pathlib.Path(path).resolve()
+    if not tool.is_relative_to(pathlib.Path(invocation).resolve()) or not tool.is_file() or not os.access(tool, os.X_OK):
+        fail(f"Missing executable Sparkle appcast tool from this build: {tool}")
+    return tool
+
+
 def build_info(args: argparse.Namespace) -> None:
     output = pathlib.Path(args.output_dir).resolve()
     invocation = pathlib.Path(args.invocation_dir).resolve()
-    swiftpm = pathlib.Path(args.swiftpm_dir).resolve()
-    if not swiftpm.is_relative_to(invocation):
-        fail("SwiftPM output must belong to this build invocation.")
+    tool = invocation_tool(args.sparkle_tool, args.invocation_dir)
     info = {
         "schemaVersion": 1,
         "appVersion": args.version,
         "buildNumber": int(args.build),
-        "app": str(pathlib.Path(args.app).resolve()),
-        "dmg": str(pathlib.Path(args.dmg).resolve()),
+        "app": os.path.abspath(args.app),
+        "dmg": os.path.abspath(args.dmg),
         "invocationDirectory": str(invocation),
-        "sparkleAppcastTool": str(swiftpm / "artifacts/sparkle/Sparkle/bin/generate_appcast"),
+        "sparkleAppcastTool": str(tool),
     }
     (output / ".redlight-build-info.json").write_text(json.dumps(info, indent=2) + "\n")
 
@@ -189,11 +220,7 @@ def sparkle_tool(args: argparse.Namespace) -> None:
     info = json.loads(info_file.read_text())
     if info.get("schemaVersion") != 1:
         fail(f"Unsupported build information: {info_file}")
-    invocation = pathlib.Path(info["invocationDirectory"]).resolve()
-    tool = pathlib.Path(info["sparkleAppcastTool"]).resolve()
-    if not tool.is_relative_to(invocation) or not tool.is_file() or not os.access(tool, os.X_OK):
-        fail(f"Missing executable Sparkle appcast tool from this build: {tool}")
-    print(tool)
+    print(invocation_tool(info["sparkleAppcastTool"], info["invocationDirectory"]))
 
 
 def main() -> None:
@@ -214,7 +241,7 @@ def main() -> None:
     verification.add_argument("--app", required=True)
     verification.set_defaults(action=verify)
     information = subparsers.add_parser("build-info")
-    for name in ("output-dir", "invocation-dir", "swiftpm-dir", "app", "dmg", "version", "build"):
+    for name in ("output-dir", "invocation-dir", "sparkle-tool", "app", "dmg", "version", "build"):
         information.add_argument(f"--{name}", required=True)
     information.set_defaults(action=build_info)
     release_tool = subparsers.add_parser("sparkle-tool")

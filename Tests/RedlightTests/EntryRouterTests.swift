@@ -47,14 +47,16 @@ import Testing
     @Test @MainActor func duplicateNeverRunsRecoveryOrTermination() {
         var appCallbacks = 0
         var cliCallbacks = 0
+        var errors: [String] = []
         let code = EntryRouter.run(arguments: ["Redlight"], reserveOwner: { () throws -> Int in
             throw CommandError.unreachable("Taken")
         }, runApplication: { _ in appCallbacks += 1 }, runCLI: { _ in
             cliCallbacks += 1
             return 0
-        }, reportError: { _ in })
+        }, reportError: { errors.append($0) })
         #expect(code == 2)
         #expect(appCallbacks == 0 && cliCallbacks == 0)
+        #expect(errors == ["Taken"])
     }
 
     @Test @MainActor func reservationPrecedesApplicationCallbacks() {

@@ -31,7 +31,11 @@ struct CommandClient: Sendable {
         self.isLegacyAppRunning = isLegacyAppRunning
         self.launch = launch
         self.send = send ?? { command in
-            try await Task.detached { try Self.sendSynchronously(command, portName: portName) }.value
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(with: Result { try Self.sendSynchronously(command, portName: portName) })
+                }
+            }
         }
         self.wait = wait
         self.startupTimeout = startupTimeout
@@ -60,7 +64,14 @@ struct CommandClient: Sendable {
         let resolved: RedlightCommand = !running && command == .master(.toggle) ? .master(.on) : command
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: startupTimeout)
-        if !running { try await launch() }
+        if !running {
+            do {
+                try await launch()
+            } catch {
+                // Another invocation can start the owner while our launch is in flight.
+                if error is CancellationError || !hasPort() { throw error }
+            }
+        }
         while !hasPort() {
             guard clock.now < deadline else {
                 throw CommandError.unreachable(running

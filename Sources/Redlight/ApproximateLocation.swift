@@ -5,7 +5,8 @@ import Foundation
 /// triangulation) so Adaptive and the sun-arc graphic still have a solar position to follow.
 enum ApproximateLocation {
     static func from(_ timeZone: TimeZone, at date: Date = Date()) -> (latitude: Double, longitude: Double) {
-        if let known = coordinates[timeZone.identifier] { return known }
+        let identifier = aliases[timeZone.identifier] ?? timeZone.identifier
+        if let known = coordinates[identifier] { return known }
         // Standard offset only: the daylight-saving hour would otherwise shift the
         // estimate 15° east for half the year. 240 s per degree of longitude.
         let standardOffset = Double(timeZone.secondsFromGMT(for: date))
@@ -13,8 +14,28 @@ enum ApproximateLocation {
         // UTC+13/+14 zones (Apia, Kiritimati) sit west of the antimeridian: wrap, don't clamp.
         var longitude = standardOffset / 240.0
         if longitude > 180 { longitude -= 360 } else if longitude < -180 { longitude += 360 }
-        return (inferredLatitude(timeZone.identifier), longitude)
+        return (inferredLatitude(identifier), longitude)
     }
+
+    // Foundation preserves older IANA identifiers when they are used as the system zone.
+    private static let aliases = [
+        "US/Eastern": "America/New_York",
+        "US/Central": "America/Chicago",
+        "US/Mountain": "America/Denver",
+        "US/Pacific": "America/Los_Angeles",
+        "US/Alaska": "America/Anchorage",
+        "US/Aleutian": "America/Adak",
+        "US/Arizona": "America/Phoenix",
+        "US/East-Indiana": "America/Indiana/Indianapolis",
+        "US/Hawaii": "Pacific/Honolulu",
+        "Canada/Newfoundland": "America/St_Johns",
+        "Asia/Calcutta": "Asia/Kolkata",
+        "Australia/NSW": "Australia/Sydney",
+        "NZ": "Pacific/Auckland",
+        "NZ-CHAT": "Pacific/Chatham",
+        "Brazil/East": "America/Sao_Paulo",
+        "Chile/Continental": "America/Santiago",
+    ]
 
     /// Representative coordinates of the IANA zone's named city. Close enough for solar
     /// elevation; Core Location replaces this whenever a real fix arrives.

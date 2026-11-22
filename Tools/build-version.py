@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Choose a release version and reserve a monotonic macOS bundle build number."""
+"""Choose a release version, reserve a build number, and publish build artifacts."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import os
 import pathlib
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,8 +42,12 @@ def release_version(root: pathlib.Path, override: str | None = None) -> str:
             if tag.startswith("v") and RELEASE_PATTERN.fullmatch(tag[1:])]
     if not tags:
         return "1.0"
-    return max(tags, key=lambda version: tuple(int(part) for part in version.split(".")) +
-               (0,) * (3 - len(version.split("."))))
+
+    def version_key(tag: str) -> tuple[int, ...]:
+        parts = tuple(map(int, tag.split(".")))
+        return parts + (0,) * (3 - len(parts))
+
+    return max(tags, key=version_key)
 
 
 def tracked_commit_count(root: pathlib.Path) -> int:
@@ -52,9 +57,10 @@ def tracked_commit_count(root: pathlib.Path) -> int:
 
 def app_build_seed(app: pathlib.Path) -> int:
     try:
-        value = plistlib.loads((app / "Contents/Info.plist").read_bytes()).get("CFBundleVersion")
-    except (OSError, ValueError, plistlib.InvalidFileException):
+        info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    except (OSError, ValueError):
         return 0
+    value = info.get("CFBundleVersion") if isinstance(info, dict) else None
     if not isinstance(value, str) or not NUMERIC_BUILD_PATTERN.fullmatch(value):
         return 0
     # A new integer greater than the old major is also greater than a dotted old build.
@@ -67,7 +73,8 @@ def read_counter(state: pathlib.Path) -> int:
     try:
         data = json.loads(state.read_text())
         number = data["lastBuildNumber"]
-        if data.get("schemaVersion") != 1 or type(number) is not int or number < 1:
+        schema = data.get("schemaVersion")
+        if type(schema) is not int or schema != 1 or type(number) is not int or number < 1:
             raise ValueError("invalid counter")
         return number
     except (OSError, ValueError, TypeError, KeyError) as error:
@@ -98,13 +105,58 @@ def next_build_number(state: pathlib.Path, seed: int = 0, override: str | None =
         if override is None:
             number = previous + 1
         else:
-            if not override.isdecimal() or int(override) < 1:
+            number = int(override) if re.fullmatch(r"[0-9]+", override) else 0
+            if number < 1:
                 raise ValueError("BUILD_NUMBER must be a positive integer.")
-            number = int(override)
             if number <= previous:
                 raise ValueError(f"BUILD_NUMBER must exceed previous build {previous}; received {number}.")
         write_counter(state, number)
         return number
+
+
+def publish_build(stage: pathlib.Path, output: pathlib.Path, release: str, number: int,
+                  snapshot: pathlib.Path | None = None) -> None:
+    if not RELEASE_PATTERN.fullmatch(release) or number < 1:
+        raise ValueError("Cannot publish invalid release or build numbers.")
+    app = output / "Redlight.app"
+    dmg = output / f"Redlight-{release}.dmg"
+    receipt = output / ".redlight-build-info.json"
+    artifacts = ((stage / "volume/Redlight.app", app),
+                 (stage / "Redlight.dmg", dmg),
+                 (stage / receipt.name, receipt))
+
+    directory = os.open(output, os.O_RDONLY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        previous = app_build_seed(app)
+        if previous >= number:
+            raise ValueError(f"Build {number} cannot replace build {previous} in {output}.")
+        if snapshot is not None:
+            # Release tooling uses the exact archive and receipt produced together here.
+            snapshot.mkdir()
+            shutil.copyfile(stage / "Redlight.dmg", snapshot / dmg.name)
+            shutil.copyfile(stage / receipt.name, snapshot / receipt.name)
+        backups = []
+        installed = []
+        try:
+            for source, target in artifacts:
+                if target.exists() or target.is_symlink():
+                    if target.is_dir() and (target != app or target.is_symlink()):
+                        raise IsADirectoryError(target)
+                    backup = stage / ("previous-" + target.name)
+                    target.rename(backup)
+                    backups.append((backup, target))
+                source.rename(target)
+                installed.append((target, source))
+        except BaseException:
+            for source, target in reversed(backups + installed):
+                try:
+                    source.rename(target)
+                except OSError as error:
+                    print(f"error: could not restore {target} from {source}: {error}", file=sys.stderr)
+            raise
+    finally:
+        os.close(directory)
 
 
 def main() -> None:
@@ -118,13 +170,21 @@ def main() -> None:
     build.add_argument("--state", required=True, type=pathlib.Path)
     build.add_argument("--seed-app", action="append", default=[], type=pathlib.Path)
     build.add_argument("--override")
+    publication = subparsers.add_parser("publish")
+    publication.add_argument("--stage", required=True, type=pathlib.Path)
+    publication.add_argument("--output-dir", required=True, type=pathlib.Path)
+    publication.add_argument("--version", required=True)
+    publication.add_argument("--build", required=True, type=int)
+    publication.add_argument("--snapshot-dir", type=pathlib.Path)
     args = parser.parse_args()
     try:
         if args.command == "release":
             print(release_version(args.root, args.override))
-        else:
+        elif args.command == "next":
             seed = max([tracked_commit_count(args.root)] + [app_build_seed(app) for app in args.seed_app])
             print(next_build_number(args.state, seed, args.override))
+        else:
+            publish_build(args.stage, args.output_dir, args.version, args.build, args.snapshot_dir)
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

@@ -78,6 +78,22 @@ private func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: te
         }
     }
 
+    @Test func aLateBedtimeReachesTheDeepestTintBeforeStartingTheRelease() {
+        let midnight = date("2025-06-21T01:00:00Z")
+        let bedtime = Bedtime(hour: 0, minute: 30)!
+        func weights(_ text: String) -> BedtimeRamp.Weights {
+            BedtimeRamp.weights(at: date(text), bedtime: bedtime, solarMidnight: midnight, calendar: calendar())
+        }
+        let atBedtime = weights("2025-06-21T00:30:00Z")
+        #expect(atBedtime == BedtimeRamp.Weights(progress: 1, release: 0))
+        #expect(weights("2025-06-21T00:45:00Z") == BedtimeRamp.Weights(progress: 1, release: 0.5))
+
+        let target = AdaptiveMapping.target(elevation: 3.5, minElevation: 3.4, presets: Preset.defaults,
+                                             intensityMin: 0.2, intensityMax: 0.8,
+                                             whitepointMin: 0.3, whitepointMax: 1, bedtime: atBedtime)
+        #expect(target == AdaptiveMapping.Target(intensity: 0.2, whitepoint: 0.3, bedtime: true))
+    }
+
     @Test func aBedtimeSoonAfterSolarNoonIsIgnoredSoNoonStaysContinuous() {
         // Solar noon 13:00, solar midnight 01:00. A ramp may not start before solar noon.
         let midnight = date("2025-06-21T01:00:00Z")

@@ -122,6 +122,18 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.restoreAllCount == 0)
     }
 
+    @Test func commandElevationUsesManualLocationEvenWhenAdaptiveIsOff() {
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 0, longitude: 0)
+        let date = Date(timeIntervalSince1970: 1_748_952_000)
+        let manager = makeManager(location: location, now: { date })
+        manager.adaptiveEnabled = true
+        manager.adaptiveEnabled = false
+        manager.setManualLocation((latitude: 0, longitude: 180))
+        #expect(!manager.adaptiveEnabled)
+        #expect(manager.commandElevation == SolarCalculator.elevation(at: date, latitude: 0, longitude: 180))
+    }
+
     @Test func displayOnlyWakeResetsImmediatelyAndAfterSettlingWithLatestSettings() throws {
         let manager = makeManager()
         manager.intensity = 0.4
@@ -147,6 +159,29 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.displayChangeCount == 1)
         manager.completeDisplayRecovery()
         #expect(mock.restoreAllCount == 1)
+    }
+
+    @Test func displayWakeResetsOnceEvenWhenItDiscoversATopologyChange() {
+        var ids: [CGDirectDisplayID] = [1]
+        let manager = DisplayManager(
+            gamma: mock,
+            getDisplayIDs: { ids },
+            getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) },
+            defaults: freshDefaults(),
+            location: FakeLocationProvider()
+        )
+        ids = [1, 2]
+        manager.handleDisplayWake()
+        #expect(mock.restoreAllCount == 1)
+        #expect(manager.displays.map(\.id) == [1, 2])
+
+        ids = [2]
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 2)
+        #expect(manager.displays.map(\.id) == [2])
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 2)
     }
 
     @Test func shutdownCancelsPendingDisplayRecovery() {
@@ -505,9 +540,12 @@ final class ImmediateFixLocationProvider: LocationProviding {
 
         var completed = false
         manager.beginTerminationFade { completed = true }
-        ids = [1]
+        // A newly attached display with saved settings must stay untouched during shutdown.
+        defaults.set(true, forKey: "redlight.display.3.inverted")
+        ids = [1, 3]
         manager.refreshDisplays()
 
+        #expect(!mock.applyCalls.contains { $0.displayID == 3 })
         #expect(completed)
         #expect(mock.restoreAllCount == 1)
         #expect(defaults.bool(forKey: "redlight.display.2.enabled"))

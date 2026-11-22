@@ -16,9 +16,8 @@ struct SunCycle {
     let nowFraction: Double
     let nowElevation: Double
     let maxElevation: Double
-    /// Time to the next twilight transition. Computed on demand: it is a 720-step forward
-    /// scan plus bisection, and the sun-arc graphic (which rebuilds a `SunCycle` every 20 s)
-    /// never reads it.
+    /// Time to the next elevation marker. The sun-arc graphic never reads this, so the
+    /// forward scan only runs on demand.
     var nextEvent: Event? {
         SunCycle.findNextEvent(now: now, latitude: latitude, longitude: longitude)
     }
@@ -26,8 +25,7 @@ struct SunCycle {
     private let latitude: Double
     private let longitude: Double
 
-    /// Every physical elevation anchor that can change the Adaptive curve. `nextEvent` uses
-    /// this same set.
+    /// The physical elevation markers shown on the sun arc.
     static let thresholds: [Double] = SolarCurve.elevationMarkers.map(\.elevation)
     /// The named horizon and twilight crossings only. The +12° and +6° curve anchors have
     /// no everyday name, so a "next event" shown to the user skips them.
@@ -37,7 +35,7 @@ struct SunCycle {
     ]
 
     init(now: Date, latitude: Double, longitude: Double,
-         calendar: Calendar = .current, sampleCount: Int = 73) {
+         calendar: Calendar = .current, sampleCount: Int = 73, reusing previous: SunCycle? = nil) {
         let sampleCount = max(2, sampleCount)
         let dayStart = calendar.startOfDay(for: now)
         // Actual local day length — 23/25 h on DST transition days, not a hardcoded 24 h.
@@ -45,17 +43,18 @@ struct SunCycle {
             ?? dayStart.addingTimeInterval(86_400)
         let daySeconds = dayEnd.timeIntervalSince(dayStart)
 
-        var pts: [Sample] = []
-        pts.reserveCapacity(sampleCount)
-        for i in 0..<sampleCount {
-            let t = Double(i) / Double(sampleCount - 1)
-            let date = dayStart.addingTimeInterval(t * daySeconds)
-            let e = SolarCalculator.elevation(at: date, latitude: latitude, longitude: longitude)
-            pts.append(Sample(
-                t: t, elevation: e,
-                rising: SolarCalculator.isRising(at: date, longitude: longitude), date: date))
+        if let previous, previous.latitude == latitude, previous.longitude == longitude,
+           previous.samples.count == sampleCount, previous.samples.first?.date == dayStart,
+           previous.samples.last?.date == dayEnd {
+            samples = previous.samples
+        } else {
+            samples = (0..<sampleCount).map { i in
+                let t = Double(i) / Double(sampleCount - 1)
+                let date = dayStart.addingTimeInterval(t * daySeconds)
+                let position = SolarCalculator.position(at: date, latitude: latitude, longitude: longitude)
+                return Sample(t: t, elevation: position.elevation, rising: position.rising, date: date)
+            }
         }
-        samples = pts
 
         nowFraction = min(1, max(0, now.timeIntervalSince(dayStart) / daySeconds))
         nowElevation = SolarCalculator.elevation(at: now, latitude: latitude, longitude: longitude)
@@ -66,8 +65,7 @@ struct SunCycle {
     }
 
     /// Fractions of this local day where the sampled solar arc crosses a real elevation
-    /// marker. Linear interpolation between the dense samples is accurate enough for the
-    /// next-event math and keeps times tied to the actual day.
+    /// marker, interpolated between the display samples.
     func crossingFractions(at elevation: Double) -> [Double] {
         guard samples.count > 1 else { return [] }
         let epsilon = 1e-9
@@ -103,50 +101,80 @@ struct SunCycle {
             .map { now.addingTimeInterval($0.seconds) }
     }
 
-    /// Forward-scan `[now, now+horizon]` (24 h by default) in 2-min steps for the next crossing of any threshold,
-    /// then bisect to ~2 s. When several thresholds flip within one step, the earliest in
-    /// time wins. Direction is read across the step; `rising` keeps only one direction.
+    /// Scan forward in two-minute steps, refining local extrema so short excursions near
+    /// the polar circles can still supply both crossings. Bisect each crossing to ~2 s.
     static func findNextEvent(
         now: Date, latitude: Double, longitude: Double, thresholds: [Double] = SunCycle.thresholds,
         rising: Bool? = nil, horizon: Double = 86_400
     ) -> Event? {
+        guard horizon.isFinite, horizon > 0, !thresholds.isEmpty else { return nil }
         let step: Double = 120
-        func elev(_ offset: Double) -> Double {
-            SolarCalculator.elevation(at: now.addingTimeInterval(offset),
-                                      latitude: latitude, longitude: longitude)
-        }
-        func crossing(_ thr: Double, _ a: Double, _ b: Double) -> Double {
-            var lo = a, hi = b
-            var fLo = elev(lo) - thr
-            for _ in 0..<6 {
-                let mid = (lo + hi) / 2
-                let fMid = elev(mid) - thr
-                if fLo * fMid <= 0 { hi = mid } else { lo = mid; fLo = fMid }
-            }
-            return (lo + hi) / 2
+        typealias Point = (offset: Double, elevation: Double)
+        func point(at offset: Double) -> Point {
+            (offset, SolarCalculator.elevation(at: now.addingTimeInterval(offset),
+                                               latitude: latitude, longitude: longitude))
         }
 
-        var prevOffset: Double = 0
-        var prev = elev(0)
-        while prevOffset < horizon {
-            let offset = min(prevOffset + step, horizon)
-            let cur = elev(offset)
-            var best: (thr: Double, at: Double)?
-            for thr in thresholds where ((prev < thr && cur >= thr) || (prev > thr && cur <= thr))
-                && (rising.map({ $0 == (cur > prev) }) ?? true) {
-                let at = cur == thr ? offset : crossing(thr, prevOffset, offset)
-                if best == nil || at < best!.at { best = (thr, at) }
+        func turningPoint(_ a: Point, _ b: Point, _ c: Point) -> Point? {
+            let isMaximum = b.elevation >= a.elevation && b.elevation >= c.elevation
+            let isMinimum = b.elevation <= a.elevation && b.elevation <= c.elevation
+            guard isMaximum != isMinimum else { return nil }
+            var lo = a.offset, hi = c.offset
+            while hi - lo > 0.02 {
+                let third = (hi - lo) / 3
+                let left = point(at: lo + third), right = point(at: hi - third)
+                if (left.elevation < right.elevation) == isMaximum {
+                    lo = left.offset
+                } else {
+                    hi = right.offset
+                }
             }
-            if let best {
-                return Event(
-                    label: label(threshold: best.thr, rising: cur > prev),
-                    seconds: best.at,
-                    elevation: best.thr)
-            }
-            prevOffset = offset
-            prev = cur
+            return point(at: (lo + hi) / 2)
         }
-        return nil
+
+        func crossing(from a: Point, to b: Point, endsAtTurn: Bool = false) -> Event? {
+            let isRising = b.elevation > a.elevation
+            guard rising == nil || rising == isRising else { return nil }
+            var first: Double?
+            for threshold in thresholds {
+                // Touching a threshold at a turning point without passing it is no crossing.
+                if endsAtTurn && b.elevation == threshold { continue }
+                if isRising, a.elevation < threshold, threshold <= b.elevation {
+                    first = min(first ?? threshold, threshold)
+                } else if !isRising, b.elevation <= threshold, threshold < a.elevation {
+                    first = max(first ?? threshold, threshold)
+                }
+            }
+            guard let threshold = first else { return nil }
+            let name = label(threshold: threshold, rising: isRising)
+            if b.elevation == threshold {
+                return Event(label: name, seconds: b.offset, elevation: threshold)
+            }
+            var lo = a.offset, hi = b.offset
+            while hi - lo > 1.875 {
+                let mid = (lo + hi) / 2
+                if (point(at: mid).elevation < threshold) == isRising { lo = mid } else { hi = mid }
+            }
+            return Event(label: name, seconds: (lo + hi) / 2, elevation: threshold)
+        }
+
+        var last = point(at: 0)
+        var a = point(at: -step), b = last, c = point(at: min(step, horizon))
+        while true {
+            // Look one sample beyond each end to find turns near now and the horizon.
+            if let turn = turningPoint(a, b, c), turn.offset > last.offset, turn.offset <= horizon {
+                if let event = crossing(from: last, to: turn, endsAtTurn: true) { return event }
+                last = turn
+            }
+            if b.offset > last.offset {
+                if let event = crossing(from: last, to: b) { return event }
+                last = b
+            }
+            if b.offset == horizon { return nil }
+            a = b
+            b = c
+            c = point(at: b.offset == horizon ? horizon + step : min(b.offset + step, horizon))
+        }
     }
 
     /// Event names paired with the phase vocabulary shown in the status line

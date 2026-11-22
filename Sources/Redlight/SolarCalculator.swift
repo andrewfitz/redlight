@@ -4,13 +4,21 @@ import Foundation
 enum SolarCalculator {
     /// Sun elevation in degrees above the horizon at `date` for the location.
     static func elevation(at date: Date, latitude: Double, longitude: Double) -> Double {
+        position(at: date, latitude: latitude, longitude: longitude).elevation
+    }
+
+    /// The elevation and whether the sun is before solar noon in its daily cycle.
+    static func position(at date: Date, latitude: Double, longitude: Double)
+        -> (elevation: Double, rising: Bool)
+    {
         let t = julianCentury(date)
         let decl = solarDeclination(t)
         let latR = rad(latitude), declR = rad(decl)
-        let haR = rad(hourAngle(at: date, t: t, longitude: longitude))
+        let angle = hourAngle(at: date, t: t, longitude: longitude)
+        let haR = rad(angle)
         let cosZenith = sin(latR) * sin(declR) + cos(latR) * cos(declR) * cos(haR)
         let zenith = acos(min(1, max(-1, cosZenith)))
-        return 90 - deg(zenith)
+        return (90 - deg(zenith), angle < 0)
     }
 
     /// Whether the sun is on the rising half of its cycle (solar midnight → solar noon).

@@ -243,6 +243,21 @@ import Testing
         #expect(installer.offerPrivilegedInstallOnPopoverOpen() == .installed("/usr/local/bin/redlight"))
     }
 
+    @Test func workingLinkInReadOnlyHomebrewDirectoryAvoidsAnAdminPrompt() {
+        let fileSystem = FakeCLIInstallerFileSystem()
+        let path = "/opt/homebrew/bin/redlight"
+        let defaults = preferences()
+        fileSystem.entries[path] = .symlink(executable)
+        let installer = CLIInstaller(executablePath: executable, fileSystem: fileSystem,
+                                     defaults: defaults) { _ in
+            Issue.record("A working link must avoid prompting")
+            return .cancelled
+        }
+        #expect(installer.offerPrivilegedInstallOnPopoverOpen() == .alreadyInstalled(path))
+        #expect(fileSystem.installs.isEmpty)
+        #expect(!defaults.bool(forKey: CLIInstaller.attemptedKey))
+    }
+
     @Test func shellAndAppleScriptQuotesPreserveUntrustedPathText() {
         #expect(CLIInstaller.shellQuote("a'b") == "'a'\\''b'")
         #expect(CLIInstaller.appleScriptQuote("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\"")

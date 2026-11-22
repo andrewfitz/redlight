@@ -34,9 +34,10 @@ final class LaunchAtLogin {
     var isEnabled: Bool {
         didSet {
             guard !isSyncing else { return }
-            let registered = Self.isRegistered(service.status)
-            guard isEnabled != registered else {
-                requiresApproval = service.status == .requiresApproval
+            let status = service.status
+            guard isEnabled != Self.isRegistered(status) else {
+                requiresApproval = status == .requiresApproval
+                lastRefresh = ProcessInfo.processInfo.systemUptime
                 return
             }
             do {
@@ -137,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reserved by the entry point before recovery or SwiftUI initialization.
     static var commandServer: CommandServer?
     static var prepareForTermination: TerminationCoordinator.Prepare?
-    static var publishStoppedState: (() -> Void)?
+    static var finishDisplaySession: (() -> Void)?
     /// Set during startup; the status item can only be created once AppKit is up.
     static var makeStatusItem: (() -> StatusItemController)?
     /// Retained for the app's lifetime; it owns the registered global hotkeys.
@@ -170,8 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Restore immediately on a normal termination. If the process is killed too
         // abruptly for this callback, DisplaySessionRecovery repairs it next launch.
-        CGDisplayRestoreColorSyncSettings()
-        Self.publishStoppedState?()
+        Self.finishDisplaySession?()
         DisplaySessionRecovery.finish()
     }
 }
@@ -198,6 +198,7 @@ enum RedlightApp {
         let manager = DisplayManager(
             suspendedForApp: appSuspension.suspendedFor,
             locationPromptActivation: {},
+            controlDefaults: UserDefaults(suiteName: RedlightControlPreferences.domain),
             onMasterStateChange: { _ in reloadRedlightControls() }
         )
         appSuspension.onChange = { [weak manager] in manager?.setSuspendedForApp($0) }
@@ -242,7 +243,10 @@ enum RedlightApp {
         AppDelegate.prepareForTermination = { completion in
             manager.beginTerminationFade(completion: completion)
         }
-        AppDelegate.publishStoppedState = { manager.publishStoppedState() }
+        AppDelegate.finishDisplaySession = {
+            manager.restoreAllDisplays()
+            manager.publishStoppedState()
+        }
         AppDelegate.makeStatusItem = {
             StatusItemController(isActive: { manager.isAnyActive }) {
                 MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
