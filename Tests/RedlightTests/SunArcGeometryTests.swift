@@ -26,6 +26,13 @@ import Testing
         expectSeparated(guides)
     }
 
+    @Test func scaleUsesOnlyFiniteSamplesInEitherOrder() {
+        let elevations: [Double] = [.infinity, -31, .nan, 42, -.infinity]
+        let geometry = SunArcGeometry(elevations: elevations.reversed(), height: 70)
+        #expect(geometry.upperElevation == 45)
+        #expect(geometry.lowerElevation == -34)
+    }
+
     @Test func extremeEquatorialSpanDropsCrowdedAnchorsAndPreservesHorizon() throws {
         let geometry = SunArcGeometry(elevations: [-90, 90], height: 70)
         let guides = geometry.guides()

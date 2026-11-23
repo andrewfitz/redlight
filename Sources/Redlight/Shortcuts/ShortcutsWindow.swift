@@ -173,6 +173,7 @@ private struct ShortcutRecorder: NSViewRepresentable {
     func makeNSView(context: Context) -> RecorderField {
         let field = RecorderField()
         field.setAccessibilityElement(true)
+        field.setAccessibilityHelp("Press to record a shortcut. Escape cancels recording. Delete clears the shortcut.")
         return field
     }
 
@@ -204,6 +205,7 @@ final class RecorderField: NSView {
             guard isRecording != oldValue else { return }
             liveModifiers = []
             onRecordingChange?(isRecording)
+            NSAccessibility.post(element: self, notification: .valueChanged)
             needsDisplay = true
         }
     }
@@ -223,6 +225,7 @@ final class RecorderField: NSView {
         self.shortcut = shortcut
         self.layoutGeneration = layoutGeneration
         shortcutLabel = shortcut?.label() ?? "Record Shortcut"
+        NSAccessibility.post(element: self, notification: .valueChanged)
         needsDisplay = true
     }
 
@@ -262,6 +265,12 @@ final class RecorderField: NSView {
             return
         }
         guard !event.isARepeat else { return }
+        if code == kVK_Tab, modifiers.isEmpty || modifiers == .shift {
+            isRecording = false
+            if modifiers == .shift { window?.selectPreviousKeyView(self) }
+            else { window?.selectNextKeyView(self) }
+            return
+        }
         if modifiers.isEmpty, code == kVK_Escape {
             isRecording = false
             return

@@ -28,6 +28,11 @@ enum ApproximateLocation {
         "US/Arizona": "America/Phoenix",
         "US/East-Indiana": "America/Indiana/Indianapolis",
         "US/Hawaii": "Pacific/Honolulu",
+        "Canada/Atlantic": "America/Halifax",
+        "Canada/Central": "America/Winnipeg",
+        "Canada/Eastern": "America/Toronto",
+        "Canada/Mountain": "America/Edmonton",
+        "Canada/Pacific": "America/Vancouver",
         "Canada/Newfoundland": "America/St_Johns",
         "Asia/Calcutta": "Asia/Kolkata",
         "Australia/NSW": "Australia/Sydney",
@@ -139,6 +144,7 @@ enum ApproximateLocation {
         "Australia/Adelaide": (-34.93, 138.60),
         "Australia/Hobart": (-42.88, 147.33),
         "Pacific/Auckland": (-36.85, 174.76),
+        "Pacific/Chatham": (-43.95, -176.55),
         "Pacific/Honolulu": (21.31, -157.86),
         "Pacific/Fiji": (-18.14, 178.44),
         "Atlantic/Reykjavik": (64.15, -21.94),
@@ -161,7 +167,7 @@ enum ApproximateLocation {
             || id.hasPrefix("america/rio_branco") || id.hasPrefix("america/maceio")
             || id.hasPrefix("america/belem") || id.hasPrefix("america/araguaina")
             || id.hasPrefix("pacific/efate") || id.hasPrefix("pacific/norfolk")
-            || id.hasPrefix("pacific/chatham") || id.hasPrefix("pacific/pitcairn")
+            || id.hasPrefix("pacific/pitcairn")
             || id.hasPrefix("pacific/easter") || id.hasPrefix("pacific/rarotonga")
             || id.hasPrefix("pacific/niue") || id.hasPrefix("pacific/bougainville")
             || id.hasPrefix("indian/reunion") || id.hasPrefix("indian/mahe")

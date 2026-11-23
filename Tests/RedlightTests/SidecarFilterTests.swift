@@ -149,6 +149,23 @@ import Testing
         #expect(overlay.closeCount == 2)
     }
 
+    @Test func pointerSystemIsCreatedOnlyAfterAnOverlayExists() throws {
+        let screen = try #require(NSScreen.screens.first)
+        var creations = 0
+        func makePointer() -> Pointer {
+            creations += 1
+            return Pointer()
+        }
+        let controller = SidecarFilterController(
+            getScreen: { _ in screen }, makeOverlay: { _ in Overlay() }, pointer: makePointer())
+        controller.restoreAll()
+        controller.displaysDidChange()
+        #expect(creations == 0)
+        controller.applyFilter(to: 7, intensity: 0.5, whitepoint: 1, invert: false)
+        #expect(creations == 1)
+        controller.restoreAll()
+    }
+
     @Test func unsupportedCompositorDoesNotRetryEveryFrame() {
         guard let screen = NSScreen.screens.first else { return }
         var attempts = 0
@@ -212,6 +229,14 @@ import Testing
         #expect(pointer.hideCount == 1)
         let drawn = overlay.pointer?.cursor ?? nil
         #expect(drawn != nil && drawn === pointer.cursor)
+        #expect(overlay.pointer?.location == pointer.location)
+
+        let updates = overlay.pointerUpdateCount
+        for _ in 0..<100 { changed() }
+        #expect(overlay.pointerUpdateCount == updates)
+        pointer.location.x += 1
+        changed()
+        #expect(overlay.pointerUpdateCount == updates + 1)
         #expect(overlay.pointer?.location == pointer.location)
 
         // Another app's activation unhides the pointer; it is hidden again.

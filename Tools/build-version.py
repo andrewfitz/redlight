@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from xml.parsers.expat import ExpatError
 
 RELEASE_PATTERN = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?\Z")
 NUMERIC_BUILD_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){0,2}\Z")
@@ -58,7 +59,7 @@ def tracked_commit_count(root: pathlib.Path) -> int:
 def app_build_seed(app: pathlib.Path) -> int:
     try:
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    except (OSError, ValueError):
+    except (OSError, ValueError, ExpatError):
         return 0
     value = info.get("CFBundleVersion") if isinstance(info, dict) else None
     if not isinstance(value, str) or not NUMERIC_BUILD_PATTERN.fullmatch(value):
@@ -131,14 +132,16 @@ def publish_build(stage: pathlib.Path, output: pathlib.Path, release: str, numbe
         previous = app_build_seed(app)
         if previous >= number:
             raise ValueError(f"Build {number} cannot replace build {previous} in {output}.")
-        if snapshot is not None:
-            # Release tooling uses the exact archive and receipt produced together here.
-            snapshot.mkdir()
-            shutil.copyfile(stage / "Redlight.dmg", snapshot / dmg.name)
-            shutil.copyfile(stage / receipt.name, snapshot / receipt.name)
         backups = []
         installed = []
+        snapshot_created = False
         try:
+            if snapshot is not None:
+                # Release tooling uses the exact archive and receipt produced together here.
+                snapshot.mkdir()
+                snapshot_created = True
+                shutil.copyfile(stage / "Redlight.dmg", snapshot / dmg.name)
+                shutil.copyfile(stage / receipt.name, snapshot / receipt.name)
             for source, target in artifacts:
                 if target.exists() or target.is_symlink():
                     if target.is_dir() and (target != app or target.is_symlink()):
@@ -154,6 +157,8 @@ def publish_build(stage: pathlib.Path, output: pathlib.Path, release: str, numbe
                     source.rename(target)
                 except OSError as error:
                     print(f"error: could not restore {target} from {source}: {error}", file=sys.stderr)
+            if snapshot_created:
+                shutil.rmtree(snapshot)
             raise
     finally:
         os.close(directory)

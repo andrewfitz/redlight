@@ -64,6 +64,10 @@ enum BandSliderCore {
         return dx < 0 ? .lower : .upper
     }
 
+    static func isOnThumb(dx: CGFloat, dy: CGFloat, radius: CGFloat) -> Bool {
+        hypot(dx, dy) <= radius
+    }
+
     /// Which handle a drag starting at (`x`, `dy` from the track's centerline) grabs.
     ///
     /// Markers are taller than the thumb, so their ends show as tabs above and below it.
@@ -90,7 +94,7 @@ enum BandSliderCore {
         if abs(dy) >= tabZone, nearestMarker <= tabHitRadius {
             return dLo <= dHi ? .lower : .upper
         }
-        if lower == upper, hypot(dV, dy) <= inset { return .value }
+        if lower == upper, isOnThumb(dx: dV, dy: dy, radius: inset) { return .value }
         // Brackets have a finite hit target. Elsewhere the track always moves the value.
         guard nearestMarker <= markerHitRadius else { return .value }
         if dV <= dLo && dV <= dHi {
@@ -239,38 +243,18 @@ struct BandSlider: View {
                             case .upper: grabOffset = hiX - start
                             // On the thumb: keep the grab point. On the bare track: jump there.
                             case .value:
-                                let onThumb = abs(valX - start) <= inset
+                                let onThumb = BandSliderCore.isOnThumb(
+                                    dx: valX - start, dy: g.startLocation.y - midY, radius: inset)
                                 grabOffset = onThumb ? valX - start : 0
                                 hasMoved = !onThumb
                             }
                         }
-                        // Preserve the original token until release, including across
-                        // redraws from the command that interrupted this gesture.
-                        guard var handle = active, acceptsInteractionMutation() else { return }
-                        if !hasMoved {
-                            guard g.translation.width != 0 else { return }
-                            handle = BandSliderCore.resolveStackedMarker(
-                                handle, dx: g.translation.width, lower: lowerBound, upper: upperBound)
-                            active = handle
-                            hasMoved = true
-                        }
-                        let v = editedValue(val(g.location.x + grabOffset, w), for: handle)
-                        guard v != currentValue(for: handle) else { return }
-                        switch handle {
-                        case .lower:
-                            lowerBound = v
-                            isPreviewing = true
-                            onPreview?(v)
-                        case .upper:
-                            upperBound = v
-                            isPreviewing = true
-                            onPreview?(v)
-                        case .value:
-                            value = v
-                        }
+                        updateDrag(g, width: w)
                     }
                     .onEnded { g in
-                        if gestureStart == g.startLocation { finishInteraction() }
+                        guard gestureStart == g.startLocation else { return }
+                        updateDrag(g, width: w)
+                        finishInteraction()
                     }
             )
         }
@@ -298,6 +282,33 @@ struct BandSlider: View {
                     .accessibilityValue(Self.percentLabel(upperBound))
                 }
             }
+        }
+    }
+
+    private func updateDrag(_ g: DragGesture.Value, width w: CGFloat) {
+        // Preserve the original token until release, including across
+        // redraws from the command that interrupted this gesture.
+        guard var handle = active, acceptsInteractionMutation() else { return }
+        if !hasMoved {
+            guard g.translation.width != 0 else { return }
+            handle = BandSliderCore.resolveStackedMarker(
+                handle, dx: g.translation.width, lower: lowerBound, upper: upperBound)
+            active = handle
+            hasMoved = true
+        }
+        let v = editedValue(val(g.location.x + grabOffset, w), for: handle)
+        guard v != currentValue(for: handle) else { return }
+        switch handle {
+        case .lower:
+            lowerBound = v
+            isPreviewing = true
+            onPreview?(v)
+        case .upper:
+            upperBound = v
+            isPreviewing = true
+            onPreview?(v)
+        case .value:
+            value = v
         }
     }
 

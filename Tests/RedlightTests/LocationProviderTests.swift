@@ -175,6 +175,22 @@ import Testing
         #expect(provider.isApproximate)
     }
 
+    @Test func authorizationResetDuringFixAllowsANewPermissionRequest() {
+        let manager = TestManager()
+        manager.status = .authorizedAlways
+        let provider = LocationProvider(defaults: freshDefaults(), manager: manager)
+        provider.requestWhenInUse()
+        #expect(manager.locationRequests == 1)
+
+        manager.status = .notDetermined
+        provider.locationManagerDidChangeAuthorization(manager)
+        #expect(!provider.wantsFix)
+        provider.requestWhenInUse()
+        provider.locationManagerDidChangeAuthorization(manager)
+        #expect(provider.wantsFix)
+        #expect(manager.authorizationRequests == 1)
+    }
+
     @Test func aFixDeliveredAfterCancellationLeavesTheAutomaticLocationUntouched() {
         let manager = TestManager()
         manager.status = .authorizedAlways

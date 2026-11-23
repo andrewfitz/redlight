@@ -92,9 +92,8 @@ final class AppearanceController {
             refresh()
             throw error
         }
-        let actual = injectedRead?() ?? getTheme?() ?? target
-        if isDark != actual { isDark = actual }
-        guard actual == target else {
+        refresh()
+        guard isDark == target else {
             throw CommandError.system("macOS did not apply the requested appearance.")
         }
     }
@@ -105,13 +104,10 @@ final class AppearanceController {
     }
 
     /// "Dark" is stored in NSGlobalDomain as `AppleInterfaceStyle = Dark`; the
-    /// key is absent entirely in light mode, so fall back to the app's
-    /// effective appearance (which tracks the system for this agent app).
+    /// key is absent entirely in light mode. Read the global domain directly
+    /// so an app-specific appearance override cannot affect the result.
     private static func readSystemIsDark() -> Bool {
-        if let style = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") {
-            return style == "Dark"
-        }
-        return NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        (UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleInterfaceStyle"] as? String) == "Dark"
     }
 
     /// Requires `NSAppleEventsUsageDescription` (Info.plist) and the user's

@@ -171,8 +171,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Restore immediately on a normal termination. If the process is killed too
         // abruptly for this callback, DisplaySessionRecovery repairs it next launch.
-        Self.finishDisplaySession?()
-        DisplaySessionRecovery.finish()
+        Self.finishSessionIfNeeded()
+    }
+
+    static func finishSessionIfNeeded() {
+        let finish = finishDisplaySession
+        finishDisplaySession = nil
+        finish?()
     }
 }
 
@@ -187,6 +192,8 @@ enum RedlightApp {
         application.setActivationPolicy(.accessory)
         configureServices()
         withExtendedLifetime(delegate) { application.run() }
+        // NSApplication.stop can return from run() without a termination notification.
+        AppDelegate.finishSessionIfNeeded()
     }
 
     private static func configureServices() {
@@ -201,6 +208,11 @@ enum RedlightApp {
             controlDefaults: UserDefaults(suiteName: RedlightControlPreferences.domain),
             onMasterStateChange: { _ in reloadRedlightControls() }
         )
+        AppDelegate.finishDisplaySession = {
+            manager.restoreAllDisplays()
+            manager.publishStoppedState()
+            DisplaySessionRecovery.finish()
+        }
         appSuspension.onChange = { [weak manager] in manager?.setSuspendedForApp($0) }
         let launchAtLogin = LaunchAtLogin()
         let handler = CommandHandler(manager: manager, services: CommandServices(
@@ -227,9 +239,7 @@ enum RedlightApp {
             try server.installHandler { try handler.execute($0) }
         } catch {
             // A failed startup must restore gamma and the recovery marker before exiting.
-            manager.restoreAllDisplays()
-            manager.publishStoppedState()
-            DisplaySessionRecovery.finish()
+            AppDelegate.finishSessionIfNeeded()
             NSLog("Redlight: command server startup failed: %@", error.localizedDescription)
             exit(2)
         }
@@ -242,10 +252,6 @@ enum RedlightApp {
         installer.installSilentlyIfPossible()
         AppDelegate.prepareForTermination = { completion in
             manager.beginTerminationFade(completion: completion)
-        }
-        AppDelegate.finishDisplaySession = {
-            manager.restoreAllDisplays()
-            manager.publishStoppedState()
         }
         AppDelegate.makeStatusItem = {
             StatusItemController(isActive: { manager.isAnyActive }) {

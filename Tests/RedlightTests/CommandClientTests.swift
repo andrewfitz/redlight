@@ -104,6 +104,18 @@ private final class ClientProbe: @unchecked Sendable {
         #expect(probe.launchCount == 0 && probe.sentCommands == [.master(.toggle)])
     }
 
+    @Test func cancellationDuringStartupPreventsCommandDelivery() async {
+        let probe = ClientProbe()
+        let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
+                                   launch: {
+            probe.started()
+            withUnsafeCurrentTask { $0?.cancel() }
+        }, send: { probe.sent($0) })
+        let task = Task { try await client.execute(.master(.on)) }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(probe.sentCommands.isEmpty)
+    }
+
     @Test func concurrentStartupCanSupplyThePortDespiteALaunchError() async throws {
         let probe = ClientProbe()
         let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },

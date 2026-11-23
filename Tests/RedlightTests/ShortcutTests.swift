@@ -79,6 +79,16 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
 @MainActor @Suite struct ShortcutStoreTests {
     let registry = TestDefaultsRegistry()
 
+    @Test func malformedSavedAssignmentsPreserveValidShortcuts() {
+        let defaults = registry.makeDefaults(prefix: "ShortcutStoreTests")
+        let data = Data("""
+        {"pause":{"keyCode":\(kVK_F13),"modifiers":0},"toggle":{"keyCode":"bad"},"future":null}
+        """.utf8)
+        defaults.set(data, forKey: "redlight.shortcuts")
+        let store = ShortcutStore(defaults: defaults, reserved: { [] })
+        #expect(store.shortcuts == [.pause: KeyShortcut(keyCode: UInt32(kVK_F13), modifiers: 0)])
+    }
+
     @Test func assigningTakesTheShortcutFromItsPreviousActionAndPersists() {
         let defaults = registry.makeDefaults(prefix: "ShortcutStoreTests")
         let store = ShortcutStore(defaults: defaults, reserved: { [] })

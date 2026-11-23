@@ -1732,6 +1732,29 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(manager.displays.map(\.id) == [1, 2])
     }
 
+    @Test func failedDisplayQueryPreservesTopologyUntilAConfirmedDisconnect() {
+        var ids: [CGDirectDisplayID]? = [1]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(),
+            location: FakeLocationProvider())
+        manager.toggle(1)
+        mock.restoreAllCount = 0
+
+        ids = nil
+        manager.refreshDisplays()
+        manager.handleDisplayWake()
+        manager.completeDisplayRecovery()
+        #expect(manager.displays.map(\.id) == [1])
+        #expect(manager.isOn)
+        #expect(mock.restoreAllCount == 0)
+
+        ids = []
+        manager.refreshDisplays()
+        #expect(manager.displays.isEmpty)
+        #expect(mock.restoreAllCount == 1)
+    }
+
     @Test func disconnectingActiveDisplayClearsItsGammaSnapshot() {
         var ids: [CGDirectDisplayID] = [1, 2]
         let manager = DisplayManager(
@@ -1965,6 +1988,18 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let manager = makeManager(defaults: d)
         #expect(manager.intensityBand == 0...1)
         #expect(manager.whitepointBand == 0.3...1)
+    }
+
+    @Test func activePresetOnLoadRequiresAValidIndexAndMatchingSettings() {
+        let defaults = freshDefaults()
+        defaults.set(1.0, forKey: "redlight.intensity")
+        defaults.set(1.0, forKey: "redlight.whitepoint")
+        defaults.set("bad", forKey: "redlight.activePresetIndex")
+        #expect(makeManager(defaults: defaults).activePresetIndex == nil)
+        defaults.set(4, forKey: "redlight.activePresetIndex")
+        #expect(makeManager(defaults: defaults).activePresetIndex == nil)
+        defaults.set(0, forKey: "redlight.activePresetIndex")
+        #expect(makeManager(defaults: defaults).activePresetIndex == 0)
     }
 
     @Test func corruptPresetsAndOffsetsAreSanitizedOnLoad() throws {
@@ -2312,6 +2347,23 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.applyAdaptive()
         #expect(scans.count == 4)
         #expect(manager.nextSolarEventText == "Sunset in 1 h")
+    }
+
+    @Test func adjustmentsDuringLocationLossSurviveTheNextFix() {
+        let noon = ISO8601DateFormatter().date(from: "2025-03-20T12:00:00Z")!
+        let location = FakeLocationProvider()
+        location.coordinate = (0, 0)
+        let manager = makeManager(location: location, now: { noon })
+        manager.adaptiveEnabled = true
+        location.coordinate = nil
+        location.onChange?()
+        manager.intensity = 0.6
+        manager.whitepoint = 0.75
+
+        location.coordinate = (0, 180)
+        location.onChange?()
+        #expect(abs(manager.intensity - 0.6) < 0.000001)
+        #expect(abs(manager.whitepoint - 0.75) < 0.000001)
     }
 
     @Test func nextSolarEventFollowsAdaptiveAndTheCoordinate() {

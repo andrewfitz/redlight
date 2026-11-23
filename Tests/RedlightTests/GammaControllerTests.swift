@@ -55,6 +55,27 @@ import Testing
         #expect(displayOne?.b == original.b)
     }
 
+    @Test func filteredWritesPreserveEachDisplaysCalibrationResolution() {
+        let controller = GammaController(
+            readTable: { id in
+                let size = id == 1 ? 128 : 1024
+                let channel = (0..<size).map { Float($0) / Float(size - 1) }
+                return (channel, channel, channel)
+            },
+            writeTable: { id, table in
+                let size = id == 1 ? 128 : 1024
+                #expect(table.r.count == size)
+                #expect(table.g.count == size)
+                #expect(table.b.count == size)
+                #expect(table.g.last == 0.5)
+                return .success
+            },
+            resetTables: {})
+        for id: CGDirectDisplayID in [1, 2, 1] {
+            controller.applyFilter(to: id, intensity: 0.5, whitepoint: 1, invert: false)
+        }
+    }
+
     @Test func identityCalibrationKeepsLegacyFilterShape() {
         let table = GammaTableComposer.compose(
             original: nil, tableSize: 3,

@@ -225,9 +225,9 @@ final class CommandHandler {
         )
     }
 
-    /// Steps start from the stored target, not a fade frame, and drop float noise.
+    /// Preserve the precision of fractional steps and the stored target.
     static func stepped(_ value: Double, by percent: Double, in range: ClosedRange<Double>) -> Double {
-        let next = ((value * 100 + percent) * 1_000).rounded() / 100_000
+        let next = (value * 100 + percent) / 100
         return min(range.upperBound, max(range.lowerBound, next))
     }
 

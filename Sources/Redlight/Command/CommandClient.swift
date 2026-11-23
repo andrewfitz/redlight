@@ -42,13 +42,16 @@ struct CommandClient: Sendable {
     }
 
     func execute(_ command: RedlightCommand) async throws -> Status {
+        try Task.checkCancellation()
         if hasPort() { return try await send(command) }
         let running = await isAppRunning()
         // Liveness queries suspend. A starting owner may have published its port
         // between those queries; always prefer that server over a legacy verdict.
+        try Task.checkCancellation()
         if hasPort() { return try await send(command) }
         if running {
             let legacy = await isLegacyAppRunning()
+            try Task.checkCancellation()
             if hasPort() { return try await send(command) }
             if legacy {
                 throw CommandError.unreachable("Redlight is running but its command server is unavailable. Quit the older copy and reopen the current version.")
@@ -73,13 +76,15 @@ struct CommandClient: Sendable {
             }
         }
         while !hasPort() {
+            try Task.checkCancellation()
             guard clock.now < deadline else {
                 throw CommandError.unreachable(running
                     ? "Redlight is running but its command server is unavailable. Quit the older copy and reopen the current version."
-                    : "Redlight did not start its command server within five seconds.")
+                    : "Timed out waiting for Redlight to start its command server.")
             }
             try await wait()
         }
+        try Task.checkCancellation()
         return try await send(resolved)
     }
 
@@ -98,10 +103,11 @@ struct CommandClient: Sendable {
         }
         var replyData: Unmanaged<CFData>?
         let result = CFMessagePortSendRequest(remote, 1, data as CFData, 5, 5, CFRunLoopMode.defaultMode.rawValue, &replyData)
-        guard result == kCFMessagePortSuccess, let replyData else {
+        let reply = replyData?.takeRetainedValue()
+        guard result == kCFMessagePortSuccess, let reply else {
             throw CommandError.unreachable("Redlight did not reply to the command (transport error \(result)).")
         }
-        return try decodeReply(replyData.takeRetainedValue() as Data)
+        return try decodeReply(reply as Data)
     }
 
     static func decodeReply(_ data: Data) throws -> Status {

@@ -106,7 +106,7 @@ class ReleaseNotesTests(unittest.TestCase):
                     notes.verify_appcast(feed, "DMG", "HTML", "HISTORY", dmg, "1.3.1")
 
     def pipeline(self, missing_notes=False, wrong_link=False, wrong_history=False,
-                 dirty=False, wrong_tag=False):
+                 dirty=False, wrong_tag=False, wrong_build=False):
         with tempfile.TemporaryDirectory(prefix="release notes fixture ") as temporary:
             base = pathlib.Path(temporary)
             root = base / "repository with spaces"
@@ -132,7 +132,7 @@ dmg = f"Redlight-{env['VERSION']}.dmg"
 (pathlib.Path(env['REDLIGHT_BUILD_OUTPUT_DIR']) / dmg).write_text('different build')
 tool = pathlib.Path(env['RELEASE_TEST_GENERATOR'])
 (snapshot / '.redlight-build-info.json').write_text(json.dumps({
-    'schemaVersion': 1, 'invocationDirectory': str(tool.parent), 'sparkleAppcastTool': str(tool)
+    'schemaVersion': 1, 'buildNumber': 47, 'invocationDirectory': str(tool.parent), 'sparkleAppcastTool': str(tool)
 }))
 ''')
             (root / "build.sh").chmod(0o755)
@@ -160,6 +160,7 @@ root = ET.Element('rss')
 channel = ET.SubElement(root, 'channel')
 item = ET.SubElement(channel, 'item')
 sparkle = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
+ET.SubElement(item, sparkle + 'version').text = '46' if os.environ.get('WRONG_BUILD_NUMBER') else '47'
 ET.SubElement(item, sparkle + 'shortVersionString').text = dmg.stem.removeprefix('Redlight-')
 signature = base64.b64encode(bytes(64)).decode('ascii')
 ET.SubElement(item, 'enclosure', url=prefix + dmg.name, length=str(dmg.stat().st_size),
@@ -213,6 +214,8 @@ esac
                 environment["WRONG_NOTES_LINK"] = "1"
             if wrong_history:
                 environment["WRONG_HISTORY_LINK"] = "1"
+            if wrong_build:
+                environment['WRONG_BUILD_NUMBER'] = '1'
             if wrong_tag:
                 environment["WRONG_TAG"] = "1"
             result = subprocess.run(["bash", str(root / "Tools/release.sh")], cwd=base, env=environment,
@@ -237,6 +240,12 @@ esac
         result, captured = self.pipeline(wrong_link=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("built", captured)
+        self.assertNotIn("gh.json", captured)
+
+    def test_wrong_sparkle_build_number_stops_before_publish(self):
+        result, captured = self.pipeline(wrong_build=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("build number", result.stderr)
         self.assertNotIn("gh.json", captured)
 
     def test_history_download_link_stops_shell_before_publish(self):

@@ -95,7 +95,7 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
     private let record: (ControlReceipt) throws -> Void
     private let publish: @MainActor (Bool) throws -> Void
     private let now: () -> Date
-    private var executing: Set<UUID> = []
+    private var executing: UUID?
     private var completed: [Completion] = []
 
     init(read: @escaping (UUID) -> ControlReceipt? = { RedlightControlPreferences.receipt($0) },
@@ -123,18 +123,24 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 
     @discardableResult func handle(url: URL) -> Bool {
         guard let request = Self.parse(url) else { return false }
-        guard !executing.contains(request.id), !pending.contains(where: { $0.id == request.id }) else { return true }
+        guard executing != request.id, !pending.contains(where: { $0.id == request.id }) else { return true }
         if let completion = completed.first(where: { $0.receipt.request == request.id }) {
             if !completion.recorded { recordCompletion(completion.receipt) }
             return true
         }
         guard read(request.id)?.request != request.id else { return true }
-        if execute != nil { complete(request) } else { pending.append(request) }
+        pending.append(request)
+        drainPending()
         return true
     }
 
     func install(setOn: @escaping (Bool) throws -> Bool) {
         execute = setOn
+        drainPending()
+    }
+
+    private func drainPending() {
+        guard executing == nil else { return }
         while execute != nil, !pending.isEmpty { complete(pending.removeFirst()) }
     }
 
@@ -144,8 +150,8 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
 
     private func complete(_ request: Request) {
         guard let execute else { return }
-        executing.insert(request.id)
-        defer { executing.remove(request.id) }
+        executing = request.id
+        defer { executing = nil }
         var on = request.on
         var error: String?
         do {
@@ -208,18 +214,16 @@ enum ControlHandoffError: Error, LocalizedError, Sendable {
         configuration.activates = false
         configuration.promptsUserIfNeeded = false
         let owner = NSRunningApplication.runningApplications(withBundleIdentifier: RedlightControlPreferences.domain).first
-        let launchURL = owner?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: RedlightControlPreferences.domain)
+        guard let launchURL = owner?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: RedlightControlPreferences.domain) else {
+            throw ControlHandoffError.failed("Could not locate the Redlight app.")
+        }
         try await awaitCompletion(timeout: 5) { complete in
             let completion: @Sendable (NSRunningApplication?, Error?) -> Void = { app, error in
                 if let error { complete(.failure(error)) }
                 else if app == nil { complete(.failure(ControlHandoffError.failed("Could not launch Redlight."))) }
                 else { complete(.success(())) }
             }
-            if let launchURL {
-                NSWorkspace.shared.open([url], withApplicationAt: launchURL, configuration: configuration, completionHandler: completion)
-            } else {
-                NSWorkspace.shared.open(url, configuration: configuration, completionHandler: completion)
-            }
+            NSWorkspace.shared.open([url], withApplicationAt: launchURL, configuration: configuration, completionHandler: completion)
             return nil
         }
     }

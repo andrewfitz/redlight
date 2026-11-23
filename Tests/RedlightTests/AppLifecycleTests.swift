@@ -42,6 +42,16 @@ import Testing
         #expect(!LaunchAtLogin.isRegistered(.notFound))
     }
 
+    @Test @MainActor func terminationNotificationAndRunLoopExitFinishTheSessionOnce() {
+        let original = AppDelegate.finishDisplaySession
+        defer { AppDelegate.finishDisplaySession = original }
+        var finishes = 0
+        AppDelegate.finishDisplaySession = { finishes += 1 }
+        AppDelegate().applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        AppDelegate.finishSessionIfNeeded()
+        #expect(finishes == 1)
+    }
+
     @Test @MainActor func terminationCoordinatorDefersOnceAndRepliesOnce() {
         let coordinator = TerminationCoordinator()
         var prepareCount = 0

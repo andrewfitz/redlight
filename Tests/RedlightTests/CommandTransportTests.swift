@@ -3,10 +3,30 @@ import Foundation
 import Testing
 @testable import Redlight
 
-@Suite struct CommandTransportTests {
+@Suite(.serialized) struct CommandTransportTests {
     @MainActor
     private func pumpTrackingMode(_ mode: CFRunLoopMode) -> CFRunLoopRunResult {
         CFRunLoopRunInMode(mode, 5, false)
+    }
+
+    // Other main-actor tests can keep the Swift executor busy without servicing
+    // Core Foundation sources. Drive the server's run loop while its client waits.
+    @MainActor
+    private func exchange(_ send: @escaping @Sendable () async throws -> Status) async throws -> Status {
+        let finished = DispatchSemaphore(value: 0)
+        let client = Task.detached {
+            defer { finished.signal() }
+            return try await send()
+        }
+        pumpDefaultMode(until: finished)
+        return try await client.value
+    }
+
+    @MainActor
+    private func pumpDefaultMode(until finished: DispatchSemaphore) {
+        while finished.wait(timeout: .now()) == .timedOut {
+            CFRunLoopRunInMode(.defaultMode, 0.01, true)
+        }
     }
 
     @Test @MainActor func serverServicesCommandsInTrackingCommonMode() async throws {
@@ -41,7 +61,7 @@ import Testing
             received.append(command)
             return Status(on: true, color: .init(set: 42, target: 42))
         }
-        let result = try await CommandClient(portName: name).execute(.color(42))
+        let result = try await exchange { try await CommandClient(portName: name).execute(.color(42)) }
         #expect(result.on && result.color.set == 42)
         #expect(received == [.color(42)])
         withExtendedLifetime(server) {}
@@ -56,23 +76,23 @@ import Testing
             throw CommandError.invalidInput("No matching display")
         }
         do {
-            _ = try await Task.detached { try CommandClient.sendSynchronously(.display(.name("missing"), .on), portName: name) }.value
+            _ = try await exchange { try CommandClient.sendSynchronously(.display(.name("missing"), .on), portName: name) }
             Issue.record("Expected handler error")
         } catch let error as CommandError {
             #expect(error.message == "No matching display" && error.exitCode == 1)
         }
         #expect(called == 1)
         do {
-            _ = try await Task.detached {
+            _ = try await exchange {
                 try CommandClient.sendRequestSynchronously(CommandRequest(v: 99, command: .status), portName: name)
-            }.value
+            }
             Issue.record("Expected protocol version error")
         } catch let error as CommandError { #expect(error.message.contains("update Redlight")) }
         #expect(called == 1)
         do {
-            _ = try await Task.detached {
+            _ = try await exchange {
                 try CommandClient.sendRawRequestSynchronously(Data("{\"v\":99,\"command\":{\"futureCommand\":{}}}".utf8), portName: name)
-            }.value
+            }
             Issue.record("Unknown future command should request an update")
         } catch let error as CommandError {
             #expect(error.exitCode == 2 && error.message.contains("update Redlight"))
@@ -86,7 +106,7 @@ import Testing
         let server = try CommandServer.reserve(name: name)
         #expect(throws: CommandError.self) { try CommandServer.reserve(name: name) }
         try server.installHandler { _ in Status(on: true) }
-        #expect(try await Task.detached { try CommandClient.sendSynchronously(.status, portName: name) }.value.on)
+        #expect(try await exchange { try CommandClient.sendSynchronously(.status, portName: name) }.on)
         withExtendedLifetime(server) {}
     }
 

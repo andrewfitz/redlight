@@ -195,6 +195,16 @@ struct Status: Codable, Sendable, Equatable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let running = try values.decode(Bool.self, forKey: .running)
         if !running { self = .notRunning; return }
+        let pausedUntil = try values.decodeIfPresent(String.self, forKey: .pausedUntil).map { timestamp in
+            let formatter = ISO8601DateFormatter()
+            if let date = formatter.date(from: timestamp) { return date }
+            formatter.formatOptions.insert(.withFractionalSeconds)
+            guard let date = formatter.date(from: timestamp) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .pausedUntil, in: values, debugDescription: "Expected an ISO 8601 timestamp.")
+            }
+            return date
+        }
         self.init(
             running: running, on: try values.decode(Bool.self, forKey: .on),
             displays: try values.decode([Display].self, forKey: .displays),
@@ -209,8 +219,7 @@ struct Status: Codable, Sendable, Equatable {
             login: try values.decode(Login.self, forKey: .login),
             version: try values.decode(String.self, forKey: .version),
             fading: try values.decode(Bool.self, forKey: .fading),
-            pausedUntil: try values.decodeIfPresent(String.self, forKey: .pausedUntil)
-                .flatMap { ISO8601DateFormatter().date(from: $0) },
+            pausedUntil: pausedUntil,
             locationSource: try values.decodeIfPresent(CommandLocationSource.self, forKey: .locationSource),
             bedtime: try values.decodeIfPresent(String.self, forKey: .bedtime),
             suspendedFor: try values.decodeIfPresent(String.self, forKey: .suspendedFor),

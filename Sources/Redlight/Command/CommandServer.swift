@@ -6,7 +6,7 @@ final class CommandServer {
     nonisolated static let portName = "com.redlight.app.command"
     // Set once during main-actor reservation, then only read; nonisolated deinit
     // invalidates it synchronously so the C callback cannot outlive its context.
-    nonisolated(unsafe) private var port: CFMessagePort!
+    nonisolated(unsafe) private var port: CFMessagePort?
     private var source: CFRunLoopSource?
     private var isServicing = false
     private var handler: ((RedlightCommand) throws -> Status)?
@@ -17,14 +17,20 @@ final class CommandServer {
     /// also a duplicate; CFMessagePortCreateLocal does not return nil for that case.
     static func reserve(name: String = portName) throws -> CommandServer {
         let owner = CommandServer()
+        let target = CommandPortTarget(owner)
         var context = CFMessagePortContext(
-            version: 0, info: Unmanaged.passUnretained(owner).toOpaque(),
-            retain: nil, release: nil, copyDescription: nil
+            version: 0, info: Unmanaged.passUnretained(target).toOpaque(),
+            retain: { info in
+                _ = Unmanaged<CommandPortTarget>.fromOpaque(info!).retain()
+                return info
+            },
+            release: { info in Unmanaged<CommandPortTarget>.fromOpaque(info!).release() },
+            copyDescription: nil
         )
         var shouldFreeInfo = DarwinBoolean(false)
-        let port = CFMessagePortCreateLocal(
-            nil, name as CFString, commandPortCallback, &context, &shouldFreeInfo
-        )
+        let port = withExtendedLifetime(target) {
+            CFMessagePortCreateLocal(nil, name as CFString, commandPortCallback, &context, &shouldFreeInfo)
+        }
         guard let port, !shouldFreeInfo.boolValue else {
             // Never invalidate a cached port: it belongs to the existing owner.
             throw CommandError.unreachable("Redlight is already running or its command port cannot be reserved.")
@@ -63,10 +69,10 @@ final class CommandServer {
         } catch {
             reply = .failure(.system("Unable to execute command: \(error.localizedDescription)"))
         }
-        return encode(reply)
+        return Self.encode(reply)
     }
 
-    private func encode(_ reply: CommandReply) -> Data {
+    nonisolated fileprivate static func encode(_ reply: CommandReply) -> Data {
         // These wire values contain only finite validated scalars and strings.
         (try? JSONEncoder().encode(reply)) ?? Data("{\"v\":\(CommandRequest.currentVersion),\"ok\":false,\"error\":{\"code\":\"system\",\"message\":\"Unable to encode command reply.\"}}".utf8)
     }
@@ -76,13 +82,25 @@ final class CommandServer {
     }
 }
 
+// Core Foundation owns this context while delivering a message. A weak reference
+// lets the server invalidate its port when its last Swift owner goes away.
+private final class CommandPortTarget {
+    weak var server: CommandServer?
+
+    init(_ server: CommandServer) { self.server = server }
+}
+
 private let commandPortCallback: CFMessagePortCallBack = { _, _, data, info in
     guard let data, let info else { return nil }
-    let owner = Unmanaged<CommandServer>.fromOpaque(info).takeUnretainedValue()
-    let requestData = data as Data
+    guard let owner = Unmanaged<CommandPortTarget>.fromOpaque(info).takeUnretainedValue().server else { return nil }
+    guard CFDataGetLength(data) <= 256 * 1024 else {
+        let reply = CommandServer.encode(.failure(.invalidInput("Command request exceeds 256 KiB.")))
+        return Unmanaged.passRetained(reply as CFData)
+    }
+    let request = data as Data
     // Servicing only occurs on the main run loop, including tracking common modes.
     let result = MainActor.assumeIsolated {
-        owner.receive(requestData)
+        owner.receive(request)
     }
     return Unmanaged.passRetained(result as CFData)
 }

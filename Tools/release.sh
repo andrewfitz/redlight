@@ -68,7 +68,7 @@ mv "$STAGE/$RELEASE_BASENAME.html" "$NOTES_HTML"
 
 python3 "$SOURCE/Tools/release-notes.py" verify-appcast --appcast "$SNAPSHOT/appcast.xml" \
     --dmg-url "$ASSET_URL_PREFIX$RELEASE_BASENAME.dmg" \
-    --dmg-file "$DMG" --version "$VERSION" \
+    --dmg-file "$DMG" --version "$VERSION" --build-info "$SNAPSHOT/.redlight-build-info.json" \
     --notes-url "$ASSET_URL_PREFIX$RELEASE_BASENAME.html" \
     --history-url "$VERSION_HISTORY_URL"
 

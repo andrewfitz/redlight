@@ -57,6 +57,20 @@ private final class Clock {
         #expect(mock.applyCalls.last { $0.displayID == 1 }?.intensity == Float(0.4))
     }
 
+    @Test func replacingPauseKeepsItsFadeOnSchedule() {
+        let manager = makeManager(fadeDuration: 1)
+        manager.setEnabled(true, for: 1)
+        manager.completeDisplayTransitions()
+        manager.pause()
+        clock.uptime += 0.5
+        manager.tickTransitions()
+        manager.pause(for: 120)
+        clock.uptime += 0.5
+        manager.tickTransitions()
+        #expect(!manager.isAnyActive)
+        #expect(manager.pausedUntil == clock.date.addingTimeInterval(120))
+    }
+
     @Test func countdownRoundsUpToWholeMinutes() {
         let until = Date(timeIntervalSince1970: 10_000)
         func left(_ seconds: TimeInterval) -> Int {

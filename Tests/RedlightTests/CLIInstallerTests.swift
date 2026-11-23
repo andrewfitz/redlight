@@ -146,6 +146,25 @@ import Testing
         #expect(fileSystem.installs.isEmpty)
     }
 
+    @Test func readOnlyHomebrewEntryPreventsCreatingAShadowedCommand() {
+        let path = "/opt/homebrew/bin/redlight"
+        for writable in [Set<String>(), ["/usr/local/bin"]] {
+            for entry in [CLIPathEntry.other, .symlink(executable)] {
+                let fileSystem = FakeCLIInstallerFileSystem()
+                fileSystem.writable = writable
+                fileSystem.entries[path] = entry
+                let installer = CLIInstaller(executablePath: executable, fileSystem: fileSystem,
+                                             defaults: preferences()) { _ in
+                    Issue.record("An existing Homebrew entry must avoid prompting")
+                    return .cancelled
+                }
+                let expected: CLIInstallationResult = entry == .other ? .conflict(path) : .alreadyInstalled(path)
+                #expect(installer.offerPrivilegedInstallOnPopoverOpen() == expected)
+                #expect(fileSystem.installs.isEmpty)
+            }
+        }
+    }
+
     @Test func silentFailureAndBadReadbackAreReportedWithoutRetrying() {
         for failByThrowing in [true, false] {
             let fileSystem = FakeCLIInstallerFileSystem()
@@ -298,49 +317,43 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["redlight"])
     }
 
-    @Test func actualInstallerShellPreservesFilesAndTreatsPathsAsLiteralText() throws {
+    @Test func actualInstallerShellPreservesFilesAndTreatsPathsAsLiteralText() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RedlightInstallerShell-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("bin/redlight").path
         let literalTarget = root.appendingPathComponent("a' $(touch injected); \"quoted\" 😀/Redlight.app/Contents/MacOS/Redlight").path
-        func run(target: String, replacing: String?) throws -> Int32 {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
-            process.arguments = ["-c", CLIInstaller.installationShellScript(target: target, replacing: replacing, path: path)]
-            process.currentDirectoryURL = root
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
+        func run(target: String, replacing: String?) async throws -> Int32 {
+            let script = CLIInstaller.installationShellScript(target: target, replacing: replacing, path: path)
+            return try await runShell(script, in: root)
         }
-        #expect(try run(target: literalTarget, replacing: nil) == 0)
+        #expect(try await run(target: literalTarget, replacing: nil) == 0)
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: path) == literalTarget)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("injected").path))
-        #expect(try run(target: executable, replacing: literalTarget) == 0)
+        #expect(try await run(target: executable, replacing: literalTarget) == 0)
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: path) == executable)
-        #expect(try run(target: literalTarget, replacing: "/unexpected") != 0)
-        #expect(try run(target: literalTarget, replacing: nil) != 0)
+        #expect(try await run(target: literalTarget, replacing: "/unexpected") != 0)
+        #expect(try await run(target: literalTarget, replacing: nil) != 0)
         try FileManager.default.removeItem(atPath: path)
         try Data("keep this file".utf8).write(to: URL(fileURLWithPath: path))
-        #expect(try run(target: executable, replacing: nil) != 0)
-        #expect(try run(target: executable, replacing: literalTarget) != 0)
+        #expect(try await run(target: executable, replacing: nil) != 0)
+        #expect(try await run(target: executable, replacing: literalTarget) != 0)
         #expect(try String(contentsOfFile: path, encoding: .utf8) == "keep this file")
         try FileManager.default.removeItem(atPath: path)
         try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
-        #expect(try run(target: executable, replacing: nil) != 0)
+        #expect(try await run(target: executable, replacing: nil) != 0)
         #expect(try FileManager.default.contentsOfDirectory(atPath: path).isEmpty)
         try FileManager.default.removeItem(atPath: path)
         let foreignDirectory = root.appendingPathComponent("foreign-directory")
         try FileManager.default.createDirectory(at: foreignDirectory, withIntermediateDirectories: false)
         try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: foreignDirectory.path)
-        #expect(try run(target: executable, replacing: nil) != 0)
+        #expect(try await run(target: executable, replacing: nil) != 0)
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: path) == foreignDirectory.path)
         #expect(try FileManager.default.contentsOfDirectory(atPath: foreignDirectory.path).isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("bin").path) == ["redlight"])
     }
 
-    @Test func privilegedRollbackPrimitiveNeverMovesIntoAForeignDirectory() throws {
+    @Test func privilegedRollbackPrimitiveNeverMovesIntoAForeignDirectory() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RedlightInstallerRollback-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -348,15 +361,24 @@ import Testing
         let destination = root.appendingPathComponent("redlight").path
         try FileManager.default.createSymbolicLink(atPath: source, withDestinationPath: executable)
         try FileManager.default.createDirectory(atPath: destination, withIntermediateDirectories: false)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", CLIInstaller.exclusiveRenameShellCommand(from: source, to: destination)]
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        #expect(process.terminationStatus != 0)
+        let script = CLIInstaller.exclusiveRenameShellCommand(from: source, to: destination)
+        #expect(try await runShell(script, in: root) != 0)
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: source) == executable)
         #expect(try FileManager.default.contentsOfDirectory(atPath: destination).isEmpty)
+    }
+
+    // Transport tests share the main run loop. Leave it free while the shell runs.
+    private func runShell(_ script: String, in directory: URL) async throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.currentDirectoryURL = directory
+        process.standardError = FileHandle.nullDevice
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+            do { try process.run() }
+            catch { continuation.resume(throwing: error) }
+        }
     }
 }
 

@@ -22,6 +22,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.action = #selector(togglePopover(_:))
             button.imageScaling = .scaleProportionallyDown
             button.setAccessibilityLabel("Redlight")
+            button.setAccessibilityExpanded(false)
             button.setAccessibilityHelp("Open Redlight controls")
         }
         trackIcon()
@@ -103,6 +104,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard let popover, notification.object as? NSPopover === popover else { return }
         statusItem.button?.highlight(true)
         statusItem.button?.setAccessibilityExpanded(true)
+        statusItem.button?.setAccessibilityHelp("Close Redlight controls")
         popover.contentViewController?.view.window?.makeKey()
     }
 
@@ -110,6 +112,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard let popover, notification.object as? NSPopover === popover else { return }
         statusItem.button?.highlight(false)
         statusItem.button?.setAccessibilityExpanded(false)
+        statusItem.button?.setAccessibilityHelp("Open Redlight controls")
         // The next presentation owns a fresh controller and SwiftUI state.
         self.popover = nil
     }

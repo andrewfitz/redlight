@@ -118,6 +118,19 @@ import Foundation
         #expect((63...70).contains(sunrise.timeIntervalSince(now)))
     }
 
+    @Test func resumingAtAnEventDoesNotRepeatTheCrossing() throws {
+        for (time, rising) in [("2025-03-20T06:00:00Z", true), ("2025-03-20T18:00:00Z", false)] {
+            let now = date(time)
+            let threshold = SolarCalculator.elevation(at: now.addingTimeInterval(31.5),
+                                                      latitude: 0, longitude: 0)
+            let event = try #require(SunCycle.findNextEvent(now: now, latitude: 0, longitude: 0,
+                                                            thresholds: [threshold], rising: rising, horizon: 120))
+            let resumed = now.addingTimeInterval(event.seconds)
+            #expect(SunCycle.findNextEvent(now: resumed, latitude: 0, longitude: 0,
+                                           thresholds: [threshold], horizon: 120) == nil)
+        }
+    }
+
     @Test func multipleCrossingsInOneStepChooseTheFirstInEitherDirection() throws {
         for (time, isRising) in [("2025-03-20T06:00:00Z", true), ("2025-03-20T18:00:00Z", false)] {
             let now = date(time)

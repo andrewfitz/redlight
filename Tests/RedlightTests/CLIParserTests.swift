@@ -132,6 +132,15 @@ import Testing
         #expect(CLIParser.help.contains("apps list | apps clear | apps <add|remove> <bundle-id>"))
     }
 
+    @Test func emptyDisplayListWritesNoPhantomRow() async {
+        let client = CommandClient(hasPort: { true }, send: { _ in Status(displays: []) })
+        var rows = [String]()
+        let code = await RedlightCLI.run(arguments: ["display", "list"], client: client,
+                                         writeOutput: { rows.append($0) })
+        #expect(code == 0)
+        #expect(rows.isEmpty)
+    }
+
     @Test func helpAndVersionAreSuccessfulInformationalRequests() {
         #expect(throws: CLIInformation.self) { try CLIParser.parse(["--help"]) }
         #expect(throws: CLIInformation.self) { try CLIParser.parse(["color", "--help"]) }

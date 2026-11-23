@@ -80,6 +80,16 @@ import Testing
         }
     }
 
+    @Test func pauseTimestampAcceptsFractionalSecondsAndRejectsMalformedDates() throws {
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Status())) as? [String: Any])
+        object["pausedUntil"] = "1970-01-01T00:00:01.500Z"
+        let data = try JSONSerialization.data(withJSONObject: object)
+        #expect(try JSONDecoder().decode(Status.self, from: data).pausedUntil == Date(timeIntervalSince1970: 1.5))
+        object["pausedUntil"] = "invalid"
+        let invalid = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(Status.self, from: invalid) }
+    }
+
     @Test func statusFromAnOlderAppDecodesWithoutPause() throws {
         var object = try #require(JSONSerialization.jsonObject(
             with: JSONEncoder().encode(Status(on: true, pausedUntil: Date()))) as? [String: Any])

@@ -122,6 +122,24 @@ import Testing
         manager.endPreview()
     }
 
+    @Test func newGestureRestoresBothChannelsBeforeItsFirstEdit() {
+        let gamma = MockGammaController()
+        let manager = makeManager(gamma: gamma)
+        manager.setEnabled(true, for: 1)
+        manager.intensity = 0.6
+        manager.whitepoint = 0.8
+        let first = manager.beginSliderInteraction()
+        manager.previewIntensity(0.2)
+        let second = manager.beginSliderInteraction()
+        #expect(!manager.isSliderInteractionCurrent(first))
+        #expect(manager.isSliderInteractionCurrent(second))
+        #expect(gamma.applyCalls.last?.intensity == Float(0.6))
+        manager.previewWhitepoint(0.4)
+        #expect(gamma.applyCalls.last?.intensity == Float(0.6))
+        _ = manager.beginSliderInteraction()
+        #expect(gamma.applyCalls.last?.whitepoint == Float(0.8))
+    }
+
     @Test func standaloneSliderWithoutInteractionCallbacksStillAcceptsEdits() {
         var gate = SliderInteractionGate()
         let accepted = gate.permitsMutation(token: nil, isCurrent: nil)

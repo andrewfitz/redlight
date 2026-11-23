@@ -88,15 +88,23 @@ final class ShortcutStore {
     @ObservationIgnored nonisolated(unsafe) private var layoutObserver: NSObjectProtocol?
     private static let key = "redlight.shortcuts"
 
+    private struct SavedAssignment: Decodable {
+        let shortcut: KeyShortcut?
+
+        init(from decoder: Decoder) throws {
+            shortcut = try? KeyShortcut(from: decoder)
+        }
+    }
+
     init(defaults: UserDefaults = .standard, reserved: @escaping () -> Set<KeyShortcut> = KeyShortcut.systemReserved) {
         self.defaults = defaults
         reservedShortcuts = reserved
         systemReserved = reserved()
         if let data = defaults.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode([String: KeyShortcut].self, from: data) {
+           let saved = try? JSONDecoder().decode([String: SavedAssignment].self, from: data) {
             var used = Set<KeyShortcut>()
             for action in ShortcutAction.allCases {
-                guard let shortcut = saved[action.rawValue], shortcut.problem(reserved: []) == nil,
+                guard let shortcut = saved[action.rawValue]?.shortcut, shortcut.problem(reserved: []) == nil,
                       used.insert(shortcut).inserted else { continue }
                 shortcuts[action] = shortcut
             }

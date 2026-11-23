@@ -238,6 +238,7 @@ struct MenuBarView: View {
                     ForEach(Array(manager.presets.enumerated()), id: \.offset) { index, preset in
                         PresetButton(
                             name: preset.name,
+                            isSaveTarget: choosingSaveTarget,
                             isActive: !choosingSaveTarget && manager.activePresetIndex == index
                         ) {
                             guard CommandPreset.allCases.indices.contains(index) else {
@@ -384,6 +385,7 @@ struct MenuBarView: View {
                         Image(systemName: "keyboard")
                     }
                     .buttonStyle(.borderless)
+                    .help("Keyboard Shortcuts")
                     .accessibilityLabel("Keyboard Shortcuts")
                 }
                 Button(manager.isTerminating ? "Quitting…" : "Quit") {
@@ -613,6 +615,7 @@ struct PauseButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
         .accessibilityLabel(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
     }
 }
@@ -672,19 +675,21 @@ struct PauseForAppsRow: View {
     /// Running apps not yet chosen, once each, the app last in front first (most likely the
     /// one to add), then by name. Apps without a bundle identifier cannot be matched.
     static func candidates(running: [RunningApp], chosen: [String], recent: String?) -> [RunningApp] {
-        var seen: [String] = []
-        let apps = running.filter { app in
-            guard let id = app.bundleID, !chosen.contains(where: { AppBundleID.matches($0, id) }),
-                  !seen.contains(where: { AppBundleID.matches($0, id) }) else { return false }
-            seen.append(id)
-            return true
+        var seen = Set(chosen.map { $0.folding(options: .caseInsensitive, locale: nil) })
+        var recentApp: RunningApp?
+        var others: [RunningApp] = []
+        for app in running {
+            guard let id = app.bundleID, (try? AppBundleID.validate(id)) != nil,
+                  seen.insert(id.folding(options: .caseInsensitive, locale: nil)).inserted else { continue }
+            if let recent, AppBundleID.matches(id, recent) {
+                recentApp = app
+            } else {
+                others.append(app)
+            }
         }
-        return apps.sorted { a, b in
-            let aRecent = recent.map { id in a.bundleID.map { AppBundleID.matches($0, id) } ?? false } ?? false
-            let bRecent = recent.map { id in b.bundleID.map { AppBundleID.matches($0, id) } ?? false } ?? false
-            if aRecent != bRecent { return aRecent }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
-        }
+        others.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if let recentApp { others.insert(recentApp, at: 0) }
+        return others
     }
 
     var body: some View {
@@ -716,19 +721,20 @@ struct PauseForAppsRow: View {
 
     private func row(_ name: String, help: String, symbol: String, accessibility: String,
                      action: @escaping () -> Void) -> some View {
-        HStack(spacing: 6) {
-            Text(name).lineLimit(1).truncationMode(.tail).help(help)
-            Spacer(minLength: 4)
-            Button(action: action) {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(name).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 4)
                 Image(systemName: symbol)
-                    .frame(width: 16, height: Self.rowHeight)
-                    .contentShape(Rectangle())
+                    .frame(width: 16)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(accessibility)
+            .frame(height: Self.rowHeight)
+            .padding(.trailing, 4)
+            .contentShape(Rectangle())
         }
-        .frame(height: Self.rowHeight)
-        .padding(.trailing, 4)
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(accessibility)
     }
 }
 
@@ -837,6 +843,7 @@ struct AppearanceSwitch: View {
 
 struct PresetButton: View {
     let name: String
+    var isSaveTarget = false
     let isActive: Bool
     let action: () -> Void
 
@@ -860,8 +867,8 @@ struct PresetButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .help(name)
-        .accessibilityLabel(name)
+        .help(isSaveTarget ? "Overwrite \(name) preset" : name)
+        .accessibilityLabel(isSaveTarget ? "Overwrite \(name) preset" : name)
         .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 }

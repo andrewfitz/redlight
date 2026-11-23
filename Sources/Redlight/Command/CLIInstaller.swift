@@ -76,6 +76,9 @@ final class CLIInstaller {
             guard let directory = Self.directories.first(where: fileSystem.isWritableDirectory) else {
                 return record(.requiresPrivileges)
             }
+            if directory != Self.homebrewDirectory, let result = try existingHomebrewResult(target: target) {
+                return record(result)
+            }
             let path = directory + "/redlight"
             switch try fileSystem.entry(at: path) {
             case .missing:
@@ -112,10 +115,8 @@ final class CLIInstaller {
 
         do {
             guard let target = try eligibleExecutable() else { return record(.ineligibleLocation) }
-            let homebrewPath = Self.homebrewDirectory + "/redlight"
-            if case let .symlink(link) = try? fileSystem.entry(at: homebrewPath),
-               Self.absoluteLinkTarget(link, at: homebrewPath) == target {
-                return record(.alreadyInstalled(homebrewPath))
+            if let result = try existingHomebrewResult(target: target) {
+                return record(result)
             }
 
             let path = Self.privilegedDirectory + "/redlight"
@@ -152,6 +153,16 @@ final class CLIInstaller {
     private func record(_ result: CLIInstallationResult) -> CLIInstallationResult {
         lastResult = result
         return result
+    }
+
+    private func existingHomebrewResult(target: String) throws -> CLIInstallationResult? {
+        let path = Self.homebrewDirectory + "/redlight"
+        switch try fileSystem.entry(at: path) {
+        case .missing: return nil
+        case let .symlink(link) where Self.absoluteLinkTarget(link, at: path) == target:
+            return .alreadyInstalled(path)
+        default: return .conflict(path)
+        }
     }
 
     private func verifiedResult(path: String, target: String) throws -> CLIInstallationResult {
@@ -331,7 +342,11 @@ struct LocalCLIInstallerFileSystem: CLIInstallerFileSystem {
             try? moveExclusively(from: backup, to: path)
             throw error
         }
-        try FileManager.default.removeItem(atPath: backup)
+        // A backup is always a symlink. Never recursively delete a directory that
+        // another writer may have placed at the backup path before cleanup.
+        guard unlink(backup) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private func moveExclusively(from source: String, to destination: String) throws {

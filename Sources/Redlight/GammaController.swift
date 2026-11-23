@@ -101,7 +101,7 @@ final class GammaController: GammaControlling {
     private let writeTable: (CGDirectDisplayID, Table) -> CGError
     private let resetTables: () -> Void
     private var calibrations: [CGDirectDisplayID: Calibration] = [:]
-    private var output = GammaTableComposer.makeTable(size: tableSize)
+    private var outputs: [Int: Table] = [:]
 
     init(
         readTable: @escaping (CGDirectDisplayID) -> Table? = GammaController.readCalibration,
@@ -139,13 +139,17 @@ final class GammaController: GammaControlling {
         } else {
             let original = if let cached { cached.original } else { readTable(displayID) }
             let sampled = if let original {
-                GammaTableComposer.resample(original: original, tableSize: Self.tableSize, invert: invert)
+                invert ? Table(r: Array(original.r.reversed()), g: Array(original.g.reversed()),
+                               b: Array(original.b.reversed())) : original
             } else {
                 invert ? Self.invertedIdentity : Self.identity
             }
             calibration = Calibration(original: original, sampled: sampled, isInverted: invert)
         }
-        GammaTableComposer.render(calibration.sampled, intensity: intensity, whitepoint: whitepoint, into: &output)
+        let size = calibration.sampled.r.count
+        GammaTableComposer.render(calibration.sampled, intensity: intensity, whitepoint: whitepoint,
+                                  into: &outputs[size, default: GammaTableComposer.makeTable(size: size)])
+        guard let output = outputs[size] else { return }
         if writeTable(displayID, output) == .success, cached?.isInverted != invert {
             calibrations[displayID] = calibration
         }
@@ -172,6 +176,7 @@ final class GammaController: GammaControlling {
 
     func resetForDisplayRecovery() {
         calibrations.removeAll()
+        outputs.removeAll()
         resetTables()
     }
 

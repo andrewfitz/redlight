@@ -20,11 +20,14 @@ import Testing
             ["Redlight", "--help"], ["Redlight", "-h"], ["Redlight", "--version"],
             ["Redlight", "bad"], ["Redlight", "--json", "status"],
             ["Redlight", "--typo"], ["Redlight", "-z"],
+            ["Redlight", "-psn_bad"], ["Redlight", "-psn_0_1234", "status"],
+            ["Redlight", "-NSDocumentRevisionsDebugMode", "YES", "--typo"],
         ] { #expect(EntryRouter.isCLI(arguments: args)) }
         for args in [
             ["/Applications/Redlight.app/Contents/MacOS/Redlight"], ["Redlight"],
             ["Redlight", "-psn_0_1234"], ["Redlight", "-NSDocumentRevisionsDebugMode", "YES"],
             ["Redlight", "-ApplePersistenceIgnoreState", "YES"],
+            ["Redlight", "-psn_0_1234", "-NSDocumentRevisionsDebugMode", "YES"],
         ] { #expect(!EntryRouter.isCLI(arguments: args)) }
     }
 

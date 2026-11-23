@@ -169,7 +169,9 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
         MainActor.assumeIsolated {
             if authorization == .authorized {
                 requestFixIfWanted()
-            } else if authorization == .denied {
+            } else if authorization == .denied || fixState == .requesting {
+                // A privacy reset can return to notDetermined during a one-shot.
+                // Release that request so the next refresh can ask for permission.
                 cancelRequest()
             }
             onChange?()

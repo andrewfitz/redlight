@@ -101,6 +101,15 @@ private struct CommandFixture {
         #expect(f.defaults.bool(forKey: "redlight.isOn"))
     }
 
+    @Test func fractionalStepsPreserveDirectionAndPrecision() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.color(40.0004))
+        let increased = try f.handler.execute(.step(.color, 0.00005))
+        #expect(abs(increased.color.set - 40.00045) < 1e-10)
+        let decreased = try f.handler.execute(.step(.color, -0.00005))
+        #expect(abs(decreased.color.set - 40.0004) < 1e-10)
+    }
+
     @Test func timedAndSunrisePausesUseTheirOwnLength() throws {
         let location = FakeLocationProvider()
         location.coordinate = (latitude: 41.88, longitude: -87.63)

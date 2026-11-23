@@ -32,10 +32,22 @@ enum EntryRouter {
     static func isCLI(arguments: [String]) -> Bool {
         guard let executable = arguments.first else { return false }
         if URL(fileURLWithPath: executable).lastPathComponent == "redlight" { return true }
-        guard let first = arguments.dropFirst().first else { return false }
-        // LaunchServices supplies options such as -psn_…, -NSDocumentRevisionsDebugMode.
-        // A bare positional argument is a mistyped CLI command, not an app launch.
-        return !first.hasPrefix("-psn_") && !first.hasPrefix("-NS") && !first.hasPrefix("-Apple")
+        // LaunchServices may supply a process serial number and Cocoa defaults.
+        // Every argument must belong to that launch before starting app services.
+        var options = arguments.dropFirst().makeIterator()
+        while let option = options.next() {
+            if option.hasPrefix("-psn_") {
+                let parts = option.dropFirst(5).split(separator: "_", omittingEmptySubsequences: false)
+                guard parts.count == 2, parts.allSatisfy({ UInt32($0) != nil }) else {
+                    return true
+                }
+            } else if option.hasPrefix("-NS") || option.hasPrefix("-Apple") {
+                guard options.next() != nil else { return true }
+            } else {
+                return true
+            }
+        }
+        return false
     }
 
     @MainActor

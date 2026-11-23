@@ -51,6 +51,7 @@ enum AdaptiveMapping {
             intensityMin: intensityMin, intensityMax: intensityMax,
             whitepointMin: whitepointMin, whitepointMax: whitepointMax)
         func floor(lo: Double, hi: Double, atMidnight: Double) -> Double {
+            if lo == hi { return lo }
             // Weighted sums land exactly on the band ends at progress 0 and 1.
             let ramp = hi * (1 - bedtime.progress) + lo * bedtime.progress
             let released = lo * (1 - bedtime.release) + max(lo, atMidnight) * bedtime.release
@@ -86,7 +87,8 @@ enum AdaptiveMapping {
     private static func remap(_ v: Double, day: Double, deep: Double, lo: Double, hi: Double) -> Double {
         guard day != deep else { return min(hi, max(lo, v)) }
         let frac = min(1, max(0, (v - deep) / (day - deep)))
-        return lo + (hi - lo) * frac
+        if frac == 1 { return hi }
+        return min(hi, lo + (hi - lo) * frac)
     }
 }
 

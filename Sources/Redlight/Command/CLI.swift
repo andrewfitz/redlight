@@ -195,7 +195,7 @@ enum RedlightCLI {
                 writeOutput(String(decoding: try JSONEncoder().encode(status), as: UTF8.self))
             } else if parsed.command == .status {
                 writeOutput(describe(status))
-            } else if parsed.command == .displayList {
+            } else if parsed.command == .displayList, !status.displays.isEmpty {
                 writeOutput(status.displays.map {
                     "\($0.number): \($0.name) — \($0.enabled ? "on" : "off"), invert \($0.inverted ? "on" : "off")"
                 }.joined(separator: "\n"))

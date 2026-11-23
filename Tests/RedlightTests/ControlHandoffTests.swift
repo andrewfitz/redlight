@@ -67,6 +67,19 @@ import Testing
         #expect(opens == 1 && state)
     }
 
+    @Test func requestsDeliveredDuringExecutionPublishInArrivalOrder() {
+        let first = url(true, UUID()), second = url(false, UUID())
+        var publications: [Bool] = []
+        let handoff = ControlHandoff(read: { _ in nil }, record: { _ in }, publish: { publications.append($0) })
+        handoff.install { on in
+            if on { #expect(handoff.handle(url: second)) }
+            return on
+        }
+        #expect(handoff.handle(url: first))
+        #expect(publications == [true, false])
+        handoff.uninstall()
+    }
+
     @Test func concurrentRequestsRetainIndependentResults() async throws {
         var receipts: [UUID: ControlReceipt] = [:]
         var state = false

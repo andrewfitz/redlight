@@ -126,8 +126,10 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
     private var unavailable: Set<CGDirectDisplayID> = []
     private let getScreen: @MainActor (CGDirectDisplayID) -> NSScreen?
     private let makeOverlay: @MainActor (NSScreen) -> (any SidecarOverlay)?
-    private let pointer: (any SidecarPointerSystem)?
+    private let makePointer: @MainActor () -> (any SidecarPointerSystem)?
+    private lazy var pointer = makePointer()
     private var isMonitoringPointer = false
+    private var replica: (display: CGDirectDisplayID, cursor: NSCursor, location: NSPoint)?
     private var pointerHideCount = 0
     private var pointerCursor: (seed: Int, cursor: NSCursor)?
 
@@ -138,11 +140,11 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
         makeOverlay: @escaping @MainActor (NSScreen) -> (any SidecarOverlay)? = {
             SidecarFilterWindow(screen: $0)
         },
-        pointer: (any SidecarPointerSystem)? = SidecarSystemPointer()
+        pointer: @autoclosure @escaping @MainActor () -> (any SidecarPointerSystem)? = SidecarSystemPointer()
     ) {
         self.getScreen = getScreen
         self.makeOverlay = makeOverlay
-        self.pointer = pointer
+        self.makePointer = pointer
     }
 
     func applyFilter(to id: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
@@ -174,10 +176,12 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
         // changes what the pointer has to do.
         guard let overlay = overlays.removeValue(forKey: id) else { return }
         overlay.close()
+        if replica?.display == id { replica = nil }
         syncPointer()
     }
 
     func restoreAll() {
+        replica = nil
         for window in overlays.values { window.close() }
         overlays.removeAll()
         screens.removeAll()
@@ -194,7 +198,7 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
     }
 
     private func syncPointer() {
-        guard let pointer else { return }
+        guard !overlays.isEmpty || isMonitoringPointer, let pointer else { return }
         if overlays.isEmpty {
             releasePointer()
             if isMonitoringPointer { pointer.stopMonitoring(); isMonitoringPointer = false }
@@ -228,8 +232,14 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
         } else {
             releasePointer()
         }
-        for (id, overlay) in overlays {
-            overlay.updatePointer(id == target ? cursor : nil, at: location)
+        if let previous = replica, previous.display != target || cursor == nil {
+            overlays[previous.display]?.updatePointer(nil, at: location)
+            replica = nil
+        }
+        if let target, let cursor,
+           replica?.display != target || replica?.cursor !== cursor || replica?.location != location {
+            overlays[target]?.updatePointer(cursor, at: location)
+            replica = (target, cursor, location)
         }
     }
 
@@ -283,6 +293,7 @@ final class SidecarSystemPointer: SidecarPointerSystem {
             hidesInBackground = setProperty(
                 connection, connection, "SetsCursorInBackground" as CFString, kCFBooleanTrue) == 0
         }
+        guard hidesInBackground else { return false }
         return CGDisplayHideCursor(kCGNullDirectDisplay) == .success
     }
     func show() { CGDisplayShowCursor(kCGNullDirectDisplay) }
@@ -342,6 +353,7 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
     private var lastOutput: Output?
     private var lastBackingScale: CGFloat
     private var needsSurfaceRebuild = false
+    private var supportsLayerFlatteningControl = true
     private var spaceObservation: SidecarNotificationObservation?
 
     override var canBecomeKey: Bool { false }
@@ -396,6 +408,7 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
         view.layer?.addSublayer(pointer)
         view.layer?.addSublayer(backdrop)
         rebuildLayerSurface()
+        guard supportsLayerFlatteningControl else { return nil }
 
         let center = NSWorkspace.shared.notificationCenter
         let observer = center.addObserver(
@@ -478,9 +491,20 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
         // AppKit otherwise flattens the backdrop into an inert window image,
         // including after a Spaces transition. Recreate its WindowServer surface.
         setValue(false, forKey: "shouldAutoFlattenLayerTree")
+        guard supportsLayerFlatteningControl else { return }
         setValue(false, forKey: "canHostLayersInWindowServer")
         setValue(true, forKey: "canHostLayersInWindowServer")
         needsSurfaceRebuild = false
+    }
+
+    override func setValue(_ value: Any?, forUndefinedKey key: String) {
+        // KVC has no capability query for this private AppKit setting. An
+        // unsupported OS reaches this hook instead of raising NSUnknownKeyException.
+        if key == "shouldAutoFlattenLayerTree" {
+            MainActor.assumeIsolated { supportsLayerFlatteningControl = false }
+            return
+        }
+        super.setValue(value, forUndefinedKey: key)
     }
 
     override func close() {

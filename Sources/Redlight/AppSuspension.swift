@@ -88,11 +88,11 @@ final class AppSuspensionController {
         self.ownBundleID = ownBundleID
         self.ownProcessID = ownProcessID
         bundleIDs = Self.sanitized(defaults.array(forKey: Self.defaultsKey))
-        evaluate(source.frontmostApp)
         source.start(
             onActivate: { [weak self] in self?.evaluate($0) },
             onTerminate: { [weak self] in self?.appDidTerminate($0) },
             onWake: { [weak self] in self.map { $0.evaluate($0.source.frontmostApp) } })
+        evaluate(source.frontmostApp)
     }
 
     var recentBundleID: String? { recentApp?.bundleID }
@@ -158,7 +158,9 @@ final class AppSuspensionController {
     }
 
     private func isOwn(_ app: RunningApp) -> Bool {
-        app.processID == ownProcessID || (app.bundleID != nil && app.bundleID == ownBundleID)
+        if app.processID == ownProcessID { return true }
+        guard let bundleID = app.bundleID, let ownBundleID else { return false }
+        return AppBundleID.matches(bundleID, ownBundleID)
     }
 
     private func listDidChange() {

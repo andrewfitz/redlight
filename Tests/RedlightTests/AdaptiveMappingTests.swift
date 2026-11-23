@@ -19,6 +19,19 @@ import Testing
         #expect(abs(t.intensity - 0.8) < 1e-9)
     }
 
+    @Test func dayHitsAnExactFractionalBandMaximum() {
+        let t = banded(elevation: 30, iMin: 0.03, iMax: 0.29)
+        #expect(t.intensity == 0.29)
+    }
+
+    @Test func nearlyIdenticalDayAndDeepAnchorsStillReachTheBandMinimum() {
+        var custom = presets
+        custom[0].intensity = 0.01.nextUp
+        custom[4].intensity = 0.01
+        let t = banded(elevation: -70, iMin: 0.2, iMax: 0.8, presets: custom)
+        #expect(t.intensity == 0.2)
+    }
+
     @Test func solarMidnightMapsToBandMin() {
         let t = banded(elevation: -70, iMin: 0.2, iMax: 0.8)
         #expect(abs(t.intensity - 0.2) < 1e-9)

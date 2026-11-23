@@ -19,7 +19,8 @@ import Testing
 
     @Test func legacyZoneNamesUseTheSameLocation() throws {
         for (alias, canonical) in [("US/Alaska", "America/Anchorage"), ("NZ", "Pacific/Auckland"),
-                                   ("Asia/Calcutta", "Asia/Kolkata"), ("NZ-CHAT", "Pacific/Chatham")] {
+                                   ("Asia/Calcutta", "Asia/Kolkata"), ("NZ-CHAT", "Pacific/Chatham"),
+                                   ("Canada/Pacific", "America/Vancouver"), ("Canada/Eastern", "America/Toronto")] {
             let legacyZone = try #require(TimeZone(identifier: alias))
             let canonicalZone = try #require(TimeZone(identifier: canonical))
             let at = Date(timeIntervalSince1970: 1_750_000_000)
@@ -27,6 +28,13 @@ import Testing
             let modern = ApproximateLocation.from(canonicalZone, at: at)
             #expect(legacy == modern)
         }
+    }
+
+    @Test func chathamQuarterHourZoneUsesTheIslandLocation() throws {
+        let zone = try #require(TimeZone(identifier: "Pacific/Chatham"))
+        let coord = ApproximateLocation.from(zone)
+        #expect(abs(coord.latitude + 43.95) < 0.1)
+        #expect(abs(coord.longitude + 176.55) < 0.1)
     }
 
     @Test func unknownZoneFallsBackToOffsetDerivedLongitude() {

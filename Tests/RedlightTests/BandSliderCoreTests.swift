@@ -72,6 +72,12 @@ import CoreGraphics
         #expect(hit(width, value: 0.5, lower: 0.2, upper: 0.8, showBand: false) == .value)
     }
 
+    @Test func thumbGrabPreservesOffsetOnlyInsideItsCircle() {
+        #expect(BandSliderCore.isOnThumb(dx: 6, dy: 6, radius: inset))
+        #expect(!BandSliderCore.isOnThumb(dx: 8, dy: 8, radius: inset))
+        #expect(!BandSliderCore.isOnThumb(dx: 4, dy: 12, radius: inset))
+    }
+
     @Test func nearestHandleWins() {
         #expect(hit(pos(0.21), value: 0.5, lower: 0.2, upper: 0.8) == .lower)
         #expect(hit(pos(0.79), value: 0.5, lower: 0.2, upper: 0.8) == .upper)

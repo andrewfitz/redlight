@@ -15,6 +15,7 @@ final class ValueHUD: ValueReadout {
     private var host: NSHostingView<ValueHUDView>?
     private var size = CGSize.zero
     private var hideTask: Task<Void, Never>?
+    private var announcementTask: Task<Void, Never>?
     private var isFading = false
 
     func show(_ text: String, level: Double?) {
@@ -56,11 +57,17 @@ final class ValueHUD: ValueReadout {
             panel.alphaValue = 1
             panel.orderFrontRegardless()
         }
-        if shouldAnnounce, let application = NSApp {
-            NSAccessibility.post(element: application, notification: .announcementRequested, userInfo: [
-                .announcement: text,
-                .priority: NSAccessibilityPriorityLevel.high.rawValue,
-            ])
+        if shouldAnnounce {
+            announcementTask?.cancel()
+            // Speak the final value when a held shortcut generates rapid updates.
+            announcementTask = Task {
+                try? await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled, let application = NSApp else { return }
+                NSAccessibility.post(element: application, notification: .announcementRequested, userInfo: [
+                    .announcement: text,
+                    .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+                ])
+            }
         }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))
@@ -84,6 +91,7 @@ final class ValueHUD: ValueReadout {
     }
 
     isolated deinit {
+        announcementTask?.cancel()
         hideTask?.cancel()
         panel?.orderOut(nil)
     }

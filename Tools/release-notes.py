@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import html
+import json
 import pathlib
 import re
 import sys
@@ -135,7 +136,8 @@ def markdown_html(markdown: str) -> str:
 
 
 def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str, history_url: str,
-                   dmg_file: pathlib.Path | None = None, version: str | None = None) -> None:
+                   dmg_file: pathlib.Path | None = None, version: str | None = None,
+                   build_info: pathlib.Path | None = None) -> None:
     root = ET.parse(path).getroot()
     items = [item for item in root.findall("./channel/item")
              if any(enclosure.get("url") == dmg_url for enclosure in item.findall("enclosure"))]
@@ -157,6 +159,14 @@ def verify_appcast(path: pathlib.Path, dmg_url: str, notes_url: str, history_url
         raise ValueError("The appcast length does not match the release DMG.")
     if version is not None and item.findtext(f"{{{SPARKLE_NAMESPACE}}}shortVersionString") != version:
         raise ValueError("The appcast version does not match the release version.")
+    if build_info is not None:
+        info = json.loads(build_info.read_text())
+        build = info.get("buildNumber") if isinstance(info, dict) else None
+        if type(build) is not int or build < 1:
+            raise ValueError("The build receipt must contain a positive integer build number.")
+        builds = item.findall(f"{{{SPARKLE_NAMESPACE}}}version")
+        if len(builds) != 1 or builds[0].text != str(build):
+            raise ValueError("The appcast build number does not match the release build.")
     links = item.findall(f"{{{SPARKLE_NAMESPACE}}}releaseNotesLink")
     if len(links) != 1 or (links[0].text or "").strip() != notes_url:
         raise ValueError("Appcast does not link to the hosted HTML release notes.")
@@ -178,6 +188,7 @@ def main() -> None:
     verify.add_argument("--dmg-url", required=True)
     verify.add_argument("--dmg-file", type=pathlib.Path)
     verify.add_argument("--version")
+    verify.add_argument("--build-info", type=pathlib.Path)
     verify.add_argument("--notes-url", required=True)
     verify.add_argument("--history-url", required=True)
     args = parser.parse_args()
@@ -188,7 +199,7 @@ def main() -> None:
             args.markdown.write_text(markdown)
             args.html.write_text(html_document)
         else:
-            verify_appcast(args.appcast, args.dmg_url, args.notes_url, args.history_url, args.dmg_file, args.version)
+            verify_appcast(args.appcast, args.dmg_url, args.notes_url, args.history_url, args.dmg_file, args.version, args.build_info)
     except (OSError, ValueError, ET.ParseError) as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

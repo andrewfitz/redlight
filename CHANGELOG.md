@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 - 2026-11-22
+
+- Preserved native display calibration resolution and fixed stale slider previews when switching controls.
+- Fixed repeated solar events, adaptive adjustments lost after location recovery, and fractional CLI steps that could move a setting in the wrong direction.
+
 ## 1.6 - 2026-11-21
 
 - The menu bar popover now accepts keyboard input, grows as sections expand, and scrolls on shorter screens. Press Return to save a manual location, or use the arrow keys to adjust a focused slider or band limit.

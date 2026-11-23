@@ -413,6 +413,17 @@ private final class Clock {
         #expect(controller.suspendedFor == "Photoshop")
     }
 
+    @Test func anotherRedlightProcessPreservesThePreviousAppRegardlessOfBundleIDCase() throws {
+        let source = FakeAppSource(frontmost: .photoshop)
+        let controller = makeController(source: source)
+        try controller.add("com.adobe.Photoshop")
+        let otherCopy = RunningApp(bundleID: "COM.REDLIGHT.APP", name: "Redlight", processID: 1000)
+        source.activate(otherCopy)
+        #expect(controller.suspendedFor == "Photoshop")
+        source.runningApps = [otherCopy, .photoshop]
+        #expect(controller.runningApps() == [.photoshop])
+    }
+
     @Test func quittingTheChosenAppInFrontEndsTheSuspension() throws {
         let source = FakeAppSource(frontmost: .safari)
         let controller = makeController(source: source)
@@ -494,7 +505,8 @@ private final class Clock {
         let duplicateSafari = RunningApp(bundleID: "com.apple.Safari", name: "Safari", processID: 600)
         let notes = RunningApp(bundleID: "com.apple.Notes", name: "Notes", processID: 601)
         let candidates = PauseForAppsRow.candidates(
-            running: [notes, .photoshop, .safari, .script, duplicateSafari],
+            running: [notes, .photoshop, .safari, .script, duplicateSafari,
+                      RunningApp(bundleID: "invalid id", name: "Unavailable", processID: 602)],
             chosen: ["COM.ADOBE.PHOTOSHOP"], recent: "com.apple.Safari")
         #expect(candidates == [.safari, notes])
     }

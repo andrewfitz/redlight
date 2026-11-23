@@ -173,8 +173,8 @@ final class DisplayManager {
 
     @discardableResult
     func beginSliderInteraction() -> UInt64 {
-        guard !isTerminating else { return sliderInteractionGeneration }
-        sliderInteractionGeneration &+= 1
+        // A superseded gesture can no longer run its release callback. Finish its preview here.
+        interruptSliderInteraction()
         return sliderInteractionGeneration
     }
 
@@ -337,7 +337,7 @@ final class DisplayManager {
     }
 
     private func applyAdaptive(transitionFrom explicitStart: OutputPair?) {
-        guard adaptiveEnabled else { return }
+        guard adaptiveEnabled, !isTerminating else { return }
         let hadPendingAdjustment = pendingAdaptiveIntensity != nil
             || pendingAdaptiveWhitepoint != nil
         guard let target = resolveAdaptiveTarget() else { return }
@@ -376,6 +376,8 @@ final class DisplayManager {
         // gives the curve a solar position. Only a total absence of any coordinate blocks.
         guard let coord = location.coordinate else {
             coordinate = nil
+            lastCurveIntensity = nil
+            lastCurveWhitepoint = nil
             adaptiveStatusText = location.authorization == .denied ? "Location needed" : "Locating…"
             if nextSolarEventText != nil { nextSolarEventText = nil }
             return nil
@@ -588,7 +590,7 @@ final class DisplayManager {
     // MARK: - Private
 
     private let gamma: GammaControlling
-    private let getDisplayIDs: () -> [CGDirectDisplayID]
+    private let getDisplayIDs: () -> [CGDirectDisplayID]?
     private let getDisplayName: (CGDirectDisplayID) -> String
     private let getDisplayPersistenceKey: (CGDirectDisplayID) -> String
     private let getMainDisplayID: () -> CGDirectDisplayID
@@ -665,7 +667,7 @@ final class DisplayManager {
 
     init(
         gamma: GammaControlling = DisplayFilterController(),
-        getDisplayIDs: @escaping () -> [CGDirectDisplayID] = { DisplayManager.systemDisplayIDs() },
+        getDisplayIDs: @escaping () -> [CGDirectDisplayID]? = { DisplayManager.systemDisplayIDs() },
         getDisplayName: @escaping (CGDirectDisplayID) -> String = { DisplayManager.systemDisplayName(for: $0) },
         getDisplayPersistenceKey: @escaping (CGDirectDisplayID) -> String = {
             DisplayManager.systemDisplayPersistenceKey(for: $0)
@@ -851,14 +853,17 @@ final class DisplayManager {
         refreshDisplays(apply: true)
     }
 
-    private func refreshDisplays(apply: Bool, calibrationWasReset: Bool = false) {
+    private func refreshDisplays(apply: Bool, resetCalibration: Bool = false) {
+        // A failed WindowServer query gives no evidence that a display disconnected.
+        guard let discoveredIDs = getDisplayIDs() else { return }
+        if resetCalibration { gamma.resetForDisplayRecovery() }
         // Invalidate cached routing and compositor surfaces even when IDs remain
         // unchanged (for example, a resolution or backing-scale change).
         if apply { gamma.displaysDidChange() }
         // Dedupe defensively — a duplicate ID from the system would otherwise both trap
         // the uniquing dictionary and confuse SwiftUI's Identifiable ForEach.
         var currentIDs = Set<CGDirectDisplayID>()
-        let ids = getDisplayIDs().filter { currentIDs.insert($0).inserted }
+        let ids = discoveredIDs.filter { currentIDs.insert($0).inserted }
         let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
         let keys = Dictionary(uniqueKeysWithValues: ids.map { id in
             let key = getDisplayPersistenceKey(id)
@@ -871,7 +876,7 @@ final class DisplayManager {
         // Screen-parameter notifications also include harmless desktop changes. Hardware
         // mode changes and display-only wake have their own recovery triggers below.
         let topologyChanged = Set(previous.keys) != currentIDs || !replaced.isEmpty
-        if topologyChanged, !calibrationWasReset {
+        if topologyChanged, !resetCalibration {
             if apply, !isTerminating {
                 gamma.resetForDisplayRecovery()
                 scheduleDisplayRecovery()
@@ -1224,8 +1229,7 @@ final class DisplayManager {
     func handleDisplayWake() {
         guard !isTerminating else { return }
         refreshPause()
-        gamma.resetForDisplayRecovery()
-        refreshDisplays(apply: true, calibrationWasReset: true)
+        refreshDisplays(apply: true, resetCalibration: true)
         scheduleDisplayRecovery()
     }
 
@@ -1255,8 +1259,7 @@ final class DisplayManager {
         displayRecoveryTimer?.invalidate()
         displayRecoveryTimer = nil
         guard !isTerminating else { return }
-        gamma.resetForDisplayRecovery()
-        refreshDisplays(apply: true, calibrationWasReset: true)
+        refreshDisplays(apply: true, resetCalibration: true)
     }
 
     // MARK: - Output transition
@@ -1802,6 +1805,7 @@ final class DisplayManager {
     }
 
     private func startPauseTransition(to target: Double, duration: TimeInterval) {
+        if pauseTransition?.to == target { return }
         pauseTransition = nil
         guard duration > 0, pauseLevel != target else {
             pauseLevel = target
@@ -1965,7 +1969,7 @@ final class DisplayManager {
     private func loadPresets() {
         if let data = defaults.data(forKey: "redlight.presets"),
            let saved = try? JSONDecoder().decode([Preset].self, from: data),
-           saved.count == 5 {
+           saved.count == Preset.defaults.count {
             // Presets feed `intensity`/`whitepoint` through internal writes that skip the
             // didSet clamp, so clamp them here; a non-finite value falls back to the default.
             presets = zip(saved, Preset.defaults).map { preset, fallback in
@@ -1977,9 +1981,10 @@ final class DisplayManager {
             }
             lastSavedPresets = saved
         }
-        if defaults.object(forKey: "redlight.activePresetIndex") != nil {
-            let idx = defaults.integer(forKey: "redlight.activePresetIndex")
-            activePresetIndex = idx >= 0 && idx < 5 ? idx : nil
+        if let index = defaults.object(forKey: "redlight.activePresetIndex") as? Int,
+           presets.indices.contains(index),
+           presets[index].intensity == intensity, presets[index].whitepoint == whitepoint {
+            activePresetIndex = index
         }
     }
 
@@ -2008,12 +2013,12 @@ final class DisplayManager {
 
     // MARK: - System Helpers
 
-    nonisolated static func systemDisplayIDs() -> [CGDirectDisplayID] {
+    nonisolated static func systemDisplayIDs() -> [CGDirectDisplayID]? {
         var count: UInt32 = 0
-        CGGetActiveDisplayList(0, nil, &count)
+        guard CGGetActiveDisplayList(0, nil, &count) == .success else { return nil }
         guard count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return nil }
         // A display removed between the two calls leaves zeroed slots; drop them rather
         // than list a phantom display 0.
         return Array(ids.prefix(Int(count)))

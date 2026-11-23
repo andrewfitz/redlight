@@ -117,7 +117,9 @@ enum SolarCurve {
     )
         -> (intensity: Double, whitepoint: Double)
     {
-        (a.intensity + (b.intensity - a.intensity) * f,
-         a.whitepoint + (b.whitepoint - a.whitepoint) * f)
+        if f == 0 { return a }
+        if f == 1 { return b }
+        return (a.intensity + (b.intensity - a.intensity) * f,
+                a.whitepoint + (b.whitepoint - a.whitepoint) * f)
     }
 }

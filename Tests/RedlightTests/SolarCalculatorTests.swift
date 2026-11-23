@@ -18,6 +18,22 @@ import Foundation
         #expect(!SolarCalculator.isRising(at: date("2025-03-21T05:20:00Z"), longitude: -86.7))
     }
 
+    @Test func solarMidnightIsInclusiveAcrossTheDateLine() {
+        for longitude in [-180.0, -86.7, 0, 179.9, 180] {
+            let midnight = SolarCalculator.nextSolarMidnight(
+                after: date("2025-11-03T18:00:00Z"), longitude: longitude)
+            for seconds in [-1.0, 0] {
+                #expect(SolarCalculator.nextSolarMidnight(
+                    after: midnight.addingTimeInterval(seconds), longitude: longitude) == midnight)
+            }
+            #expect(!SolarCalculator.isRising(at: midnight.addingTimeInterval(-1), longitude: longitude))
+            #expect(SolarCalculator.isRising(at: midnight.addingTimeInterval(1), longitude: longitude))
+            let following = SolarCalculator.nextSolarMidnight(
+                after: midnight.addingTimeInterval(1), longitude: longitude)
+            #expect(abs(following.timeIntervalSince(midnight) - 86400) < 60)
+        }
+    }
+
     @Test func noonAtEquatorEquinoxIsHigh() {
         let elev = SolarCalculator.elevation(
             at: date("2025-03-20T12:00:00Z"), latitude: 0, longitude: 0)

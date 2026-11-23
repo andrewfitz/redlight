@@ -14,13 +14,17 @@ struct SunArcGeometry {
     let upperElevation: Double
     let lowerElevation: Double
 
-    init(elevations: [Double], height: CGFloat, padding: CGFloat = 6) {
+    init(elevations: some Sequence<Double>, height: CGFloat, padding: CGFloat = 6) {
         let height = max(0, height)
         top = min(max(0, padding), height / 2)
         bottom = height - top
-        let finiteElevations = elevations.filter(\.isFinite)
-        upperElevation = max(finiteElevations.max() ?? 10, 5) + 3
-        lowerElevation = min(finiteElevations.min() ?? -18, -18) - 3
+        var highest = -Double.infinity, lowest = Double.infinity
+        for elevation in elevations where elevation.isFinite {
+            highest = max(highest, elevation)
+            lowest = min(lowest, elevation)
+        }
+        upperElevation = max(highest.isFinite ? highest : 10, 5) + 3
+        lowerElevation = min(lowest, -18) - 3
     }
 
     func y(for elevation: Double) -> CGFloat {
@@ -56,10 +60,12 @@ struct SunArcView: View {
     let cycle: SunCycle
     var intensities: [Double] = []                 // applied intensity per sample (0…1)
 
+    @Environment(\.colorSchemeContrast) private var contrast
+
     var body: some View {
         Canvas { ctx, size in
                 let geometry = SunArcGeometry(
-                    elevations: cycle.samples.map(\.elevation), height: size.height)
+                    elevations: cycle.samples.lazy.map(\.elevation), height: size.height)
                 let bottom = geometry.bottom
                 let w = size.width
                 let xPad = min(8, w / 2)
@@ -97,7 +103,9 @@ struct SunArcView: View {
                     line.move(to: CGPoint(x: 0, y: guide.y))
                     line.addLine(to: CGPoint(x: w, y: guide.y))
                     // `.primary` adapts to both Light and Dark Mode.
-                    ctx.stroke(line, with: .color(.primary.opacity(guide.isHorizon ? 0.22 : 0.16)),
+                    let opacity = contrast == .increased
+                        ? (guide.isHorizon ? 0.85 : 0.65) : (guide.isHorizon ? 0.22 : 0.16)
+                    ctx.stroke(line, with: .color(.primary.opacity(opacity)),
                                style: StrokeStyle(lineWidth: 1, dash: guide.isHorizon ? [3, 3] : [2, 3]))
                 }
 
@@ -108,9 +116,9 @@ struct SunArcView: View {
                 // Sun dot — flat fill, thin outline.
                 let core: Color = cycle.nowElevation >= 0
                     ? Color(red: 1, green: 0.86, blue: 0.4) : .red
-                let dot = CGRect(x: sx - 4, y: sy - 4, width: 8, height: 8)
-                ctx.fill(Path(ellipseIn: dot), with: .color(core))
-                ctx.stroke(Path(ellipseIn: dot), with: .color(.primary.opacity(0.6)),
+                let dot = Path(ellipseIn: CGRect(x: sx - 4, y: sy - 4, width: 8, height: 8))
+                ctx.fill(dot, with: .color(core))
+                ctx.stroke(dot, with: .color(.primary.opacity(0.6)),
                            lineWidth: 0.75)
         }
         .frame(height: 70)

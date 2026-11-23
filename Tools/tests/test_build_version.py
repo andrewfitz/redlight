@@ -80,6 +80,8 @@ class BuildVersionTests(unittest.TestCase):
         self.assertEqual(version.app_build_seed(self.app("Invalid.app", "development")), 0)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(["unexpected plist type"]))
         self.assertEqual(version.app_build_seed(app), 0)
+        (app / "Contents/Info.plist").write_bytes(b"<?xml version=\"1.0\"?><plist><dict>")
+        self.assertEqual(version.app_build_seed(app), 0)
         self.assertEqual(version.app_build_seed(self.root / "Absent.app"), 0)
         with self.assertRaises(ValueError):
             version.next_build_number(self.root / "new-state.json", seed=200, override="200")
@@ -144,9 +146,11 @@ class BuildVersionTests(unittest.TestCase):
                 raise OSError("fixture failure")
             return rename(source, target)
 
+        snapshot = self.root / "snapshot"
         with patch.object(pathlib.Path, "rename", fail_installing_receipt):
             with self.assertRaisesRegex(OSError, "fixture failure"):
-                version.publish_build(stage, output, "1.5", 83)
+                version.publish_build(stage, output, "1.5", 83, snapshot)
+        self.assertFalse(snapshot.exists())
         self.assertEqual(version.app_build_seed(output / "Redlight.app"), 82)
         self.assertEqual((output / "Redlight-1.5.dmg").read_text(), "dmg 82")
         self.assertEqual((output / ".redlight-build-info.json").read_text(), "receipt 82")

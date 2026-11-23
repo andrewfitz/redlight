@@ -102,7 +102,7 @@ struct SunCycle {
     }
 
     /// Scan forward in two-minute steps, refining local extrema so short excursions near
-    /// the polar circles can still supply both crossings. Bisect each crossing to ~2 s.
+    /// the polar circles can still supply both crossings. Bisect each crossing to within one second.
     static func findNextEvent(
         now: Date, latitude: Double, longitude: Double, thresholds: [Double] = SunCycle.thresholds,
         rising: Bool? = nil, horizon: Double = 86_400
@@ -151,11 +151,15 @@ struct SunCycle {
                 return Event(label: name, seconds: b.offset, elevation: threshold)
             }
             var lo = a.offset, hi = b.offset
-            while hi - lo > 1.875 {
+            while hi - lo > 1 {
                 let mid = (lo + hi) / 2
-                if (point(at: mid).elevation < threshold) == isRising { lo = mid } else { hi = mid }
+                let elevation = point(at: mid).elevation
+                let crossed = isRising ? elevation >= threshold : elevation <= threshold
+                if crossed { hi = mid } else { lo = mid }
             }
-            return Event(label: name, seconds: (lo + hi) / 2, elevation: threshold)
+            // Scheduling the event at the crossed end prevents a subsequent scan
+            // from reporting the same transition again.
+            return Event(label: name, seconds: hi, elevation: threshold)
         }
 
         var last = point(at: 0)
