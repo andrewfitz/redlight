@@ -104,25 +104,34 @@ struct EmberSliderDrag: Equatable {
     }
 }
 
-/// The popover's Ember slider: a thick pill whose fill shows the value, over any `range`.
+/// The popover's Ember slider: a thick pill whose fill shows the value, over any `range`,
+/// and in Auto a row of flags under it for Auto's minimum and maximum.
 ///
-/// The whole pill, and a few points above and below it, is the handle (`EmberSliderDrag`).
-/// In Auto, `band` shows the allowed range behind the fill (`EmberSliderFace`); it is not
-/// edited here. Settings has the control for it.
+/// The whole pill, and a few points above it (and down to the flag row below it), is the
+/// value's handle (`EmberSliderDrag`). In Auto the track shows the band past the fill
+/// (`EmberSliderFace`), and the flags (`EmberSliderFlags`) set its limits; a flag is taken
+/// only in its own row. Without `onLimitChange` the band is shown but has no flags.
 ///
-/// Keyboard: focused, the slider takes the keys of `SliderKeyStep`. Focus is drawn as the
-/// grabber itself, wider, taller and darker, and only when it arrived by keyboard.
-/// Accessibility: one slider named `label`, with its value in percent.
+/// Keyboard: the value, then the minimum, then the maximum are Tab stops, each taking the
+/// keys of `SliderKeyStep`. Focus is drawn only when it arrived by keyboard: on the value as
+/// the grabber itself, wider, taller and darker. Accessibility: a slider named `label` with
+/// its value in percent, and in Auto "`label` minimum" and "`label` maximum".
 struct EmberSlider: View {
     let value: Double
     var range: ClosedRange<Double> = 0...1
-    /// Auto's allowed range, shown read-only behind the fill. Nil in Manual.
+    /// Auto's allowed range. Nil in Manual.
     var band: ClosedRange<Double>? = nil
     var label: String = "Value"
     /// Which Ember fill the slider takes.
     var tone: EmberTone = .accent
     /// Every value the slider sets, by pointer, key or assistive app.
     let onChange: (Double) -> Void
+    /// Sets one of Auto's limits, from its flag. Nil: no flags.
+    var onLimitChange: ((SliderCore.Bound, Double) -> Void)? = nil
+    /// While a flag is dragged: its value, to show on the displays.
+    var onPreview: ((Double) -> Void)? = nil
+    /// When a flag is released, or a limit set by key: back to the real output.
+    var onPreviewEnd: (() -> Void)? = nil
     /// Called when a drag or a discrete edit starts; returns a token for it.
     var onInteractionBegin: (() -> UInt64)? = nil
     /// False once the token is stale (a command took over); the rest of that drag is ignored.
@@ -146,71 +155,32 @@ struct EmberSlider: View {
     private static let slop = EmberSliderFace.verticalSlop
 
     private var isPinned: Bool { band.map { $0.lowerBound == $0.upperBound } ?? false }
+    private var showsFlags: Bool { band != nil && onLimitChange != nil }
+
+    /// The value as drawn: in Auto it never sits outside the band, also while a flag is
+    /// dragged across it and Auto has not yet followed.
+    private var shown: Double {
+        band.map { SliderCore.clampToBand(value, lower: $0.lowerBound, upper: $0.upperBound) } ?? value
+    }
+
+    /// The slider's height: the pill, and in Auto the flag row under it.
+    nonisolated static func height(showsFlags: Bool) -> CGFloat {
+        EmberMetrics.sliderHeight + (showsFlags ? EmberFlagFace.spacing + EmberFlagFace.rowHeight : 0)
+    }
 
     var body: some View {
-        // Every mark is chosen for the fill it is drawn on.
-        let fill = palette.sliderFillRGB(tone, accent: accent.rgb(for: palette))
-        let grabRest = palette.mark(.grabber, on: fill)
-        let grabStrong = palette.mark(.solid, on: fill)
-        return GeometryReader { geo in
-            let w = geo.size.width
-            let midY = Self.pillHeight / 2
-            let face = EmberSliderFace(value: value, range: range, band: band, width: w)
-
-            ZStack {
-                palette.fill
-
-                if let tint = face.tint {
-                    // Drawn from the start of the track, under the fill, so the fill's
-                    // rounded end lies on the tint and not on a seam.
-                    span(.init(start: 0, end: tint.end), color: palette.fillStrong, midY: midY)
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: EmberFlagFace.spacing) {
+                pill(width: geo.size.width)
+                if let band, let onLimitChange {
+                    EmberSliderFlags(
+                        lower: band.lowerBound, upper: band.upperBound, range: range, width: geo.size.width,
+                        onLimitChange: onLimitChange, onPreview: onPreview, onPreviewEnd: onPreviewEnd,
+                        onInteractionBegin: onInteractionBegin, isInteractionCurrent: isInteractionCurrent)
                 }
-                span(face.fill, color: fill.color, midY: midY)
-
-                // The keyboard's stop: the whole pill, so it keeps one place in the Tab order
-                // wherever the value is.
-                Color.clear
-                    .focusable()
-                    .focusEffectDisabled()
-                    .focused($isFocused)
-                    .onKeyPress(keys: SliderKeyStep.keys) { press in
-                        if !showsFocus { showsFocus = true }
-                        guard let step = SliderKeyStep(press.key) else { return .ignored }
-                        discreteEdit(step.value(from: value, in: range, large: press.modifiers.contains(.shift)))
-                        return .handled
-                    }
-
-                grab(x: face.valueX, midY: midY, rest: grabRest, strong: grabStrong)
             }
-            .frame(height: Self.pillHeight)
-            // A short fill at the start of the track keeps to the track's own corners.
-            .clipShape(RoundedRectangle(cornerRadius: EmberMetrics.sliderRadius))
-            // The handle reaches a little above and below the pill.
-            .padding(.vertical, Self.slop)
-            .contentShape(Rectangle())
-            .onHover { isHovering = $0 }
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($gestureInProgress) { _, inProgress, _ in inProgress = true }
-                    .onChanged { g in
-                        if let drag, drag.start != g.startLocation { finishInteraction() }
-                        if drag == nil {
-                            if showsFocus { showsFocus = false }
-                            interactionToken = onInteractionBegin?()
-                            interactionGate = SliderInteractionGate()
-                            drag = EmberSliderDrag(start: g.startLocation, valueX: face.valueX)
-                        }
-                        updateDrag(pointerX: g.location.x, width: w)
-                    }
-                    .onEnded { g in
-                        guard drag?.start == g.startLocation else { return }
-                        updateDrag(pointerX: g.location.x, width: w)
-                        finishInteraction()
-                    }
-            )
-            .padding(.vertical, -Self.slop)
         }
-        .frame(height: Self.pillHeight)
+        .frame(height: Self.height(showsFlags: showsFlags))
         // A cancelled gesture resets GestureState even when SwiftUI skips onEnded.
         .onChange(of: gestureInProgress) { _, inProgress in
             if !inProgress, drag != nil { finishInteraction() }
@@ -220,20 +190,97 @@ struct EmberSlider: View {
                 handleIsFocused: focused, isDragging: drag != nil, event: NSApp?.currentEvent?.type)
         }
         .onDisappear { finishInteraction() }
-        // Always applied, so the view keeps its identity (and a drag) across a mode change.
-        .help(Self.bandHelp(label: label, band: band))
         .accessibilityRepresentation {
-            Slider(value: Binding(get: { value }, set: { discreteEdit($0) }), in: range) { Text(label) }
-                .accessibilityLabel(label)
-                .accessibilityValue(SliderCore.spokenPercent(value) + (isPinned ? ", fixed" : ""))
+            VStack {
+                Slider(value: Binding(get: { shown }, set: { discreteEdit($0) }), in: range) { Text(label) }
+                    .accessibilityLabel(label)
+                    .accessibilityValue(SliderCore.spokenPercent(shown))
+                if let band, showsFlags {
+                    limitSlider(.lower, band: band)
+                    limitSlider(.upper, band: band)
+                }
+            }
         }
     }
 
-    /// The tooltip in Auto: where Auto keeps the value. Empty in Manual and for a pinned band.
-    nonisolated static func bandHelp(label: String, band: ClosedRange<Double>?) -> String {
-        guard let band, band.lowerBound < band.upperBound else { return "" }
-        let lo = Int((band.lowerBound * 100).rounded()), hi = Int((band.upperBound * 100).rounded())
-        return "Auto keeps \(label.lowercased()) between \(lo)% and \(hi)%. Change the range in Settings."
+    private func limitSlider(_ bound: SliderCore.Bound, band: ClosedRange<Double>) -> some View {
+        let name = "\(label) \(bound == .lower ? "minimum" : "maximum")"
+        let current = bound == .lower ? band.lowerBound : band.upperBound
+        return Slider(value: Binding(get: { current }, set: { proposed in
+            guard let onLimitChange else { return }
+            EmberSliderFlags.discreteEdit(
+                proposed, for: bound, range: range, lower: band.lowerBound, upper: band.upperBound,
+                minGap: 0.05, onLimitChange: onLimitChange, onPreviewEnd: onPreviewEnd,
+                onInteractionBegin: onInteractionBegin, isInteractionCurrent: isInteractionCurrent)
+        }), in: range) { Text(name) }
+            .accessibilityLabel(name)
+            .accessibilityValue(isPinned
+                ? "Fixed at \(SliderCore.spokenPercent(current))" : SliderCore.spokenPercent(current))
+    }
+
+    private func pill(width w: CGFloat) -> some View {
+        // Every mark is chosen for the fill it is drawn on.
+        let fill = palette.sliderFillRGB(tone, accent: accent.rgb(for: palette))
+        let grabRest = palette.mark(.grabber, on: fill)
+        let grabStrong = palette.mark(.solid, on: fill)
+        let midY = Self.pillHeight / 2
+        let face = EmberSliderFace(value: shown, range: range, band: band, width: w)
+        // Below the pill the handle reaches only as far as the flag row.
+        let below = showsFlags ? EmberFlagFace.spacing : Self.slop
+        return ZStack {
+            palette.fill
+
+            if let tint = face.tint {
+                // Drawn from the start of the track, under the fill, so the fill's rounded
+                // end lies on the tint and not on a seam.
+                span(.init(start: 0, end: tint.end), color: palette.fillStrong, midY: midY)
+            }
+            span(face.fill, color: fill.color, midY: midY)
+
+            // The value's keyboard stop: the whole pill, so it keeps one place in the Tab
+            // order wherever the value is.
+            Color.clear
+                .focusable()
+                .focusEffectDisabled()
+                .focused($isFocused)
+                .onKeyPress(keys: SliderKeyStep.keys) { press in
+                    if !showsFocus { showsFocus = true }
+                    guard let step = SliderKeyStep(press.key) else { return .ignored }
+                    discreteEdit(step.value(from: shown, in: range, large: press.modifiers.contains(.shift)))
+                    return .handled
+                }
+
+            grab(x: face.valueX, midY: midY, rest: grabRest, strong: grabStrong)
+        }
+        .frame(width: w, height: Self.pillHeight)
+        // A short fill at the start of the track keeps to the track's own corners.
+        .clipShape(RoundedRectangle(cornerRadius: EmberMetrics.sliderRadius))
+        // The handle reaches a little above the pill, and below it down to the flag row.
+        .padding(.top, Self.slop)
+        .padding(.bottom, below)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .updating($gestureInProgress) { _, inProgress, _ in inProgress = true }
+                .onChanged { g in
+                    if let drag, drag.start != g.startLocation { finishInteraction() }
+                    if drag == nil {
+                        if showsFocus { showsFocus = false }
+                        interactionToken = onInteractionBegin?()
+                        interactionGate = SliderInteractionGate()
+                        drag = EmberSliderDrag(start: g.startLocation, valueX: face.valueX)
+                    }
+                    updateDrag(pointerX: g.location.x, width: w)
+                }
+                .onEnded { g in
+                    guard drag?.start == g.startLocation else { return }
+                    updateDrag(pointerX: g.location.x, width: w)
+                    finishInteraction()
+                }
+        )
+        .padding(.top, -Self.slop)
+        .padding(.bottom, -below)
     }
 
     private func updateDrag(pointerX x: CGFloat, width: CGFloat) {
@@ -243,7 +290,7 @@ struct EmberSlider: View {
             token: interactionToken, isCurrent: isInteractionCurrent) else { return }
         let next = current.value(pointerX: x, width: width, range: range)
         if current != drag { drag = current }
-        guard let next, next != value else { return }
+        guard let next, next != shown else { return }
         onChange(next)
     }
 
@@ -257,7 +304,7 @@ struct EmberSlider: View {
     /// own, which can supersede a drag without inheriting its token.
     private func discreteEdit(_ proposed: Double) {
         let v = min(range.upperBound, max(range.lowerBound, proposed))
-        guard v.isFinite, v != value else { return }
+        guard v.isFinite, v != shown else { return }
         let token = onInteractionBegin?()
         if let token, isInteractionCurrent?(token) == false { return }
         onChange(v)

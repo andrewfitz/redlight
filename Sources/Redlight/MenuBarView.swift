@@ -715,9 +715,9 @@ struct LocationRow: View {
 /// A slider with its header row. The slider is read and written here, so a drag
 /// re-evaluates this row and nothing above it.
 ///
-/// The slider sets the value only. In Auto it shows the band read-only, and a value taken
-/// past either limit moves that limit with it (`DisplayManager.setIntensityPushingBand`), so
-/// the whole range is always reachable. The limits themselves are set in Settings.
+/// The pill sets the value. In Auto the flags under it set Auto's minimum and maximum, and a
+/// value taken past either limit moves that limit with it
+/// (`DisplayManager.setIntensityPushingBand`), so the whole range is always reachable.
 struct SliderRow: View {
     enum Channel {
         case color, whitepoint
@@ -743,6 +743,11 @@ struct SliderRow: View {
                     band: auto ? manager.intensityBand : nil,
                     label: channel.title, tone: .accent,
                     onChange: { manager.setIntensityPushingBand($0) },
+                    onLimitChange: { bound, v in
+                        if bound == .lower { manager.adaptiveMin = v } else { manager.adaptiveMax = v }
+                    },
+                    onPreview: { manager.previewIntensity($0) },
+                    onPreviewEnd: { manager.endPreview() },
                     onInteractionBegin: { manager.beginSliderInteraction() },
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
@@ -752,6 +757,11 @@ struct SliderRow: View {
                     band: auto ? manager.whitepointBand : nil,
                     label: channel.title, tone: .soft,
                     onChange: { manager.setWhitepointPushingBand($0) },
+                    onLimitChange: { bound, v in
+                        if bound == .lower { manager.adaptiveWpMin = v } else { manager.adaptiveWpMax = v }
+                    },
+                    onPreview: { manager.previewWhitepoint($0) },
+                    onPreviewEnd: { manager.endPreview() },
                     onInteractionBegin: { manager.beginSliderInteraction() },
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
@@ -810,9 +820,12 @@ struct SliderHeader: View {
         return isAuto || !hasPreset || !autoSettingsAreDefault
     }
 
-    /// The value the slider shows, which is the one on screen.
+    /// The value the slider shows: in Auto it is held inside the band, as the slider draws it.
     private var value: Double {
-        channel == .color ? manager.intensity : manager.whitepoint
+        let raw = channel == .color ? manager.intensity : manager.whitepoint
+        guard manager.adaptiveEnabled else { return raw }
+        let band = channel == .color ? manager.intensityBand : manager.whitepointBand
+        return SliderCore.clampToBand(raw, lower: band.lowerBound, upper: band.upperBound)
     }
 }
 

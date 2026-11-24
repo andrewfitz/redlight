@@ -179,13 +179,6 @@ import Testing
         #expect(EmberSliderFace(value: 1, range: 0.25...1, band: 0.3...1, width: width).tint == nil)
     }
 
-    @Test func theTooltipSaysWhereAutoKeepsTheValue() {
-        #expect(EmberSlider.bandHelp(label: "Color temp", band: 0.595...0.918)
-                == "Auto keeps color temp between 60% and 92%. Change the range in Settings.")
-        #expect(EmberSlider.bandHelp(label: "White point", band: nil) == "")
-        #expect(EmberSlider.bandHelp(label: "White point", band: 1...1) == "")
-    }
-
     @Test func aPressOffTheGrabberTakesTheValueAtThePointer() {
         let valueX = EmberSliderFace.x(for: 0.8, width: width, range: 0...1)
         let x = EmberSliderFace.x(for: 0.3, width: width, range: 0...1)
@@ -235,94 +228,145 @@ import Testing
     }
 }
 
-/// The Settings range control: which thumb a press takes, and how a drag moves it.
-@Suite struct EmberRangeSliderTests {
-    let width: CGFloat = 244
+/// Auto's limit flags under the slider: where the chips sit, and what a press on one does.
+@Suite struct EmberFlagTests {
+    let width: CGFloat = 268
     let range = 0.0...1.0
-
-    private func face(_ lower: Double, _ upper: Double) -> EmberRangeFace {
-        EmberRangeFace(lower: lower, upper: upper, range: range, width: width)
+    /// A stand-in for the font: 6 pt a character, so placements are exact.
+    private func face(_ lower: Double, _ upper: Double, range: ClosedRange<Double> = 0...1) -> EmberFlagFace {
+        EmberFlagFace(lower: lower, upper: upper, range: range, width: width) { CGFloat($0.count) * 6 }
     }
 
-    /// `#require` for a proposal, which has to be made outside the macro: it mutates the drag.
     private func required(_ proposal: (bound: SliderCore.Bound, value: Double)?,
                           sourceLocation: SourceLocation = #_sourceLocation) throws
         -> (bound: SliderCore.Bound, value: Double) {
         try #require(proposal, sourceLocation: sourceLocation)
     }
 
-    @Test func thumbsAreEasyToGrab() {
-        #expect(EmberRangeFace.hitSize >= 24)
-        #expect(EmberRangeFace.hitSize > EmberRangeFace.thumbDiameter)
-        #expect(EmberRangeSlider.thumbDiameter(.pressed) > EmberRangeSlider.thumbDiameter(.rest))
+    @Test func tipsPointAtTheLimitsOnTheValuesScale() throws {
+        let f = face(0.6, 0.92)
+        try #require(f.chips.count == 2)
+        #expect(f.chips[0].bound == .lower && f.chips[0].text == "60%")
+        #expect(f.chips[1].bound == .upper && f.chips[1].text == "92%")
+        #expect(f.chips[0].tipX == EmberSliderFace.x(for: 0.6, width: width, range: range))
+        #expect(f.chips[1].tipX == EmberSliderFace.x(for: 0.92, width: width, range: range))
+        // Far enough apart: each chip is centred on its tip.
+        #expect(f.chips[0].centerX == f.chips[0].tipX && f.chips[1].centerX == f.chips[1].tipX)
+        // The white point's scale starts at 25 %.
+        let white = face(0.3, 1, range: 0.25...1)
+        #expect(white.chips[0].tipX == EmberSliderFace.x(for: 0.3, width: width, range: 0.25...1))
     }
 
-    @Test func aPressTakesTheNearerThumbAndHoldsItUntilItMoves() throws {
+    @Test func closeChipsSlideApartAndTheirTipsStay() throws {
+        let f = face(0.45, 0.5)
+        try #require(f.chips.count == 2)
+        #expect(f.chips[1].centerX - f.chips[0].centerX >= EmberFlagFace.minGap - 1e-9)
+        // Apart evenly about the middle of the two limits.
+        let mid = (f.chips[0].tipX + f.chips[1].tipX) / 2
+        #expect(abs((f.chips[0].centerX + f.chips[1].centerX) / 2 - mid) < 1e-9)
+        #expect(f.chips[0].tipX == EmberSliderFace.x(for: 0.45, width: width, range: range))
+        #expect(!f.chips[0].frame.intersects(f.chips[1].frame))
+    }
+
+    @Test func chipsStayInsideTheRowAtTheEnds() throws {
+        for (lo, hi) in [(0.0, 0.05), (0.95, 1.0), (0.0, 1.0)] {
+            let f = face(lo, hi)
+            try #require(f.chips.count == 2)
+            #expect(f.chips[0].frame.minX >= -1e-9, "\(lo)…\(hi)")
+            #expect(f.chips[1].frame.maxX <= width + 1e-9, "\(lo)…\(hi)")
+            #expect(f.chips[1].centerX - f.chips[0].centerX >= EmberFlagFace.minGap - 1e-9)
+        }
+    }
+
+    @Test func aPinnedBandHasOneChip() throws {
+        for pin in [0.0, 0.6, 1.0] {
+            let f = face(pin, pin)
+            try #require(f.chips.count == 1)
+            let chip = f.chips[0]
+            #expect(chip.bound == nil && chip.text == "Fixed \(Int(pin * 100))%")
+            #expect(chip.frame.minX >= 0 && chip.frame.maxX <= width)
+            #expect(chip.tipX == EmberSliderFace.x(for: pin, width: width, range: range))
+        }
+    }
+
+    @Test func aFlagIsTakenOnlyInItsRowAndEasily() throws {
         let f = face(0.2, 0.8)
-        var drag = EmberRangeDrag(start: CGPoint(x: f.lowerX + 6, y: 14), face: f)
-        #expect(drag.bound == .lower && drag.isOnThumb)
-        #expect(drag.proposal(pointerX: f.lowerX + 6, width: width, range: range,
-                              lower: 0.2, upper: 0.8, minGap: 0.05) == nil)
-        let moved = try required(drag.proposal(pointerX: f.lowerX + 16, width: width, range: range,
+        for chip in f.chips {
+            #expect(chip.hitRect.width >= 28 && chip.hitRect.height >= 20)
+            #expect(f.chip(at: CGPoint(x: chip.centerX, y: chip.frame.midY))?.bound == chip.bound)
+            #expect(f.chip(at: CGPoint(x: chip.centerX, y: 1))?.bound == chip.bound)
+        }
+        // Between the flags, nothing.
+        #expect(f.chip(at: CGPoint(x: width / 2, y: 12)) == nil)
+        #expect(EmberFlagFace.rowHeight >= 20)
+    }
+
+    @Test func aFlagMovesFromWhereItIsTakenAndNeverJumps() throws {
+        let f = face(0.2, 0.8)
+        let chip = f.chips[0]
+        let start = CGPoint(x: chip.centerX + 8, y: 12)
+        var drag = EmberFlagDrag(start: start, chip: chip)
+        #expect(drag.proposal(pointerX: start.x, width: width, range: range, lower: 0.2, upper: 0.8, minGap: 0.05) == nil)
+        let moved = try required(drag.proposal(pointerX: start.x + 25.4, width: width, range: range,
                                                lower: 0.2, upper: 0.8, minGap: 0.05))
         #expect(moved.bound == .lower)
-        #expect(abs(moved.value - EmberRangeFace.value(atX: f.lowerX + 10, width: width, range: range)) < 1e-9)
-        let upper = EmberRangeDrag(start: CGPoint(x: f.upperX - 13, y: 14), face: f)
-        #expect(upper.bound == .upper && upper.isOnThumb)
+        #expect(abs(moved.value - (0.2 + 25.4 / (width - 2 * EmberSliderFace.inset))) < 1e-9)
     }
 
-    @Test func aPressOnTheTrackJumpsTheNearerThumbThere() throws {
+    @Test func flagsKeepTheirGapAndReachTheEndsExactly() throws {
         let f = face(0.2, 0.8)
-        let x = EmberRangeFace.x(for: 0.45, width: width, range: range)
-        var drag = EmberRangeDrag(start: CGPoint(x: x, y: 14), face: f)
-        #expect(drag.bound == .lower && !drag.isOnThumb)
-        let pressed = try required(drag.proposal(pointerX: x, width: width, range: range,
-                                                 lower: 0.2, upper: 0.8, minGap: 0.05))
-        #expect(abs(pressed.value - 0.45) < 1e-9)
-    }
-
-    @Test func thumbsStopAtTheMinimumGapAndReachTheEnds() throws {
-        let f = face(0.2, 0.8)
-        var lower = EmberRangeDrag(start: CGPoint(x: f.lowerX, y: 14), face: f)
-        let pushed = try required(lower.proposal(pointerX: width, width: width, range: range,
+        var lower = EmberFlagDrag(start: CGPoint(x: f.chips[0].centerX, y: 12), chip: f.chips[0])
+        let pushed = try required(lower.proposal(pointerX: width + 40, width: width, range: range,
                                                  lower: 0.2, upper: 0.8, minGap: 0.05))
         #expect(pushed.bound == .lower && abs(pushed.value - 0.75) < 1e-9)
-        let toStart = try required(lower.proposal(pointerX: -20, width: width, range: range,
+        let toStart = try required(lower.proposal(pointerX: -40, width: width, range: range,
                                                   lower: 0.2, upper: 0.8, minGap: 0.05))
         #expect(toStart.value == 0)
-        var upper = EmberRangeDrag(start: CGPoint(x: f.upperX, y: 14), face: f)
-        let toEnd = try required(upper.proposal(pointerX: width + 20, width: width, range: range,
+        var upper = EmberFlagDrag(start: CGPoint(x: f.chips[1].centerX, y: 12), chip: f.chips[1])
+        let toEnd = try required(upper.proposal(pointerX: width + 40, width: width, range: range,
                                                 lower: 0.2, upper: 0.8, minGap: 0.05))
         #expect(toEnd.value == 1)
+        // Within the snap of the end's position, exactly the end.
+        var near = EmberFlagDrag(start: CGPoint(x: f.chips[1].tipX, y: 12), chip: f.chips[1])
+        let snapped = try required(near.proposal(pointerX: width - EmberSliderFace.inset - 3, width: width,
+                                                 range: range, lower: 0.2, upper: 0.8, minGap: 0.05))
+        #expect(snapped.value == 1)
     }
 
-    @Test func stackedThumbsComeApartInTheDragsDirection() throws {
+    @Test func aPinnedChipSplitsInTheDragsDirection() throws {
         let f = face(0.6, 0.6)
-        #expect(f.isStacked && f.lowerX == f.upperX)
         for (dx, bound) in [(CGFloat(-12), SliderCore.Bound.lower), (12, .upper)] {
-            var drag = EmberRangeDrag(start: CGPoint(x: f.lowerX, y: 14), face: f)
+            var drag = EmberFlagDrag(start: CGPoint(x: f.chips[0].centerX, y: 12), chip: f.chips[0])
             #expect(drag.awaitsDirection)
-            #expect(drag.proposal(pointerX: f.lowerX, width: width, range: range,
-                                  lower: 0.6, upper: 0.6, minGap: 0.05) == nil)
-            let moved = try required(drag.proposal(pointerX: f.lowerX + dx, width: width, range: range,
+            let moved = try required(drag.proposal(pointerX: f.chips[0].centerX + dx, width: width, range: range,
                                                    lower: 0.6, upper: 0.6, minGap: 0.05))
-            #expect(moved.bound == bound)
+            #expect(moved.bound == bound && !drag.awaitsDirection)
             #expect(bound == .lower ? moved.value <= 0.55 + 1e-9 : moved.value >= 0.65 - 1e-9)
-            #expect(!drag.awaitsDirection)
         }
-        // Off the thumbs, the side of the press decides.
-        let left = EmberRangeDrag(start: CGPoint(x: f.lowerX - 40, y: 14), face: f)
-        #expect(left.bound == .lower && !left.awaitsDirection)
-        let right = EmberRangeDrag(start: CGPoint(x: f.lowerX + 40, y: 14), face: f)
-        #expect(right.bound == .upper && !right.awaitsDirection)
     }
 
-    @Test func theRangeIsWrittenAsPercents() {
-        #expect(AutoRangeRow.rangeText(lower: 0.2, upper: 1) == "20–100%")
-        #expect(AutoRangeRow.rangeText(lower: 0.595, upper: 0.918) == "60–92%")
-        #expect(AutoRangeRow.rangeText(lower: 1, upper: 1) == "Fixed at 100%")
-        #expect(AutoRangeRow.defaultRange(.color) == 0...1)
-        #expect(AutoRangeRow.defaultRange(.whitepoint) == 0.3...1)
+    @Test func keysAndAssistiveAppsSetALimitAndApplyIt() {
+        var written: [(SliderCore.Bound, Double)] = []
+        var applied = 0
+        func edit(_ proposed: Double, _ bound: SliderCore.Bound, lower: Double = 0.2, upper: Double = 0.8) {
+            EmberSliderFlags.discreteEdit(
+                proposed, for: bound, range: 0...1, lower: lower, upper: upper, minGap: 0.05,
+                onLimitChange: { written.append(($0, $1)) }, onPreviewEnd: { applied += 1 },
+                onInteractionBegin: nil, isInteractionCurrent: nil)
+        }
+        edit(SliderKeyStep.decrement.value(from: 0.2, in: 0...1), .lower)
+        #expect(written.last?.0 == .lower && written.last?.1 == 0.19 && applied == 1)
+        edit(SliderKeyStep.toMinimum.value(from: 0.8, in: 0...1), .upper)
+        #expect(written.last?.0 == .upper && abs((written.last?.1 ?? 0) - 0.25) < 1e-9)
+        // Nothing to change: nothing written, nothing applied.
+        edit(0.2, .lower)
+        #expect(written.count == 2 && applied == 2)
+    }
+
+    @Test func manualHasNoFlagRow() {
+        #expect(EmberSlider.height(showsFlags: false) == EmberMetrics.sliderHeight)
+        #expect(EmberSlider.height(showsFlags: true)
+                == EmberMetrics.sliderHeight + EmberFlagFace.spacing + EmberFlagFace.rowHeight)
     }
 }
 
@@ -446,23 +490,25 @@ import Testing
         #expect(manager.intensity == 1 && manager.adaptiveMax == 1)
     }
 
-    /// The range card's Reset restores the range only: the value, the preset and Auto's
-    /// adjustment stay. (The slider's Reset also restores the value.)
-    @Test func theRangeCardsResetLeavesTheValue() throws {
-        let (manager, _, _) = makeManager(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8,
-                                          "redlight.adaptiveWpMin": 0.5])
-        manager.applyPreset(3)
-        let preset = manager.intensity
-        let handler = CommandHandler(manager: manager, services: CommandServices(
-            appearance: { false }, setAppearance: { _ in },
-            login: { Status.Login(enabled: false, requiresApproval: false) },
-            setLogin: { _ in }, update: {}, quit: {}, version: { "Test" }))
-        let dispatch = PopoverDispatch(handler: handler, session: PopoverSession())
-        #expect(dispatch(.limits(.color, min: 0, max: 100)))
-        #expect(manager.adaptiveMin == DisplayManager.Defaults.intensityMin)
-        #expect(manager.adaptiveMax == DisplayManager.Defaults.intensityMax)
-        #expect(dispatch(.limits(.whitepoint, min: 30, max: 100)))
-        #expect(manager.adaptiveWpMin == DisplayManager.Defaults.whitepointMin)
-        #expect(manager.intensity == preset && manager.activePresetIndex == 3)
+    /// A limit taken past the value carries the value with it: once the drag ends, Auto
+    /// lands inside the new band, and the displays show what the slider shows.
+    @Test func aLimitDraggedPastTheValueCarriesTheValue() {
+        let (manager, _, gamma) = makeManager(Self.auto.merging(["redlight.adaptiveWpMax": 0.9]) { $1 }, at: Self.evening)
+        let start = manager.intensity
+        let token = manager.beginSliderInteraction()
+        // The upper limit dragged below the value, previewed as a flag drag does.
+        manager.adaptiveMax = start - 0.1
+        manager.previewIntensity(start - 0.1)
+        #expect(gamma.applyCalls.last.map { abs(Double($0.intensity) - (start - 0.1)) < 1e-6 } == true)
+        #expect(manager.isSliderInteractionCurrent(token))
+        manager.endPreview()
+        #expect(manager.intensity <= manager.adaptiveMax + 1e-12)
+        #expect(gamma.applyCalls.last.map { abs(Double($0.intensity) - manager.intensity) < 1e-6 } == true)
+        // And the lower limit dragged above it.
+        manager.adaptiveMin = 0.65
+        manager.adaptiveMax = 0.9
+        manager.endPreview()
+        #expect(manager.intensity >= 0.65 - 1e-12 && manager.intensity <= 0.9 + 1e-12)
+        #expect(gamma.applyCalls.last.map { abs(Double($0.intensity) - manager.intensity) < 1e-6 } == true)
     }
 }

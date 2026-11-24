@@ -9,7 +9,7 @@
 - Renamed the Deep Red preset to **Late**. A saved preset still named Deep Red is renamed on launch. `redlight preset late` is the new spelling; `deep-red` keeps working, and `status --json` still reports `deep-red`. Existing Shortcuts and keyboard shortcuts are unaffected.
 - The Location row names where Auto's location comes from: Automatic, Time zone, Last known or Manual. A bedtime that is too early or too late to take effect is no longer shown as active.
 - Sliders are easier to use: press anywhere on one to set it there, and drag to either end for exactly 0% or 100%. Arrow keys step 1%, Shift steps 10%, Home and End go to the ends.
-- Auto's limits moved to Settings › Auto range, with a two-thumb control and a Reset for each slider. Dragging a slider past its range in the popover moves that limit with it.
+- In Auto, each slider's minimum and maximum are labelled flags under the track. Drag a flag to change a limit and preview it; drag the value past a flag and the flag moves with it.
 - The popover redraws about twice as fast while a slider is dragged.
 - Slider handles, switches and buttons stay readable with the Late preset on, in light and dark appearance. Text and marks are stronger with Increase Contrast on.
 

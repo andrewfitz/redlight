@@ -24,10 +24,6 @@ struct SettingsPage: View {
                 EmberGroupLabel("Location for Auto")
                 LocationSettingsCard(manager: manager, dispatch: dispatch, draft: locationDraft)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                EmberGroupLabel(AutoRangeCard.title)
-                AutoRangeCard(manager: manager, dispatch: dispatch)
-            }
             if launchAtLogin != nil || apps != nil || openShortcuts != nil {
                 VStack(alignment: .leading, spacing: 6) {
                     EmberGroupLabel("General")
@@ -130,107 +126,6 @@ private struct LocationSettingsCard: View {
             }
         } catch {
             draft.error = error.localizedDescription
-        }
-    }
-}
-
-// MARK: - Auto range
-
-/// How far Auto may take each channel: a range control for the colour temp and one for
-/// the white point. The popover's sliders show these ranges read-only.
-struct AutoRangeCard: View {
-    static let title = "Auto range"
-
-    let manager: DisplayManager
-    let dispatch: PopoverDispatch
-
-    var body: some View {
-        EmberCard(verticalPadding: 10) {
-            VStack(alignment: .leading, spacing: 12) {
-                AutoRangeRow(manager: manager, channel: .color, dispatch: dispatch)
-                AutoRangeRow(manager: manager, channel: .whitepoint, dispatch: dispatch)
-            }
-        }
-    }
-}
-
-/// One channel's range: its name, Reset while the range is not the default, the range in
-/// words, and the control.
-struct AutoRangeRow: View {
-    let manager: DisplayManager
-    let channel: SliderRow.Channel
-    let dispatch: PopoverDispatch
-
-    @Environment(\.emberPalette) private var palette
-
-    /// The factory range, in 0…1.
-    static func defaultRange(_ channel: SliderRow.Channel) -> ClosedRange<Double> {
-        channel == .color
-            ? DisplayManager.Defaults.intensityMin...DisplayManager.Defaults.intensityMax
-            : DisplayManager.Defaults.whitepointMin...DisplayManager.Defaults.whitepointMax
-    }
-
-    /// "20–100%", or one number for a range pinned to a single value.
-    static func rangeText(lower: Double, upper: Double) -> String {
-        let lo = Int((min(lower, upper) * 100).rounded()), hi = Int((max(lower, upper) * 100).rounded())
-        return lower == upper ? "Fixed at \(lo)%" : "\(lo)–\(hi)%"
-    }
-
-    var body: some View {
-        let lower = channel == .color ? manager.adaptiveMin : manager.adaptiveWpMin
-        let upper = channel == .color ? manager.adaptiveMax : manager.adaptiveWpMax
-        let defaults = Self.defaultRange(channel)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(channel.title)
-                    .font(.ember(12))
-                    .foregroundStyle(palette.secondary)
-                    .accessibilityHidden(true)
-                Spacer(minLength: 0)
-                if lower != defaults.lowerBound || upper != defaults.upperBound {
-                    let help = "Reset the \(channel.title.lowercased()) range to "
-                        + Self.rangeText(lower: defaults.lowerBound, upper: defaults.upperBound)
-                    EmberChipButton(title: "Reset", height: 18) {
-                        // Whole percents: 0.3 × 100 is not exactly 30.
-                        dispatch(.limits(channel == .color ? .color : .whitepoint,
-                                         min: (defaults.lowerBound * 100).rounded(),
-                                         max: (defaults.upperBound * 100).rounded()))
-                    }
-                    .help(help)
-                    .accessibilityLabel(help)
-                }
-                Text(Self.rangeText(lower: lower, upper: upper))
-                    .font(.ember(12, .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.text)
-                    .accessibilityHidden(true)
-            }
-            // Fixed, so the row does not move when Reset comes and goes.
-            .frame(height: 16)
-            control
-        }
-    }
-
-    @ViewBuilder private var control: some View {
-        switch channel {
-        case .color:
-            EmberRangeSlider(
-                lower: Binding(get: { manager.adaptiveMin }, set: { manager.adaptiveMin = $0 }),
-                upper: Binding(get: { manager.adaptiveMax }, set: { manager.adaptiveMax = $0 }),
-                range: channel.range, label: channel.title, tone: .accent,
-                onPreview: { manager.previewIntensity($0) },
-                onPreviewEnd: { manager.endPreview() },
-                onInteractionBegin: { manager.beginSliderInteraction() },
-                isInteractionCurrent: { manager.isSliderInteractionCurrent($0) })
-        case .whitepoint:
-            EmberRangeSlider(
-                lower: Binding(get: { manager.adaptiveWpMin }, set: { manager.adaptiveWpMin = $0 }),
-                upper: Binding(get: { manager.adaptiveWpMax }, set: { manager.adaptiveWpMax = $0 }),
-                range: channel.range, label: channel.title, tone: .soft,
-                onPreview: { manager.previewWhitepoint($0) },
-                onPreviewEnd: { manager.endPreview() },
-                onInteractionBegin: { manager.beginSliderInteraction() },
-                isInteractionCurrent: { manager.isSliderInteractionCurrent($0) })
         }
     }
 }

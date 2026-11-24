@@ -1,14 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// Pure geometry and rules shared by the popover's sliders (`EmberSlider`) and the Settings
-/// range control (`EmberRangeSlider`), kept free of views so they are unit-testable.
+/// Pure geometry and rules shared by the popover's sliders (`EmberSlider`) and the Auto
+/// limit flags under them (`EmberSliderFlags`), kept free of views so they are unit-testable.
 ///
 /// Both controls map a value to a point along a track that is inset by `inset` at each end,
 /// so a handle at either end of the range still lies wholly on the track.
 enum SliderCore {
     /// One end of a range.
-    enum Bound: Equatable, Sendable { case lower, upper }
+    enum Bound: Hashable, Sendable { case lower, upper }
 
     /// Fraction of `range` for a value, clamped to [0, 1].
     static func frac(_ v: Double, range: ClosedRange<Double>) -> Double {
@@ -70,6 +70,11 @@ enum SliderCore {
     static func resolveStackedMarker(_ bound: Bound, dx: CGFloat, lower: Double, upper: Double) -> Bound {
         guard lower == upper, dx != 0 else { return bound }
         return dx < 0 ? .lower : .upper
+    }
+
+    /// Whole percent as the popover writes it: "20%".
+    static func percentText(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))%"
     }
 
     /// Whole percent for VoiceOver: "20 percent".

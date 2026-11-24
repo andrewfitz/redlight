@@ -227,8 +227,6 @@ import Testing
         let pairs: [(PopoverAction, RedlightCommand)] = [
             (.master(.toggle), .master(.toggle)), (.pause(.on), .pause(.on)),
             (.reset(.color), .reset(.color)), (.reset(.whitepoint), .reset(.whitepoint)),
-            (.limits(.color, min: 0, max: 100), .limits(.color, min: 0, max: 100)),
-            (.limits(.whitepoint, min: 30, max: 100), .limits(.whitepoint, min: 30, max: 100)),
             (.preset(.late), .preset(.late)), (.savePreset(.warm), .savePreset(.warm)),
             (.adaptive(.off), .adaptive(.off)),
             (.display(.key("selected-display"), .on), .display(.key("selected-display"), .on)),

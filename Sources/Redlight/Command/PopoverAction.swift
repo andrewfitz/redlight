@@ -8,9 +8,6 @@ enum PopoverAction: Equatable {
     case pause(CommandSwitch)
     case pauseFor(CommandPauseLength)
     case reset(CommandChannel)
-    /// Auto's range for one channel, in percent. The range card's Reset sends the defaults:
-    /// unlike `reset`, it leaves the value and any Auto adjustment alone.
-    case limits(CommandChannel, min: Double, max: Double)
     case preset(CommandPreset)
     case savePreset(CommandPreset)
     case adaptive(CommandSwitch)
@@ -30,7 +27,6 @@ enum PopoverAction: Equatable {
         case .pause(let state): .pause(state)
         case .pauseFor(let length): .pauseFor(length)
         case .reset(let channel): .reset(channel)
-        case .limits(let channel, let min, let max): .limits(channel, min: min, max: max)
         case .preset(let preset): .preset(preset)
         case .savePreset(let preset): .savePreset(preset)
         case .adaptive(let state): .adaptive(state)
@@ -52,7 +48,6 @@ enum PopoverAction: Equatable {
         case .pause: .pause
         case .pauseFor: .pauseFor
         case .reset: .reset
-        case .limits: .limits
         case .preset: .preset
         case .savePreset: .savePreset
         case .adaptive: .adaptive
@@ -72,6 +67,6 @@ enum PopoverAction: Equatable {
 /// A finite catalogue avoids pretending that the associated display keys and numeric
 /// payloads are enumerable. Parity tests use real representative actions for every kind.
 enum PopoverActionDescriptor: CaseIterable {
-    case master, pause, pauseFor, reset, limits, preset, savePreset, adaptive, display, invert, appearance, login,
+    case master, pause, pauseFor, reset, preset, savePreset, adaptive, display, invert, appearance, login,
          location, bedtime, apps, update, quit
 }

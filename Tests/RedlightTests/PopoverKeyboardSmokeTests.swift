@@ -486,10 +486,10 @@ final class LivePopover {
         return pills.map(LiveSlider.init(pill:))
     }
 
-    /// The Settings range controls' thumbs, row by row and left to right: each has one
-    /// focusable view, the size of its hit target.
-    func rangeThumbs() throws -> [CGRect] {
-        let size = CGSize(width: EmberRangeFace.hitSize, height: EmberRangeFace.hitSize)
+    /// The Auto limit flags' keyboard stops, row by row and left to right: minimum then
+    /// maximum under each slider (one spot for both under a pinned band).
+    func flagStops() throws -> [CGRect] {
+        let size = CGSize(width: EmberFlagFace.hitWidth, height: EmberFlagFace.rowHeight - 6)
         let thumbs = views()
             .filter { $0.acceptsFirstResponder && $0.bounds.size == size }
             .map(frame(of:))
@@ -497,7 +497,7 @@ final class LivePopover {
                 let sameRow = abs(a.midY - b.midY) <= 1
                 return sameRow ? a.midX < b.midX : a.midY < b.midY
             }
-        try #require(!thumbs.isEmpty, "no range thumb among the focusable views")
+        try #require(!thumbs.isEmpty, "no flag among the focusable views")
         return thumbs
     }
 
@@ -761,6 +761,13 @@ extension Raster {
             note("slider auto, pressed under the pill at 60 %: \(fixture.settings[3])")
             #expect(abs(manager.intensity - 0.6) < 0.005, "a press just under the pill did not take the value")
 
+            // Right above a flag the pill still takes the value, and the flag stays.
+            try live.drag(from: color.point(x: color.x(for: 0.2, range: Self.colorRange),
+                                            dy: EmberMetrics.sliderHeight / 2 + 2), dx: 0)
+            note("slider auto, pressed right above the minimum flag: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - 0.2) < 0.005, "a press right above the flag did not take the value")
+            #expect(manager.adaptiveMin == 0.2 && manager.adaptiveMax == 0.8, "a press on the pill moved a flag")
+
             // Above the pill's edge, in the slop under the header, away from Reset.
             try live.drag(from: color.point(x: color.x(for: 0.3, range: Self.colorRange),
                                             dy: -(EmberMetrics.sliderHeight / 2 + 2.5)), dx: 0)
@@ -875,57 +882,100 @@ extension Raster {
         }
     }
 
-    // MARK: Auto range in Settings
+    // MARK: Auto's limit flags
 
-    /// Dragging a limit shows it on the displays while the button is down, and the release
-    /// goes back to the real value, with the limit kept.
+    /// The centre of a flag's keyboard stop, which is the centre of its chip's row.
+    private func centre(_ frame: CGRect) -> CGPoint { CGPoint(x: frame.midX, y: frame.midY) }
+
+    /// A press and drag on a flag moves that limit alone and shows it on the displays while
+    /// the button is down; the release goes back to the real value.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func aRangeThumbPreviewsItsLimitWhileDragged() async throws {
+    func aFlagDragMovesOnlyItsLimitAndPreviewsIt() async throws {
         try inRunLoopTurn {
-            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
-            defer { fixture.retire() }
+            let (fixture, live, _) = try openAuto()
+            defer { live.close(); fixture.retire() }
             let manager = fixture.manager
-            let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
-            defer { live.close() }
-            let thumbs = try live.rangeThumbs()
-            note("range: thumbs \(thumbs)")
-            try #require(thumbs.count == 4, "found \(thumbs.count) range thumbs")
-            let lower = thumbs[0]
-            try live.drag(from: CGPoint(x: lower.midX, y: lower.midY), dx: 40) {
+            let flags = try live.flagStops()
+            note("flags: stops \(flags)")
+            try #require(flags.count == 4, "found \(flags.count) flag stops")
+            try live.drag(from: centre(flags[0]), dx: 40) {
                 let shown = fixture.gamma.applyCalls.last?.intensity
-                note("range: while the lower limit is dragged, limits \(manager.adaptiveMin)...\(manager.adaptiveMax), "
-                     + "displays at \(String(describing: shown))")
-                #expect(manager.adaptiveMin > 0.3, "the drag did not move the lower limit")
+                note("flags: while the minimum is dragged, \(fixture.settings[3]), displays at \(String(describing: shown))")
+                #expect(abs(manager.adaptiveMin - (0.2 + 40.0 / 254)) < 0.01, "the drag did not move the minimum")
+                #expect(manager.adaptiveMax == 0.8, "the drag moved the maximum")
                 #expect(shown.map { abs(Double($0) - manager.adaptiveMin) < 1e-6 } == true,
-                        "the displays do not show the limit being dragged")
+                        "the displays do not show the minimum being dragged")
+                if let directory = LivePopoverEnvironment.shotDirectory {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    try live.raster().writePNG(to: directory.appendingPathComponent("flag-drag.png"))
+                }
             }
             let shown = fixture.gamma.applyCalls.last?.intensity
-            note("range: released, limits \(manager.adaptiveMin)...\(manager.adaptiveMax), value \(manager.intensity), "
-                 + "displays at \(String(describing: shown))")
-            #expect(manager.adaptiveMax == 0.8)
+            note("flags: released, \(fixture.settings[3]), displays at \(String(describing: shown))")
+            #expect(abs(manager.intensity - 0.8) < 1e-9, "the value moved")
             #expect(shown.map { abs(Double($0) - manager.intensity) < 1e-6 } == true,
                     "the release did not go back to the real value")
-            // The value is still the afternoon's: the top of the band.
-            #expect(abs(manager.intensity - 0.8) < 1e-9)
         }
     }
 
-    /// A band pinned from the CLI shows its two thumbs on one spot. A drag takes them apart
-    /// in its own direction; the keys move a focused thumb.
+    /// Partway down the evening's curve: the minimum dragged past the value carries the
+    /// value, and the slider and the displays agree once the button is up.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func stackedRangeThumbsComeApartInTheDragsDirection() async throws {
+    func aMinimumDraggedPastTheValueCarriesIt() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture(
+                defaults: ["redlight.adaptiveEnabled": true, "redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8],
+                now: { Date(timeIntervalSince1970: 1_774_050_000) })
+            defer { fixture.retire() }
+            let manager = fixture.manager
+            let live = try LivePopover(fixture.view())
+            defer { live.close() }
+            let start = manager.intensity
+            try #require(start > 0.25 && start < 0.7, "the evening is not partway down the band: \(start)")
+            let flags = try live.flagStops()
+            let target = start + 0.1
+            try live.drag(from: centre(flags[0]), dx: CGFloat(target - 0.2) * 254, steps: 8)
+            note("flags: minimum dragged past the value \(start): \(fixture.settings[3])")
+            #expect(manager.adaptiveMin > start, "the minimum did not pass the value")
+            #expect(manager.intensity >= manager.adaptiveMin - 1e-9, "the value did not follow the minimum")
+            let shown = fixture.gamma.applyCalls.last?.intensity
+            #expect(shown.map { abs(Double($0) - manager.intensity) < 1e-6 } == true,
+                    "the displays show \(String(describing: shown)), the slider \(manager.intensity)")
+        }
+    }
+
+    /// The value dragged to 100 % pushes the maximum flag along to the end.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aValueDraggedToTheEndPushesTheMaximumFlag() async throws {
+        try inRunLoopTurn {
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            let color = sliders[0]
+            let before = try live.flagStops()
+            let x = color.x(for: manager.intensity, range: Self.colorRange)
+            try live.drag(from: color.point(x: x), dx: color.pill.width + 8 - x, steps: 8)
+            let after = try live.flagStops()
+            note("flags: value dragged to the end, \(fixture.settings[3]), maximum flag \(before[1].midX) → \(after[1].midX)")
+            #expect(manager.intensity == 1 && manager.adaptiveMax == 1)
+            #expect(after[1].midX > before[1].midX, "the maximum flag did not move")
+            #expect(after[0] == before[0], "the minimum flag moved")
+        }
+    }
+
+    /// A pinned band shows one chip; a drag splits it in its own direction.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aPinnedChipSplitsInTheDragsDirection() async throws {
         try inRunLoopTurn {
             for dx: CGFloat in [-30, 30] {
-                let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
-                defer { fixture.retire() }
+                let (fixture, live, _) = try openAuto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
+                defer { live.close(); fixture.retire() }
                 let manager = fixture.manager
-                let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
-                defer { live.close() }
-                let thumbs = try live.rangeThumbs()
-                try #require(thumbs.count == 4)
-                #expect(thumbs[0] == thumbs[1], "the pinned band's thumbs are not on one spot")
-                try live.drag(from: CGPoint(x: thumbs[0].midX, y: thumbs[0].midY), dx: dx)
-                note("range pinned, dragged \(dx): limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
+                let flags = try live.flagStops()
+                try #require(flags.count == 4)
+                #expect(flags[0] == flags[1], "the pinned band's two stops are not on one chip")
+                try live.drag(from: centre(flags[0]), dx: dx)
+                note("flags pinned, dragged \(dx): \(fixture.settings[3])")
                 if dx < 0 {
                     #expect(manager.adaptiveMin < 0.6 - 0.05 + 1e-9 && manager.adaptiveMax == 0.6)
                 } else {
@@ -935,32 +985,37 @@ extension Raster {
         }
     }
 
+    /// Tab goes value, minimum, maximum for each slider; the keys move a focused flag.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func tabReachesEachRangeThumbAndTheKeysMoveIt() async throws {
+    func tabGoesValueMinimumMaximumAndTheKeysMoveAFlag() async throws {
         try inRunLoopTurn {
-            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
-            defer { fixture.retire() }
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
             let manager = fixture.manager
-            let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
-            defer { live.close() }
-            let thumbs = try live.rangeThumbs()
-            try #require(thumbs.count == 4)
-            let stops = try tabRound(live)
-            note("range: Tab stops \(stops)")
-            for thumb in thumbs { #expect(stops.filter { $0 == thumb }.count == 1, "Tab did not stop once at \(thumb)") }
-            // Back to the colour temp's lower limit.
-            for _ in 0..<stops.count where live.focusFrame != thumbs[0] { try live.key(.tab) }
-            try #require(live.focusFrame == thumbs[0], "Tab never came to the lower limit: \(live.focusDescription)")
+            let flags = try live.flagStops()
+            try #require(flags.count == 4)
+            var order: [CGRect] = []
+            for _ in 0..<6 {
+                try live.key(.tab)
+                order.append(try #require(live.focusFrame, "Tab left the document: \(live.focusDescription)"))
+            }
+            note("flags: the first six Tab stops \(order)")
+            #expect(order == [sliders[0].pill, flags[0], flags[1], sliders[1].pill, flags[2], flags[3]],
+                    "Tab did not go value, minimum, maximum")
+            // Back to the colour temp's minimum: Shift-Tab is not sent, so go round.
+            for _ in 0..<12 where live.focusFrame != flags[0] { try live.key(.tab) }
+            try #require(live.focusFrame == flags[0], "Tab never came back to the minimum")
             try live.key(.left)
-            #expect(abs(manager.adaptiveMin - 0.19) < 1e-9, "Left did not lower the limit by 1 %: \(manager.adaptiveMin)")
+            #expect(abs(manager.adaptiveMin - 0.19) < 1e-9, "Left did not lower the minimum by 1 %: \(manager.adaptiveMin)")
             try live.key(.home)
-            #expect(manager.adaptiveMin == 0, "Home did not take the limit to 0 %: \(manager.adaptiveMin)")
+            #expect(manager.adaptiveMin == 0, "Home did not take the minimum to 0 %")
             try live.key(.right, shift: true)
-            #expect(abs(manager.adaptiveMin - 0.1) < 1e-9, "Shift-Right did not raise the limit by 10 %")
-            // The upper limit cannot come closer than 5 %.
+            #expect(abs(manager.adaptiveMin - 0.1) < 1e-9, "Shift-Right did not raise the minimum by 10 %")
             try live.key(.tab)
+            try live.key(.end)
+            #expect(manager.adaptiveMax == 1, "End did not take the maximum to 100 %")
             try live.key(.home)
-            #expect(abs(manager.adaptiveMax - 0.15) < 1e-9, "the upper limit went to \(manager.adaptiveMax)")
+            #expect(abs(manager.adaptiveMax - 0.15) < 1e-9, "the maximum came closer than 5 %: \(manager.adaptiveMax)")
             #expect(manager.intensity == manager.adaptiveMax, "Auto did not land in the new range at once")
         }
     }
@@ -1028,7 +1083,7 @@ extension Raster {
             // The first Tab goes to the colour temp slider, which shows its focus. The arrows
             // move it by 1 % and leave the limits; End and Home take it to the ends, moving
             // the limit in the way.
-            try #require(loop.count >= 3)
+            try #require(loop.count >= 7)
             try live.key(.tab)
             #expect(live.focusFrame == color.pill, "the first Tab went to \(live.focusDescription)")
             let focused = try colorGrabber()
@@ -1050,8 +1105,10 @@ extension Raster {
             #expect(manager.intensity == 0.0 && manager.adaptiveMin == 0.0, "Home did not reach 0 %")
             try live.key(.end)
 
-            // Tab goes round every stop once and comes back: both sliders and the bedtime
-            // field. (With keyboard navigation on, the buttons as well.)
+            // Tab goes round every stop once and comes back: both sliders with their flags, and
+            // the bedtime field. (With keyboard navigation on, the buttons as well.)
+            // The keys above moved the flags: the stops as they are now.
+            let loopNow = live.keyViewLoop()
             let stops = try tabRound(live) { stop in
                 guard stop == white.pill else { return }
                 #expect(try whiteGrabber() > 20, "the white point grabber does not show the focus Tab gave it")
@@ -1063,8 +1120,8 @@ extension Raster {
                 try live.key(.right)
             }
             note("focus: a round of Tab visited \(stops)")
-            #expect(Set(stops.map { "\($0)" }) == Set(loop.map { "\($0)" }), "Tab did not visit every stop")
-            #expect(stops.count == loop.count, "Tab visited a stop twice in one round")
+            #expect(Set(stops.map { "\($0)" }) == Set(loopNow.map { "\($0)" }), "Tab did not visit every stop")
+            #expect(stops.count == loopNow.count, "Tab visited a stop twice in one round")
             #expect(stops.filter { $0 == color.pill }.count == 1 && stops.filter { $0 == white.pill }.count == 1)
             let picker = try #require(live.views().compactMap { $0 as? NSDatePicker }.first)
             #expect(stops.contains(live.frame(of: picker)))
@@ -1099,7 +1156,7 @@ extension Raster {
         }
     }
 
-    /// A pinned band changes nothing about the Tab order: each slider is one stop.
+    /// A pinned band keeps the Tab order: its one chip holds the minimum's and the maximum's stops.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
     func tabGoesThroughAPinnedBand() async throws {
         try inRunLoopTurn {
@@ -1108,9 +1165,9 @@ extension Raster {
             let loop = live.keyViewLoop()
             let stops = try tabRound(live)
             note("focus pinned: Tab stops \(loop), a round visited \(stops)")
-            try #require(loop.count >= 3)
+            try #require(loop.count >= 7)
             #expect(Set(stops.map { "\($0)" }) == Set(loop.map { "\($0)" }), "Tab did not visit every stop")
-            #expect(stops.count == loop.count, "Tab visited a stop twice in one round")
+            #expect(stops.count == Set(loop.map { "\($0)" }).count, "Tab visited a stop twice in one round")
         }
     }
 

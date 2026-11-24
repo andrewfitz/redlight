@@ -738,13 +738,12 @@ import Testing
                         }
                     }
                     ForEach([EmberTone.accent, .soft], id: \.self) { tone in
-                        EmberSlider(value: value, band: lower...upper, tone: tone) { value = $0 }
-                        EmberSlider(value: lower, band: lower...upper, tone: tone) { lower = $0 }
-                        EmberSlider(value: pin, band: pin...pin, tone: tone) { pin = $0 }
-                        EmberCard(verticalPadding: 10) {
-                            EmberRangeSlider(lower: $lower, upper: $upper, tone: tone)
-                            EmberRangeSlider(lower: $pin, upper: $pin, tone: tone)
-                        }
+                        EmberSlider(value: value, band: lower...upper, tone: tone, onChange: { value = $0 },
+                                    onLimitChange: { if $0 == .lower { lower = $1 } else { upper = $1 } })
+                        EmberSlider(value: lower, band: lower...upper, tone: tone, onChange: { lower = $0 },
+                                    onLimitChange: { if $0 == .lower { lower = $1 } else { upper = $1 } })
+                        EmberSlider(value: pin, band: pin...pin, tone: tone, onChange: { pin = $0 },
+                                    onLimitChange: { _, v in pin = v })
                     }
                 }
                 .padding(16)

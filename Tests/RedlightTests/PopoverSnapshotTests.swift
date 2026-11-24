@@ -149,11 +149,11 @@ struct PopoverState {
             $0.manager.setIntensityPushingBand(1.0)
             $0.manager.setWhitepointPushingBand(0.25)
         },
-        // The Auto range card with ranges that are not the default, one of them pinned.
-        PopoverState("settings-auto-range", defaults: adaptive([
-            "redlight.adaptiveMin": 0.595, "redlight.adaptiveMax": 0.918,
-            "redlight.adaptiveWpMin": 1.0, "redlight.adaptiveWpMax": 1.0,
-        ])).showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
+        // Two limits close together: the chips slide apart, the tips stay on their limits.
+        PopoverState("auto-close-flags", defaults: adaptive([
+            "redlight.adaptiveMin": 0.45, "redlight.adaptiveMax": 0.5,
+            "redlight.adaptiveWpMin": 0.25, "redlight.adaptiveWpMax": 0.3,
+        ])),
         PopoverState("sliders-nondefault") {
             $0.manager.intensity = 0.62
             $0.manager.whitepoint = 0.8
