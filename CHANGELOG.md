@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Redesigned the menu bar popover. Displays are at the top, each with its Invert control. **Auto** follows the sun and shows the next solar event, the sun arc and your limits; **Manual** shows the presets and holds a setting. Sliders show their value as a percentage, and limits are labelled.
-- Moved Launch at Login, Pause for apps, Keyboard Shortcuts, manual location, Updates, About and Quit to a Settings page inside the popover.
+- Pause and the light/dark switch sit in the header beside the main switch. Launch at Login, Pause for apps, Keyboard Shortcuts, location, Updates, About and Quit moved to a Settings page inside the popover, opened from the bottom of it.
 - New menu bar icon: a setting sun. It is an outlined ring when no filter is showing, and a solid disc with one, two or three lines across it as the filter deepens.
 - New app icon: a red sun setting behind a beige CRT monitor with a red screen, under a starry sky.
 - Renamed the Deep Red preset to **Late**. A saved preset still named Deep Red is renamed on launch. `redlight preset late` is the new spelling; `deep-red` keeps working, and `status --json` still reports `deep-red`. Existing Shortcuts and keyboard shortcuts are unaffected.

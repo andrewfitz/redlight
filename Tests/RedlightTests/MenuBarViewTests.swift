@@ -1012,14 +1012,20 @@ struct AccessibilityTree {
         location.coordinate = (41.88, -87.63)
         let manager = makeManager(defaults: defaults, location: location,
                                   now: { Self.evening }, calendar: Self.chicagoCalendar)
-        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager))
+        // The bedtime line takes the status line's place on the controls page, so the
+        // source is said on the Settings page, under Location for Auto.
+        let controls = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager)))
+        let controlsTree = await accessibility(of: controls.document)
+        controls.window.close()
+        #expect(controlsTree.names.contains { $0.hasPrefix("Deepest red by ") })
+        #expect(controlsTree.first("Location") == nil)
+
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                               initialPage: .settings)
         let hosted = try await host(view)
         defer { hosted.window.close() }
         var tree = await accessibility(of: hosted.document)
         #expect(tree.first("Location")?.value == "Automatic")
-        // The bedtime line has taken the status line's place, so the row has to say it.
-        #expect(tree.names.contains { $0.hasPrefix("Deepest red by ") })
-        #expect(!tree.names.contains { $0.contains("time zone") })
 
         // Location Services refused and never a fix: the row changes while it is open.
         location.automaticIsApproximate = true

@@ -105,11 +105,12 @@ for Day and Warm, two for Sunset and Night, and three for Late.
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
 - Your displays are listed at the top: switch each one on or off, and click **Invert** to flip its colors
 - Choose **Auto** to let the sun drive the filter, or **Manual** to hold a setting
-- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness; drag a limit's mark to set its range. **Deepest by** and **Location** sit beneath the sliders
+- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness; drag a limit's mark to set its range. **Deepest by** sits beneath the sliders
 - In **Manual**, click a preset to jump to it, or drag the sliders. **Save to a preset…** turns the presets into overwrite targets
 - **Reset** appears beside a slider's value when it differs from the default; it restores the value and clears its limits
-- **Pause** at the bottom suspends the tint for 30 minutes and becomes **Resume** while paused. Its chevron offers 1 hour, 2 hours and Until sunrise
-- The moon or sun button switches the system appearance. The button beside it opens **Settings**: location for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit
+- The **pause** button beside the header switch suspends the tint for 30 minutes and turns into a play button that resumes it. Its chevron offers 1 hour, 2 hours and Until sunrise
+- The moon or sun button beside it switches the system appearance
+- **Settings** at the bottom opens location for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit. A dot on it means an update or a login item is waiting
 - Press Tab to move between controls, the arrow keys to adjust a focused slider, and Esc to close the popover
 
 ### Pause
@@ -149,8 +150,7 @@ effect that night, and the popover does not show it as active. Under the midnigh
 
 ### Location
 
-Adaptive normally uses Location Services, falling back to a city in your time zone. The
-**Location** row in Auto names the source: Automatic, Time zone, Last known or Manual. To set
+Adaptive normally uses Location Services, falling back to a city in your time zone. **Location for Auto** in Settings names the source: Automatic, Time zone, Last known or Manual. To set
 it yourself, choose **Coordinates** under Location for Auto in Settings and enter a latitude
 and longitude, or run `redlight location`.
 With a manual location Redlight makes no Location requests and does not ask for permission.

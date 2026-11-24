@@ -217,16 +217,16 @@ private struct ControlsPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: EmberMetrics.spacing) {
-            PopoverHeader(manager: manager, dispatch: dispatch, headerFocus: headerFocus)
+            PopoverHeader(manager: manager, dispatch: dispatch, headerFocus: headerFocus,
+                          choosingPauseLength: initialState.choosingPauseLength)
             DisplaysCard(manager: manager, dispatch: dispatch)
             ModeControl(manager: manager, dispatch: dispatch)
-            ModeContent(manager: manager, dispatch: dispatch, session: session, bedtimeDraft: bedtimeDraft,
+            ModeContent(manager: manager, dispatch: dispatch, session: session,
                         choosingSaveTarget: initialState.choosingSaveTarget, openSettings: openSettings)
+            SettingsCard(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
+                         bedtimeDraft: bedtimeDraft, updateAvailable: initialState.updateAvailable,
+                         loginRequiresApproval: initialState.loginRequiresApproval) { openSettings(false) }
             CommandErrorLine(session: session)
-            BottomBar(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
-                      choosingPauseLength: initialState.choosingPauseLength,
-                      updateAvailable: initialState.updateAvailable,
-                      loginRequiresApproval: initialState.loginRequiresApproval) { openSettings(false) }
         }
         // A login item waiting for approval shows as the Settings dot, so ask on every
         // opening, not only once the Settings page is up.
@@ -236,27 +236,84 @@ private struct ControlsPage: View {
 
 // MARK: - Header
 
+/// The title, then Pause, the system appearance and the master switch. What the tint is
+/// doing when it is not simply on reads on a line of its own beneath, and the other pause
+/// lengths unfold below that.
 private struct PopoverHeader: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
     let headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding
 
+    @State private var choosingPauseLength: Bool
+    @State private var sunriseAvailable = true
+    /// Moves VoiceOver to Resume when a chosen length takes its row away.
+    @AccessibilityFocusState private var pauseFocused: Bool
+
+    init(manager: DisplayManager, dispatch: PopoverDispatch,
+         headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding, choosingPauseLength: Bool) {
+        self.manager = manager
+        self.dispatch = dispatch
+        self.headerFocus = headerFocus
+        _choosingPauseLength = State(initialValue: choosingPauseLength)
+    }
+
+    /// Other lengths only make sense with a filter to pause and no pause running.
+    private var canChoosePauseLength: Bool { manager.isOn && !manager.isPaused }
+
     var body: some View {
-        HStack(spacing: 8) {
-            Text("Redlight")
-                .font(.ember(14, .semibold))
-                .tracking(-0.14)
-                .fixedSize()
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityFocused(headerFocus, equals: .controls)
+        let isDark = AppearanceController.shared.isDark
+        let isPaused = manager.isPaused
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("Redlight")
+                    .font(.ember(14, .semibold))
+                    .tracking(-0.14)
+                    .fixedSize()
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityFocused(headerFocus, equals: .controls)
+                Spacer(minLength: 0)
+                PauseControl(
+                    isPaused: isPaused,
+                    isExpanded: choosingPauseLength && canChoosePauseLength,
+                    focus: $pauseFocused,
+                    showsTitle: false,
+                    toggle: { dispatch(.pause(manager.isPaused ? .off : .on)) },
+                    toggleLengths: {
+                        if !choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
+                        choosingPauseLength.toggle()
+                    }
+                )
+                // Resume always works; Pause needs a filter to pause.
+                .disabled(!isPaused && !manager.isOn)
+                EmberIconButton(systemImage: isDark ? "moon.fill" : "sun.max") {
+                    dispatch(.appearance(.toggle))
+                }
+                .help(isDark ? "Switch to Light Mode" : "Switch to Dark Mode")
+                .accessibilityLabel("System appearance")
+                .accessibilityValue(isDark ? "Dark" : "Light")
+                EmberSwitch("Enable Redlight", isOn: Binding(
+                    get: { manager.isOn },
+                    set: { dispatch(.master($0 ? .on : .off)) }
+                ))
+                .padding(.leading, 2)
+            }
+            .frame(height: EmberMetrics.controlHeight)
             HeaderStatus(manager: manager)
-            Spacer(minLength: 0)
-            EmberSwitch("Enable Redlight", isOn: Binding(
-                get: { manager.isOn },
-                set: { dispatch(.master($0 ? .on : .off)) }
-            ))
+            if choosingPauseLength && canChoosePauseLength {
+                PauseLengthRow(sunriseAvailable: sunriseAvailable) { length in
+                    guard dispatch(.pauseFor(length)) else { return }
+                    choosingPauseLength = false
+                    // The chip that was pressed goes with its row.
+                    Task { @MainActor in pauseFocused = true }
+                }
+            }
         }
-        .frame(height: 20)
+        .onChange(of: canChoosePauseLength) { _, available in
+            if !available { choosingPauseLength = false }
+        }
+        .onAppear {
+            if choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
+        }
     }
 }
 
@@ -390,17 +447,15 @@ private struct ModeContent: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
     let session: PopoverSession
-    let bedtimeDraft: BedtimeDraft
     let openSettings: (Bool) -> Void
 
     @State private var choosingSaveTarget: Bool
 
     init(manager: DisplayManager, dispatch: PopoverDispatch, session: PopoverSession,
-         bedtimeDraft: BedtimeDraft, choosingSaveTarget: Bool, openSettings: @escaping (Bool) -> Void) {
+         choosingSaveTarget: Bool, openSettings: @escaping (Bool) -> Void) {
         self.manager = manager
         self.dispatch = dispatch
         self.session = session
-        self.bedtimeDraft = bedtimeDraft
         self.openSettings = openSettings
         _choosingSaveTarget = State(initialValue: choosingSaveTarget)
     }
@@ -416,9 +471,7 @@ private struct ModeContent: View {
             }
             SliderRow(manager: manager, channel: .color, dispatch: dispatch)
             SliderRow(manager: manager, channel: .whitepoint, dispatch: dispatch)
-            if auto {
-                AutoCard(manager: manager, dispatch: dispatch, bedtimeDraft: bedtimeDraft) { openSettings(false) }
-            } else {
+            if !auto {
                 SaveToPreset(isChoosing: $choosingSaveTarget)
             }
         }
@@ -580,56 +633,78 @@ private struct SunArcSection: View {
     }
 }
 
-/// "Deepest by" and "Location".
-private struct AutoCard: View {
+/// The foot of the controls: "Deepest by" in Auto, then the row that opens Settings, with a
+/// dot when an update or a login item is waiting.
+private struct SettingsCard: View {
     let manager: DisplayManager
+    let launchAtLogin: LaunchAtLogin?
     let dispatch: PopoverDispatch
     let bedtimeDraft: BedtimeDraft
+    let updateAvailable: Bool?
+    /// A render's stand-in for the login item's state; nil in the app.
+    let loginRequiresApproval: Bool?
     let openSettings: () -> Void
 
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.emberAccent) private var accent
+
     var body: some View {
+        let auto = manager.adaptiveEnabled
+        let notice = SettingsNotice(
+            hasUpdate: updateAvailable ?? Updater.shared.hasPendingUpdate,
+            loginRequiresApproval: loginRequiresApproval ?? launchAtLogin?.requiresApproval ?? false)
         EmberCard {
-            BedtimeRow(bedtime: manager.bedtime, draft: bedtimeDraft) { dispatch(.bedtime($0)) }
-            LocationRow(manager: manager, openSettings: openSettings)
+            if auto {
+                BedtimeRow(bedtime: manager.bedtime, draft: bedtimeDraft) { dispatch(.bedtime($0)) }
+            }
+            EmberRowButton(divider: auto, action: openSettings) {
+                Text("Settings").foregroundStyle(palette.text)
+                Spacer(minLength: 8)
+                HStack(spacing: 6) {
+                    if !notice.isEmpty {
+                        Circle().fill(palette.arcDot(accent: accent)).frame(width: 7, height: 7)
+                    }
+                    EmberChevron(direction: .right)
+                }
+                .foregroundStyle(palette.secondary)
+            }
+            .help(notice.help)
+            .accessibilityLabel("Settings")
+            .accessibilityValue(notice.accessibilityValue)
         }
     }
 }
 
-/// Opens Settings, and says where Auto's location really comes from. Its own view, because
-/// the source is read with the status line and that changes as the sun moves.
+/// Where Auto's location really comes from, on the Settings page. Its own view, because the
+/// source is read with the status line and that changes as the sun moves.
 struct LocationRow: View {
     let manager: DisplayManager
-    let openSettings: () -> Void
     @Environment(\.emberPalette) private var palette
 
     /// The value shown for a source, and what hovering the row explains.
     static func text(for source: DisplayManager.LocationSource) -> (title: String, help: String) {
         switch source {
         case .automatic:
-            ("Automatic", "Choose the location Auto follows")
+            ("Automatic", "Auto is following your location from Location Services")
         case .timeZone:
-            ("Time zone", "Auto is following your time zone's city, because it has no location. "
-                + "Choose the location Auto follows")
+            ("Time zone", "Auto is following your time zone's city, because it has no location")
         case .lastKnown:
-            ("Last known", "Auto is following the last location it found, because Location Services is off. "
-                + "Choose the location Auto follows")
+            ("Last known", "Auto is following the last location it found, because Location Services is off")
         case .manual:
-            ("Manual", "Auto is following the coordinates you entered. Choose the location Auto follows")
+            ("Manual", "Auto is following the coordinates you entered")
         }
     }
 
     var body: some View {
         let source = Self.text(for: manager.locationSource)
-        EmberRowButton(divider: true, action: openSettings) {
-            Text("Location").foregroundStyle(palette.text)
+        HStack(spacing: 8) {
+            Text("Now using").foregroundStyle(palette.secondary)
             Spacer(minLength: 8)
-            HStack(spacing: 3) {
-                Text(source.title)
-                EmberChevron(direction: .right)
-            }
-            .foregroundStyle(palette.secondary)
+            Text(source.title).foregroundStyle(palette.text)
         }
+        .font(.ember(12))
         .help(source.help)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Location")
         .accessibilityValue(source.title)
     }
@@ -847,7 +922,7 @@ struct CommandErrorLine: View {
     }
 }
 
-// MARK: - Bottom bar
+// MARK: - Settings notice
 
 /// What the dot on the Settings button stands for.
 struct SettingsNotice: Equatable {
@@ -871,86 +946,6 @@ struct SettingsNotice: Equatable {
     }
 }
 
-private struct BottomBar: View {
-    let manager: DisplayManager
-    let launchAtLogin: LaunchAtLogin?
-    let dispatch: PopoverDispatch
-    let updateAvailable: Bool?
-    /// A render's stand-in for the login item's state; nil in the app.
-    let loginRequiresApproval: Bool?
-    let openSettings: () -> Void
-
-    @State private var choosingPauseLength: Bool
-    @State private var sunriseAvailable = true
-    /// Moves VoiceOver to Resume when a chosen length takes its row away.
-    @AccessibilityFocusState private var pauseFocused: Bool
-
-    init(manager: DisplayManager, launchAtLogin: LaunchAtLogin?, dispatch: PopoverDispatch,
-         choosingPauseLength: Bool, updateAvailable: Bool?, loginRequiresApproval: Bool?,
-         openSettings: @escaping () -> Void) {
-        self.manager = manager
-        self.launchAtLogin = launchAtLogin
-        self.dispatch = dispatch
-        self.updateAvailable = updateAvailable
-        self.loginRequiresApproval = loginRequiresApproval
-        self.openSettings = openSettings
-        _choosingPauseLength = State(initialValue: choosingPauseLength)
-    }
-
-    /// Other lengths only make sense with a filter to pause and no pause running.
-    private var canChoosePauseLength: Bool { manager.isOn && !manager.isPaused }
-
-    var body: some View {
-        let isDark = AppearanceController.shared.isDark
-        let notice = SettingsNotice(
-            hasUpdate: updateAvailable ?? Updater.shared.hasPendingUpdate,
-            loginRequiresApproval: loginRequiresApproval ?? launchAtLogin?.requiresApproval ?? false)
-        let isPaused = manager.isPaused
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                PauseControl(
-                    isPaused: isPaused,
-                    isExpanded: choosingPauseLength && canChoosePauseLength,
-                    focus: $pauseFocused,
-                    toggle: { dispatch(.pause(manager.isPaused ? .off : .on)) },
-                    toggleLengths: {
-                        if !choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
-                        choosingPauseLength.toggle()
-                    }
-                )
-                // Resume always works; Pause needs a filter to pause.
-                .disabled(!isPaused && !manager.isOn)
-                Spacer(minLength: 0)
-                EmberIconButton(systemImage: isDark ? "moon.fill" : "sun.max") {
-                    dispatch(.appearance(.toggle))
-                }
-                .help(isDark ? "Switch to Light Mode" : "Switch to Dark Mode")
-                .accessibilityLabel("System appearance")
-                .accessibilityValue(isDark ? "Dark" : "Light")
-                EmberIconButton(systemImage: "slider.horizontal.3", showsDot: !notice.isEmpty, action: openSettings)
-                    .help(notice.help)
-                    .accessibilityLabel("Settings")
-                    .accessibilityValue(notice.accessibilityValue)
-            }
-            // Other lengths unfold below the bar, so the control stays under the pointer.
-            if choosingPauseLength && canChoosePauseLength {
-                PauseLengthRow(sunriseAvailable: sunriseAvailable) { length in
-                    guard dispatch(.pauseFor(length)) else { return }
-                    choosingPauseLength = false
-                    // The chip that was pressed goes with its row.
-                    Task { @MainActor in pauseFocused = true }
-                }
-            }
-        }
-        .onChange(of: canChoosePauseLength) { _, available in
-            if !available { choosingPauseLength = false }
-        }
-        .onAppear {
-            if choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
-        }
-    }
-}
-
 /// Pause and Resume are one button whose face changes, so keyboard and VoiceOver focus stay
 /// on it when a pause starts or ends. Unpaused it is the leading part of a split pill: it
 /// pauses for 30 minutes and the chevron beside it unfolds the other lengths. Paused it is
@@ -959,6 +954,8 @@ private struct PauseControl: View {
     let isPaused: Bool
     let isExpanded: Bool
     let focus: AccessibilityFocusState<Bool>.Binding
+    /// False draws only the glyphs, for the header; the names stay for assistive apps.
+    var showsTitle = true
     /// Pauses, or resumes when paused.
     let toggle: () -> Void
     let toggleLengths: () -> Void
@@ -974,13 +971,16 @@ private struct PauseControl: View {
             // Never inside an `if`: this button's identity is what keeps the focus.
             EmberButton(action: toggle) { state in
                 HStack(spacing: 6) {
-                    Image(systemName: isPaused ? "play.fill" : "pause.fill").font(.system(size: 9, weight: .bold))
-                    Text(isPaused ? "Resume" : "Pause").lineLimit(1).fixedSize()
+                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: showsTitle ? 9 : 10.5, weight: .bold))
+                    if showsTitle {
+                        Text(isPaused ? "Resume" : "Pause").lineLimit(1).fixedSize()
+                    }
                 }
                 .font(.ember(12.5, isPaused ? .semibold : .medium))
                 .foregroundStyle(resume?.foreground ?? palette.text)
-                .padding(.leading, 11)
-                .padding(.trailing, isPaused ? 11 : 5)
+                .padding(.leading, showsTitle ? 11 : 10)
+                .padding(.trailing, isPaused ? (showsTitle ? 11 : 10) : (showsTitle ? 5 : 2))
                 .frame(height: height)
                 .contentShape(isPaused ? AnyShape(Capsule()) : AnyShape(Rectangle()))
                 .background { if let resume { Capsule().fill(resume.background) } }
@@ -996,8 +996,8 @@ private struct PauseControl: View {
                 EmberButton(action: toggleLengths) { state in
                     EmberChevron(direction: isExpanded ? .up : .down)
                         .foregroundStyle(palette.tertiary)
-                        .padding(.leading, 6)
-                        .padding(.trailing, 11)
+                        .padding(.leading, showsTitle ? 6 : 3)
+                        .padding(.trailing, showsTitle ? 11 : 9)
                         .frame(height: height)
                         .contentShape(Rectangle())
                         .emberFocusHalo(PauseControlShape.trailing, isFocused: state.isFocused, spread: 0)

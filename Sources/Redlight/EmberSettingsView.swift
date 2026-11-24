@@ -63,6 +63,7 @@ private struct LocationSettingsCard: View {
     var body: some View {
         EmberCard(verticalPadding: 10) {
             VStack(alignment: .leading, spacing: 8) {
+                LocationRow(manager: manager)
                 EmberSegmented(label: "Location for Auto",
                                options: [(value: false, title: "Automatic"), (value: true, title: "Coordinates")],
                                selection: usesCoordinates, onCard: true,
