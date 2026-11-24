@@ -4,242 +4,7 @@ import SwiftUI
 import Testing
 @testable import Redlight
 
-/// Geometry of the Ember slider pill and its captions.
-@Suite struct EmberSliderFaceTests {
-    private let width: CGFloat = 268
-    private let inset = BandSliderFace.inset
-    private let grab = BandSliderFace.grabSize.width
-    private let notch = BandSliderFace.notchSize.width
-    private let gap = BandSliderFace.markGap
-
-    private func face(
-        _ value: Double, lower: Double = 0, upper: Double = 1,
-        range: ClosedRange<Double> = 0...1, band: Bool = false, width: CGFloat? = nil
-    ) -> BandSliderFace {
-        BandSliderFace(value: value, lower: lower, upper: upper, range: range,
-                       showBand: band, width: width ?? self.width)
-    }
-
-    private func isClose(_ a: CGFloat, _ b: CGFloat) -> Bool { abs(a - b) < 1e-9 }
-
-    @Test func handlesSitWhereTheHitTestLooksForThem() {
-        let range = 0.25...1.0
-        let f = face(0.6, lower: 0.4, upper: 0.9, range: range, band: true)
-        func hit(_ v: Double) -> CGFloat {
-            BandSliderCore.position(v, width: width, inset: inset, range: range)
-        }
-        #expect(f.valueX == hit(0.6))
-        #expect(f.lowerX == hit(0.4))
-        #expect(f.upperX == hit(0.9))
-    }
-
-    @Test func fillKeepsAMinimumLengthAtTheBottomOfTheRange() {
-        // Colour temp 0% is the Late preset; the white point's range starts at 25%.
-        for (value, range) in [(0.0, 0.0...1.0), (0.25, 0.25...1.0)] {
-            let f = face(value, range: range)
-            #expect(f.fill.start == 0)
-            #expect(isClose(f.fill.length, BandSliderFace.minimumFill))
-            // The grabber has its full gap of fill on both sides.
-            #expect(isClose(f.valueX - grab / 2 - f.fill.start, gap))
-            #expect(isClose(f.fill.end - (f.valueX + grab / 2), gap))
-        }
-    }
-
-    @Test func fillEndsFlushWithThePillAtTheTopOfTheRange() {
-        let f = face(1)
-        #expect(f.fill.start == 0)
-        #expect(isClose(f.fill.end, width))
-        #expect(isClose(width - (f.valueX + grab / 2), gap))
-    }
-
-    @Test func fillWithoutABandStartsAtTheTrackAndWithOneAtTheLowerLimit() throws {
-        #expect(face(0.5).fill.start == 0)
-        #expect(face(0.5).band == nil)
-        let f = face(0.5, lower: 0.2, upper: 0.8, band: true)
-        let band = try #require(f.band)
-        #expect(f.fill.start == band.start)
-        #expect(isClose(band.start, f.lowerX - inset))
-        #expect(isClose(band.end, f.upperX + inset))
-        #expect(isClose(f.fill.end, f.valueX + inset))
-        // Marks keep their gap from the end they belong to.
-        #expect(isClose(f.lowerNotchX - notch / 2 - band.start, gap))
-        #expect(isClose(band.end - (f.upperNotchX + notch / 2), gap))
-        #expect(f.lowerNotchOpacity == 1)
-        #expect(f.upperNotchOpacity == 1)
-    }
-
-    @Test func valueOnItsLowerLimitKeepsTheMinimumFillAndHidesThatNotch() {
-        let f = face(0.2, lower: 0.2, upper: 0.8, band: true)
-        #expect(isClose(f.fill.length, BandSliderFace.minimumFill))
-        #expect(f.fill.start == f.band?.start)
-        #expect(f.lowerNotchOpacity == 0)
-        #expect(f.upperNotchOpacity == 1)
-        // The grabber covers the notch completely, so nothing peeks out beside it.
-        #expect(f.lowerNotchX - notch / 2 >= f.valueX - grab / 2)
-        #expect(f.lowerNotchX + notch / 2 <= f.valueX + grab / 2)
-    }
-
-    @Test func valueOnItsUpperLimitFillsTheBandAndHidesThatNotch() {
-        let f = face(0.8, lower: 0.2, upper: 0.8, band: true)
-        #expect(f.fill.end == f.band?.end)
-        #expect(f.upperNotchOpacity == 0)
-        #expect(f.lowerNotchOpacity == 1)
-        #expect(f.upperNotchIsOnFill)
-        #expect(f.upperNotchX - notch / 2 >= f.valueX - grab / 2)
-        #expect(f.upperNotchX + notch / 2 <= f.valueX + grab / 2)
-    }
-
-    @Test func coveredNotchShowsAsTicksAboveAndBelowTheGrabber() {
-        // Resting on the upper limit by day, on the lower by night, and pinned.
-        let day = face(0.8, lower: 0.2, upper: 0.8, band: true)
-        #expect(day.upperTickOpacity == 1 && day.lowerTickOpacity == 0)
-        let night = face(0.2, lower: 0.2, upper: 0.8, band: true)
-        #expect(night.lowerTickOpacity == 1 && night.upperTickOpacity == 0)
-        let pinned = face(0.45, lower: 0.45, upper: 0.45, band: true)
-        #expect(pinned.lowerTickOpacity == 1 && pinned.upperTickOpacity == 1)
-        // A value clear of both limits shows the notches and no ticks.
-        let between = face(0.5, lower: 0.2, upper: 0.8, band: true)
-        #expect(between.lowerTickOpacity == 0 && between.upperTickOpacity == 0)
-
-        // The ticks stand clear of both ends of the grabber and inside the pill.
-        #expect((BandSliderFace.tickHeight - BandSliderFace.grabSize.height) / 2 >= 4)
-        #expect(BandSliderFace.tickHeight < EmberMetrics.sliderHeight)
-        // They are drawn in the colour that reads on the fill, so they must lie on it.
-        #expect(day.fill.contains(day.upperNotchX + notch / 2))
-        #expect(night.fill.contains(night.lowerNotchX - notch / 2))
-        #expect(pinned.fill.contains(pinned.upperNotchX + notch / 2))
-    }
-
-    @Test func notchGivesWayToItsTicksWithoutAJump() {
-        // The last points of travel onto each limit: one of the two is always showing.
-        for step in 0...40 {
-            let offset = Double(step) * 0.001
-            for f in [face(0.2 + offset, lower: 0.2, upper: 0.8, band: true),
-                      face(0.8 - offset, lower: 0.2, upper: 0.8, band: true)] {
-                #expect(abs(f.lowerNotchOpacity + f.lowerTickOpacity - 1) < 1e-12)
-                #expect(abs(f.upperNotchOpacity + f.upperTickOpacity - 1) < 1e-12)
-                #expect((0...1).contains(f.lowerTickOpacity) && (0...1).contains(f.upperTickOpacity))
-            }
-        }
-    }
-
-    @Test func upperNotchStaysVisibleUnderTheFill() {
-        // 5.5 pt short of the upper limit: the fill has run over the notch, the grabber has not.
-        let usable = Double(width - 2 * inset)
-        let f = face(0.8 - 5.5 / usable, lower: 0.2, upper: 0.8, band: true)
-        #expect(f.upperNotchIsOnFill)
-        #expect(f.upperNotchOpacity == 1)
-        #expect(f.upperTickOpacity == 0)
-        // Clear of the fill it is on the band.
-        #expect(!face(0.5, lower: 0.2, upper: 0.8, band: true).upperNotchIsOnFill)
-    }
-
-    @Test func notchesFadeOverAShortTravelAndNeverJump() {
-        #expect(BandSliderFace.fade(clearance: -4) == 0)
-        #expect(BandSliderFace.fade(clearance: 0) == 0)
-        #expect(BandSliderFace.fade(clearance: BandSliderFace.notchFade / 2) == 0.5)
-        #expect(BandSliderFace.fade(clearance: BandSliderFace.notchFade) == 1)
-        #expect(BandSliderFace.fade(clearance: 40) == 1)
-    }
-
-    @Test func valueOutsideALaggingBandIsDrawnClampedIntoIt() {
-        let below = face(0.05, lower: 0.2, upper: 0.8, band: true)
-        #expect(below.valueX == below.lowerX)
-        let above = face(0.95, lower: 0.2, upper: 0.8, band: true)
-        #expect(above.valueX == above.upperX)
-        #expect(face(0.95, lower: 0.2, upper: 0.8, band: false).valueX > above.valueX)
-    }
-
-    @Test func pinnedBandReadsAsAPlainLevelWithOneCaption() throws {
-        let f = face(0.45, lower: 0.45, upper: 0.45, band: true)
-        #expect(f.isPinned)
-        #expect(f.fill.start == 0)
-        #expect(isClose(f.fill.end, f.valueX + inset))
-        // No band is drawn for a range with no length, and both notches rest under the grabber.
-        #expect(f.band == nil)
-        #expect(f.lowerNotchOpacity == 0)
-        #expect(f.upperNotchOpacity == 0)
-        #expect(f.captionAnchors.first == f.valueX)
-        #expect(f.captionAnchors.second == nil)
-        #expect(!face(0.45, lower: 0.45, upper: 0.45, band: false).isPinned)
-    }
-
-    @Test func narrowestBandKeepsBothNotchesApartInsideIt() throws {
-        for lower in [0.0, 0.4, 0.95] {
-            let f = face(lower, lower: lower, upper: lower + 0.05, band: true)
-            let band = try #require(f.band)
-            #expect(band.length > BandSliderFace.minimumFill)
-            #expect(f.lowerNotchX - notch / 2 >= band.start + gap - 1e-9)
-            #expect(f.upperNotchX + notch / 2 <= band.end - gap + 1e-9)
-            #expect(f.upperNotchX - f.lowerNotchX > notch + 2 * grab)
-            #expect(band.start >= 0 && band.end <= width + 1e-9)
-        }
-    }
-
-    @Test func limitsAtTheEndsOfTheRangeKeepNotchesInsideThePill() throws {
-        for range in [0.0...1.0, 0.25...1.0] {
-            let f = face(range.upperBound, lower: range.lowerBound, upper: range.upperBound,
-                         range: range, band: true)
-            let band = try #require(f.band)
-            #expect(band.start == 0)
-            #expect(isClose(band.end, width))
-            #expect(isClose(f.lowerNotchX - notch / 2, gap))
-            #expect(isClose(f.upperNotchX + notch / 2, width - gap))
-            #expect(f.captionAnchors.first == 0)
-            #expect(f.captionAnchors.second.map { isClose($0, width) } == true)
-        }
-    }
-
-    @Test func degenerateWidthsAndRangesStayInsideThePill() {
-        for width: CGFloat in [0, 6, 14, 20] {
-            for value in [0.0, 0.5, 1.0] {
-                let f = face(value, lower: 0.2, upper: 0.8, band: true, width: width)
-                #expect(f.fill.start >= 0 && f.fill.end <= width)
-                #expect(f.fill.length >= 0)
-                #expect(f.band.map { $0.start >= 0 && $0.end <= width } == true)
-            }
-        }
-        let flat = face(0.5, range: 0.5...0.5)
-        #expect(flat.valueX.isFinite)
-        #expect(isClose(flat.fill.length, BandSliderFace.minimumFill))
-    }
-
-    @Test func captionsShowWholePercentages() {
-        #expect(BandSliderFace.percentText(0) == "0%")
-        #expect(BandSliderFace.percentText(0.2) == "20%")
-        #expect(BandSliderFace.percentText(0.455) == "46%")
-        #expect(BandSliderFace.percentText(1) == "100%")
-    }
-
-    @Test func captionsAtTheExtremesStayInsideTheRowAndApart() {
-        // Widths of "0%" and "100%" at 10 pt, near enough.
-        let narrow: CGFloat = 13, wide: CGFloat = 26, row = width
-        let ends = face(0.5, lower: 0, upper: 1, band: true).captionAnchors
-        let full = AnchoredLabels.origins(
-            first: (ends.first, narrow), second: (ends.second!, wide), row: row, gap: 4)
-        #expect(full.first == 0)
-        #expect(isClose(full.second, row - wide))
-
-        // The narrowest band at each end: the pair is pushed apart, then kept on the row.
-        for lower in [0.0, 0.95] {
-            let anchors = face(lower, lower: lower, upper: lower + 0.05, band: true).captionAnchors
-            let xs = AnchoredLabels.origins(
-                first: (anchors.first, wide), second: (anchors.second!, wide), row: row, gap: 4)
-            #expect(xs.first >= 0)
-            #expect(xs.second + wide <= row + 1e-9)
-            #expect(xs.second - (xs.first + wide) >= 4 - 1e-9)
-        }
-
-        // A pinned band at each end has one caption, clamped under the grabber.
-        for value in [0.0, 1.0] {
-            let anchor = face(value, lower: value, upper: value, band: true).captionAnchors.first
-            let x = AnchoredLabels.origin(anchor: anchor, width: wide, row: row)
-            #expect(x >= 0 && x + wide <= row)
-        }
-    }
-}
-
-/// Placement shared by the slider captions and the sun arc's clock times.
+/// Placement of the sun arc's clock times.
 @Suite struct AnchoredLabelsTests {
     @Test func oneLabelIsCentredOnItsAnchorUntilAnEndOfTheRow() {
         #expect(AnchoredLabels.origin(anchor: 100, width: 30, row: 268) == 85)
@@ -736,28 +501,7 @@ import Testing
                     #expect(late(rest, fill) >= 3, "\(name) \(tone) at \(intensity): \(late(rest, fill))")
                     // Pressed or focused it is never weaker than at rest.
                     #expect(score(strong, fill) >= score(rest, fill) - 1e-9)
-                    // The lower notch, and the ticks of a covered notch, sit on the same fill.
-                    let notch = palette.markSpec(.notch, on: fill).over(fill)
-                    #expect(score(notch, fill) >= 3, "\(name) \(tone) notch at \(intensity): \(score(notch, fill))")
-                    #expect(score(notch, fill) <= score(rest, fill) + 1e-9)
                 }
-            }
-        }
-    }
-
-    @Test func upperNotchReadsOnTheBand() {
-        for (name, _, palette) in all {
-            let band = palette.sliderBand
-            let spec = palette.markSpec(.notch, on: band)
-            let notch = spec.over(band)
-            #expect(wcag(notch, band) >= 3, "\(name) \(wcag(notch, band))")
-            if palette.isDark {
-                // Nothing reaches 3:1 on this fill under Late, so it is the best there is:
-                // solid white, which black does not beat.
-                #expect(spec == EmberContrast.Mark(ink: .white, alpha: 1))
-                #expect(late(notch, band) > score(.black, band))
-            } else {
-                #expect(late(notch, band) >= 3, "\(name) \(late(notch, band))")
             }
         }
     }
@@ -840,15 +584,15 @@ import Testing
 @MainActor @Suite struct EmberControlRuleTests {
     @Test func sliderHandleShowsFocusOnlyWhenAKeyPressBroughtIt() {
         // The popover opening or a click hands a handle focus: nothing is drawn.
-        #expect(!BandSlider.drawsFocus(handleIsFocused: true, isDragging: false, event: nil))
-        #expect(!BandSlider.drawsFocus(handleIsFocused: true, isDragging: false, event: .leftMouseDown))
-        #expect(!BandSlider.drawsFocus(handleIsFocused: true, isDragging: false, event: .leftMouseUp))
-        #expect(!BandSlider.drawsFocus(handleIsFocused: true, isDragging: false, event: .appKitDefined))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: true, isDragging: false, event: nil))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: true, isDragging: false, event: .leftMouseDown))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: true, isDragging: false, event: .leftMouseUp))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: true, isDragging: false, event: .appKitDefined))
         // Tab or Shift-Tab: drawn.
-        #expect(BandSlider.drawsFocus(handleIsFocused: true, isDragging: false, event: .keyDown))
+        #expect(SliderFocus.drawsFocus(handleIsFocused: true, isDragging: false, event: .keyDown))
         // Never during a drag, and never without focus.
-        #expect(!BandSlider.drawsFocus(handleIsFocused: true, isDragging: true, event: .keyDown))
-        #expect(!BandSlider.drawsFocus(handleIsFocused: false, isDragging: false, event: .keyDown))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: true, isDragging: true, event: .keyDown))
+        #expect(!SliderFocus.drawsFocus(handleIsFocused: false, isDragging: false, event: .keyDown))
     }
 
     @Test func backButtonIsNamedByItsVisibleWord() {
@@ -860,7 +604,7 @@ import Testing
 // MARK: - Control sheet
 
 /// A sheet of the controls in the states the popover snapshots cannot reach: keyboard focus,
-/// Increase Contrast, a value resting on a limit. Nothing here runs in a plain `swift test`:
+/// Increase Contrast, a value resting on Auto's lower limit. Nothing here runs in a plain `swift test`:
 ///
 ///   REDLIGHT_EMBER_SHEET_DIR=/some/dir swift test --filter EmberControlSheet
 ///       writes sheet-<light|dark>[-increased]-<colour temp>.png and the same with -late
@@ -994,9 +738,13 @@ import Testing
                         }
                     }
                     ForEach([EmberTone.accent, .soft], id: \.self) { tone in
-                        BandSlider(value: $value, lowerBound: $lower, upperBound: $upper, showBand: true, tone: tone)
-                        BandSlider(value: $lower, lowerBound: $lower, upperBound: $upper, showBand: true, tone: tone)
-                        BandSlider(value: $pin, lowerBound: $pin, upperBound: $pin, showBand: true, tone: tone)
+                        EmberSlider(value: value, band: lower...upper, tone: tone) { value = $0 }
+                        EmberSlider(value: lower, band: lower...upper, tone: tone) { lower = $0 }
+                        EmberSlider(value: pin, band: pin...pin, tone: tone) { pin = $0 }
+                        EmberCard(verticalPadding: 10) {
+                            EmberRangeSlider(lower: $lower, upper: $upper, tone: tone)
+                            EmberRangeSlider(lower: $pin, upper: $pin, tone: tone)
+                        }
                     }
                 }
                 .padding(16)

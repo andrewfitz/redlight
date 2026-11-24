@@ -132,6 +132,7 @@ final class LivePopoverFixture {
     private let registry = TestDefaultsRegistry()
     let defaults: UserDefaults
     let location = FakeLocationProvider()
+    let gamma = MockGammaController()
     let manager: DisplayManager
     let handler: CommandHandler
 
@@ -146,7 +147,7 @@ final class LivePopoverFixture {
         if manualLocation { location.setManualCoordinate(coordinate) }
         let ids = displays.indices.map { CGDirectDisplayID($0 + 1) }
         manager = DisplayManager(
-            gamma: MockGammaController(), getDisplayIDs: { ids },
+            gamma: gamma, getDisplayIDs: { ids },
             getDisplayName: { displays[Int($0) - 1] }, getDisplayPersistenceKey: { "live-display-\($0)" },
             getMainDisplayID: { 1 }, defaults: defaults, location: location,
             now: now,
@@ -187,7 +188,7 @@ final class LivePopoverFixture {
 // MARK: - The shown popover
 
 enum LiveKey {
-    case tab, space, escape, enter, left, right
+    case tab, space, escape, enter, left, right, home, end
     case character(Character)
 
     var code: UInt16 {
@@ -198,6 +199,8 @@ enum LiveKey {
         case .enter: 36
         case .left: 123
         case .right: 124
+        case .home: 115
+        case .end: 119
         case .character(let character):
             ["-": 27, "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28,
              "9": 25, ".": 47][character] ?? 0
@@ -212,6 +215,8 @@ enum LiveKey {
         case .enter: "\r"
         case .left: "\u{F702}"
         case .right: "\u{F703}"
+        case .home: "\u{F729}"
+        case .end: "\u{F72B}"
         case .character(let character): String(character)
         }
     }
@@ -219,26 +224,28 @@ enum LiveKey {
     var modifiers: NSEvent.ModifierFlags {
         switch self {
         case .left, .right: [.numericPad, .function]
+        case .home, .end: [.function]
         default: []
         }
     }
 }
 
-/// One slider's pill in the document, found from the grabber SwiftUI lays out.
+/// One slider's pill in the document, found from its keyboard stop, which covers the pill.
 struct LiveSlider {
     /// In the document's coordinates.
     let pill: CGRect
-    let grabber: CGRect
 
-    /// A point `x` along the pill and `dy` below its centre line, as `BandSliderFace` counts.
+    /// The size of a popover slider's keyboard stop: the pill.
+    static let size = CGSize(width: EmberMetrics.width - 2 * EmberMetrics.padding, height: EmberMetrics.sliderHeight)
+
+    /// A point `x` along the pill and `dy` below its centre line.
     func point(x: CGFloat, dy: CGFloat = 0) -> CGPoint {
         CGPoint(x: pill.minX + x, y: pill.midY + dy)
     }
 
-    func face(value: Double, lower: Double, upper: Double, range: ClosedRange<Double>, showBand: Bool)
-        -> BandSliderFace {
-        BandSliderFace(value: value, lower: lower, upper: upper, range: range,
-                       showBand: showBand, width: pill.width)
+    /// Where the grabber is drawn for `value`, along the pill.
+    func x(for value: Double, range: ClosedRange<Double>) -> CGFloat {
+        EmberSliderFace.x(for: value, width: pill.width, range: range)
     }
 }
 
@@ -389,9 +396,9 @@ final class LivePopover {
         document.layoutSubtreeIfNeeded()
     }
 
-    func key(_ key: LiveKey, settle: TimeInterval = 0.25) throws {
+    func key(_ key: LiveKey, shift: Bool = false, settle: TimeInterval = 0.25) throws {
         let event = try #require(NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: key.modifiers,
+            with: .keyDown, location: .zero, modifierFlags: key.modifiers.union(shift ? .shift : []),
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
             context: nil, characters: key.characters, charactersIgnoringModifiers: key.characters,
             isARepeat: false, keyCode: key.code))
@@ -416,7 +423,9 @@ final class LivePopover {
 
     /// A press at `start`, a drag by `dx` in steps, and a release, each handled on its own
     /// turn. With `dx` 0 the pointer does not move between the press and the release.
-    func drag(from start: CGPoint, dx: CGFloat, steps: Int = 5) throws {
+    /// `beforeRelease` runs with the button still down, after the last step.
+    func drag(from start: CGPoint, dx: CGFloat, steps: Int = 5,
+              beforeRelease: @MainActor () throws -> Void = {}) throws {
         NSApp.postEvent(try mouse(.leftMouseDown, at: start), atStart: false)
         pump(0.1)
         var end = start
@@ -427,6 +436,7 @@ final class LivePopover {
                 pump(0.05)
             }
         }
+        try beforeRelease()
         NSApp.postEvent(try mouse(.leftMouseUp, at: end), atStart: false)
         pump(0.3)
     }
@@ -466,20 +476,29 @@ final class LivePopover {
         return frames
     }
 
-    /// The sliders, top to bottom: each has one focusable view the size of a grabber at rest.
+    /// The popover's sliders, top to bottom: each has one focusable view, the size of its pill.
     func sliders() throws -> [LiveSlider] {
-        let grabbers = views()
-            .filter { $0.acceptsFirstResponder && $0.bounds.size == BandSliderFace.grabSize }
+        let pills = views()
+            .filter { $0.acceptsFirstResponder && $0.bounds.size == LiveSlider.size }
             .map(frame(of:))
             .sorted { $0.minY < $1.minY }
-        try #require(!grabbers.isEmpty, "no slider grabber among the focusable views")
-        return grabbers.map { grabber in
-            LiveSlider(
-                pill: CGRect(x: EmberMetrics.padding, y: grabber.midY - EmberMetrics.sliderHeight / 2,
-                             width: EmberMetrics.width - 2 * EmberMetrics.padding,
-                             height: EmberMetrics.sliderHeight),
-                grabber: grabber)
-        }
+        try #require(!pills.isEmpty, "no slider pill among the focusable views")
+        return pills.map(LiveSlider.init(pill:))
+    }
+
+    /// The Settings range controls' thumbs, row by row and left to right: each has one
+    /// focusable view, the size of its hit target.
+    func rangeThumbs() throws -> [CGRect] {
+        let size = CGSize(width: EmberRangeFace.hitSize, height: EmberRangeFace.hitSize)
+        let thumbs = views()
+            .filter { $0.acceptsFirstResponder && $0.bounds.size == size }
+            .map(frame(of:))
+            .sorted { (a: CGRect, b: CGRect) -> Bool in
+                let sameRow = abs(a.midY - b.midY) <= 1
+                return sameRow ? a.midX < b.midX : a.midY < b.midY
+            }
+        try #require(!thumbs.isEmpty, "no range thumb among the focusable views")
+        return thumbs
     }
 
     // MARK: Pixels
@@ -708,126 +727,121 @@ extension Raster {
 
     // MARK: Slider press and drag
 
-    /// Auto in the afternoon: the value rests on its upper limit. The grabber moves the
-    /// value and leaves the limit; the tick above or below it moves the limit.
+    private static let whiteRange = 0.25...1.0
+
+    private func openAuto(_ extra: [String: Any] = ["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
+        throws -> (LivePopoverFixture, LivePopover, [LiveSlider]) {
+        let fixture = LivePopoverFixture.auto(extra)
+        let live = try LivePopover(fixture.view())
+        let sliders = try live.sliders()
+        try #require(sliders.count == 2, "found \(sliders.count) sliders")
+        return (fixture, live, sliders)
+    }
+
+    /// Auto in the afternoon with a 20–80 % colour temp band: the value rests on its upper
+    /// limit. A press anywhere on the pill, or just above or below it, takes the value there,
+    /// and the limits stay.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func grabberOnItsUpperLimitMovesTheValueAndItsTicksMoveTheLimit() async throws {
+    func aPressAnywhereOnThePillMovesTheValueThere() async throws {
         try inRunLoopTurn {
-            @MainActor func open() throws -> (LivePopoverFixture, LivePopover, LiveSlider) {
-                let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
-                let live = try LivePopover(fixture.view())
-                let slider = try #require(try live.sliders().first)
-                return (fixture, live, slider)
-            }
-            @MainActor func face(_ fixture: LivePopoverFixture, _ slider: LiveSlider) -> BandSliderFace {
-                slider.face(value: fixture.manager.intensity, lower: fixture.manager.adaptiveMin,
-                            upper: fixture.manager.adaptiveMax, range: Self.colorRange, showBand: true)
-            }
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            try #require(abs(manager.intensity - 0.8) < 1e-9, "the value is not on its upper limit: \(manager.intensity)")
+            let color = sliders[0]
 
-            do {
-                let (fixture, live, slider) = try open()
-                defer { live.close(); fixture.retire() }
-                let manager = fixture.manager
-                try #require(abs(manager.intensity - 0.8) < 1e-9, "the value is not on its upper limit: \(manager.intensity)")
-                let start = face(fixture, slider)
-                // The locator and the face agree on where the grabber is.
-                #expect(abs(slider.point(x: start.valueX).x - slider.grabber.midX) < 0.6)
-                #expect(start.upperTickOpacity == 1, "the upper notch is not under the grabber")
+            try live.drag(from: color.point(x: color.x(for: 0.4, range: Self.colorRange), dy: 9), dx: 0)
+            note("slider auto, pressed at 40 %: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - 0.4) < 0.005, "the press did not take the value there")
+            #expect(manager.adaptiveMin == 0.2 && manager.adaptiveMax == 0.8, "the press moved a limit")
 
-                try live.drag(from: slider.point(x: start.valueX), dx: -40)
-                note("slider auto, grabber dragged left 40: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.intensity - (0.8 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
-                #expect(manager.adaptiveMax == 0.8, "the grabber moved the upper limit")
-                #expect(manager.adaptiveMin == 0.2)
-            }
+            // Below the pill's edge, in the few points of slop under it.
+            try live.drag(from: color.point(x: color.x(for: 0.6, range: Self.colorRange),
+                                            dy: EmberMetrics.sliderHeight / 2 + 2.5), dx: 0)
+            note("slider auto, pressed under the pill at 60 %: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - 0.6) < 0.005, "a press just under the pill did not take the value")
 
-            do {
-                let (fixture, live, slider) = try open()
-                defer { live.close(); fixture.retire() }
-                let manager = fixture.manager
-                let start = face(fixture, slider)
-                // The tick shows above and below the grabber, a point inside the pill.
-                try live.drag(from: slider.point(x: start.upperNotchX, dy: -11.5), dx: -40)
-                note("slider auto, tick above dragged left 40: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.adaptiveMax - (0.8 - 40.0 / 254)) < 0.01, "the tick above did not move the limit")
-                #expect(manager.adaptiveMin == 0.2)
+            // Above the pill's edge, in the slop under the header, away from Reset.
+            try live.drag(from: color.point(x: color.x(for: 0.3, range: Self.colorRange),
+                                            dy: -(EmberMetrics.sliderHeight / 2 + 2.5)), dx: 0)
+            note("slider auto, pressed over the pill at 30 %: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - 0.3) < 0.005, "a press just over the pill did not take the value")
 
-                let lowered = manager.adaptiveMax
-                let next = face(fixture, slider)
-                try live.drag(from: slider.point(x: next.upperNotchX, dy: 11.5), dx: 30)
-                note("slider auto, tick below dragged right 30: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.adaptiveMax - (lowered + 30.0 / 254)) < 0.01, "the tick below did not move the limit")
-                #expect(manager.adaptiveMin == 0.2)
-            }
+            // Under Reset the header lies over the slop: a press there never moves the value
+            // (Reset itself answers only on its drawn chip), and the chip still works.
+            let underReset = color.pill.width - 60
+            try live.drag(from: color.point(x: underReset, dy: -(EmberMetrics.sliderHeight / 2 + 2.5)), dx: 0)
+            note("slider auto, pressed over the pill under Reset: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - 0.3) < 0.005, "the slop under Reset took the press")
+            try live.drag(from: color.point(x: underReset, dy: -27), dx: 0)
+            note("slider auto, pressed on Reset: \(fixture.settings[3])")
+            #expect(manager.adaptiveMin == 0 && manager.adaptiveMax == 1, "Reset did not take the press on its chip")
+
+            // The drag follows the pointer.
+            try live.drag(from: color.point(x: color.x(for: 0.6, range: Self.colorRange)), dx: -40)
+            #expect(abs(manager.intensity - (0.6 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
         }
     }
 
-    /// A pinned band is one fixed value. The grabber moves it, and the band stays pinned;
-    /// a tick takes one limit away from the other and leaves that one where it was.
+    /// A drag past either end reaches exactly 100 % and 0 %, in Auto too: the limit in the
+    /// way moves with the value, and the next tick of the curve leaves the value there.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func grabberOnAPinnedBandMovesThePinAndItsTicksWidenTheBand() async throws {
+    func aDragReachesBothEndsAndPushesTheLimitInAuto() async throws {
         try inRunLoopTurn {
-            @MainActor func open() throws -> (LivePopoverFixture, LivePopover, LiveSlider) {
-                let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
-                let live = try LivePopover(fixture.view())
-                let slider = try #require(try live.sliders().first)
-                return (fixture, live, slider)
-            }
-            @MainActor func face(_ fixture: LivePopoverFixture, _ slider: LiveSlider) -> BandSliderFace {
-                slider.face(value: fixture.manager.intensity, lower: fixture.manager.adaptiveMin,
-                            upper: fixture.manager.adaptiveMax, range: Self.colorRange, showBand: true)
-            }
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            let color = sliders[0], white = sliders[1]
+            // From the grabber to a few points past the end of the pill, still in the popover.
+            let startRight = color.x(for: manager.intensity, range: Self.colorRange)
+            try live.drag(from: color.point(x: startRight), dx: color.pill.width + 8 - startRight, steps: 8)
+            note("slider auto, dragged past the right end: \(fixture.settings[3])")
+            #expect(manager.intensity == 1.0, "the drag did not reach 100 %: \(manager.intensity)")
+            #expect(manager.adaptiveMax == 1.0, "the upper limit did not move with the value")
+            #expect(manager.adaptiveMin == 0.2)
+            manager.applyAdaptive()
+            #expect(manager.intensity == 1.0, "the next tick moved the value to \(manager.intensity)")
 
-            do {
-                let (fixture, live, slider) = try open()
-                defer { live.close(); fixture.retire() }
-                let manager = fixture.manager
-                try #require(abs(manager.intensity - 0.6) < 1e-9, "the value is not on the pin: \(manager.intensity)")
-                let start = face(fixture, slider)
-                #expect(start.isPinned)
-                try live.drag(from: slider.point(x: start.valueX), dx: -40)
-                note("slider pinned, grabber dragged left 40: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.intensity - (0.6 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
-                // The limits went with the value: had the press taken a limit, the other would
-                // have stayed at 0.6 and the band would have opened.
-                #expect(manager.adaptiveMin == manager.intensity && manager.adaptiveMax == manager.intensity,
-                        "the band is no longer pinned on the value")
-            }
+            let startLeft = color.x(for: manager.intensity, range: Self.colorRange)
+            try live.drag(from: color.point(x: startLeft), dx: -8 - startLeft, steps: 8)
+            note("slider auto, dragged past the left end: \(fixture.settings[3])")
+            #expect(manager.intensity == 0.0, "the drag did not reach 0 %: \(manager.intensity)")
+            #expect(manager.adaptiveMin == 0.0 && manager.adaptiveMax == 1.0)
+            manager.applyAdaptive()
+            #expect(manager.intensity == 0.0, "the next tick moved the value to \(manager.intensity)")
 
-            do {
-                let (fixture, live, slider) = try open()
-                defer { live.close(); fixture.retire() }
-                let manager = fixture.manager
-                let start = face(fixture, slider)
-                try live.drag(from: slider.point(x: start.valueX, dy: -11.5), dx: -40)
-                note("slider pinned, tick above dragged left 40: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.adaptiveMin - (0.6 - 40.0 / 254)) < 0.01, "the tick did not move the lower limit")
-                #expect(manager.adaptiveMax == 0.6, "the upper limit moved with it")
-            }
-
-            do {
-                let (fixture, live, slider) = try open()
-                defer { live.close(); fixture.retire() }
-                let manager = fixture.manager
-                let start = face(fixture, slider)
-                try live.drag(from: slider.point(x: start.valueX, dy: 11.5), dx: 40)
-                note("slider pinned, tick below dragged right 40: value \(manager.intensity), "
-                     + "limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
-                #expect(abs(manager.adaptiveMax - (0.6 + 40.0 / 254)) < 0.01, "the tick did not move the upper limit")
-                #expect(manager.adaptiveMin == 0.6, "the lower limit moved with it")
-            }
+            let whiteStart = white.x(for: manager.whitepoint, range: Self.whiteRange)
+            try live.drag(from: white.point(x: whiteStart), dx: -8 - whiteStart, steps: 8)
+            note("slider auto, white point dragged past the left end: \(fixture.settings[4])")
+            #expect(manager.whitepoint == 0.25 && manager.adaptiveWpMin == 0.25)
+            try live.drag(from: white.point(x: white.x(for: 0.25, range: Self.whiteRange)),
+                          dx: white.pill.width + 8 - white.x(for: 0.25, range: Self.whiteRange), steps: 8)
+            #expect(manager.whitepoint == 1.0, "the white point did not reach 100 %: \(manager.whitepoint)")
         }
     }
 
-    /// Manual at a preset: a click on the grabber that does not move changes nothing. The
-    /// same press followed by a drag does, so the click did land on the grabber.
+    /// A pinned band is one fixed value: a drag moves it, and the band stays pinned on it.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func clickOnTheGrabberKeepsThePreset() async throws {
+    func aDragMovesAPinnedBandWithTheValue() async throws {
+        try inRunLoopTurn {
+            let (fixture, live, sliders) = try openAuto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            try #require(abs(manager.intensity - 0.6) < 1e-9, "the value is not on the pin: \(manager.intensity)")
+            let color = sliders[0]
+            try live.drag(from: color.point(x: color.x(for: 0.6, range: Self.colorRange)), dx: -40)
+            note("slider pinned, dragged left 40: \(fixture.settings[3])")
+            #expect(abs(manager.intensity - (0.6 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
+            #expect(manager.adaptiveMin == manager.intensity && manager.adaptiveMax == manager.intensity,
+                    "the band is no longer pinned on the value")
+        }
+    }
+
+    /// Manual at a preset: a click on the grabber that does not move changes nothing, so the
+    /// preset stays chosen. The same press followed by a drag does, and a press elsewhere
+    /// takes the value there.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func clickOnTheValueKeepsThePreset() async throws {
         try inRunLoopTurn {
             let fixture = LivePopoverFixture()
             defer { fixture.retire() }
@@ -837,25 +851,117 @@ extension Raster {
             let live = try LivePopover(fixture.view())
             defer { live.close() }
             let slider = try #require(try live.sliders().first)
-            let face = slider.face(value: preset, lower: 0, upper: 1, range: Self.colorRange, showBand: false)
-            #expect(abs(slider.point(x: face.valueX).x - slider.grabber.midX) < 0.6)
+            let valueX = slider.x(for: preset, range: Self.colorRange)
             try #require(manager.activePresetIndex == 3 && manager.intensity == preset)
 
-            try live.drag(from: slider.point(x: face.valueX), dx: 0)
+            try live.drag(from: slider.point(x: valueX), dx: 0)
             note("slider manual, grabber clicked: value \(manager.intensity), "
                  + "preset \(String(describing: manager.activePresetIndex))")
             #expect(manager.intensity == preset, "a click on the grabber changed the value")
             #expect(manager.activePresetIndex == 3, "a click on the grabber deselected the preset")
 
             // A point beside the centre of the grabber, still on it: the same.
-            try live.drag(from: slider.point(x: face.valueX + 1.5, dy: 5), dx: 0)
+            try live.drag(from: slider.point(x: valueX + 1.5, dy: 5), dx: 0)
             #expect(manager.intensity == preset && manager.activePresetIndex == 3)
 
-            try live.drag(from: slider.point(x: face.valueX), dx: -30)
+            try live.drag(from: slider.point(x: valueX), dx: -30)
             note("slider manual, grabber dragged left 30: value \(manager.intensity), "
                  + "preset \(String(describing: manager.activePresetIndex))")
             #expect(abs(manager.intensity - (preset - 30.0 / 254)) < 0.01, "the value did not follow the drag")
             #expect(manager.activePresetIndex == nil)
+
+            try live.drag(from: slider.point(x: slider.x(for: 0.9, range: Self.colorRange)), dx: 0)
+            #expect(abs(manager.intensity - 0.9) < 0.005, "a press on the track did not take the value there")
+        }
+    }
+
+    // MARK: Auto range in Settings
+
+    /// Dragging a limit shows it on the displays while the button is down, and the release
+    /// goes back to the real value, with the limit kept.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aRangeThumbPreviewsItsLimitWhileDragged() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
+            defer { fixture.retire() }
+            let manager = fixture.manager
+            let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
+            defer { live.close() }
+            let thumbs = try live.rangeThumbs()
+            note("range: thumbs \(thumbs)")
+            try #require(thumbs.count == 4, "found \(thumbs.count) range thumbs")
+            let lower = thumbs[0]
+            try live.drag(from: CGPoint(x: lower.midX, y: lower.midY), dx: 40) {
+                let shown = fixture.gamma.applyCalls.last?.intensity
+                note("range: while the lower limit is dragged, limits \(manager.adaptiveMin)...\(manager.adaptiveMax), "
+                     + "displays at \(String(describing: shown))")
+                #expect(manager.adaptiveMin > 0.3, "the drag did not move the lower limit")
+                #expect(shown.map { abs(Double($0) - manager.adaptiveMin) < 1e-6 } == true,
+                        "the displays do not show the limit being dragged")
+            }
+            let shown = fixture.gamma.applyCalls.last?.intensity
+            note("range: released, limits \(manager.adaptiveMin)...\(manager.adaptiveMax), value \(manager.intensity), "
+                 + "displays at \(String(describing: shown))")
+            #expect(manager.adaptiveMax == 0.8)
+            #expect(shown.map { abs(Double($0) - manager.intensity) < 1e-6 } == true,
+                    "the release did not go back to the real value")
+            // The value is still the afternoon's: the top of the band.
+            #expect(abs(manager.intensity - 0.8) < 1e-9)
+        }
+    }
+
+    /// A band pinned from the CLI shows its two thumbs on one spot. A drag takes them apart
+    /// in its own direction; the keys move a focused thumb.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func stackedRangeThumbsComeApartInTheDragsDirection() async throws {
+        try inRunLoopTurn {
+            for dx: CGFloat in [-30, 30] {
+                let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
+                defer { fixture.retire() }
+                let manager = fixture.manager
+                let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
+                defer { live.close() }
+                let thumbs = try live.rangeThumbs()
+                try #require(thumbs.count == 4)
+                #expect(thumbs[0] == thumbs[1], "the pinned band's thumbs are not on one spot")
+                try live.drag(from: CGPoint(x: thumbs[0].midX, y: thumbs[0].midY), dx: dx)
+                note("range pinned, dragged \(dx): limits \(manager.adaptiveMin)...\(manager.adaptiveMax)")
+                if dx < 0 {
+                    #expect(manager.adaptiveMin < 0.6 - 0.05 + 1e-9 && manager.adaptiveMax == 0.6)
+                } else {
+                    #expect(manager.adaptiveMax > 0.6 + 0.05 - 1e-9 && manager.adaptiveMin == 0.6)
+                }
+            }
+        }
+    }
+
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func tabReachesEachRangeThumbAndTheKeysMoveIt() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
+            defer { fixture.retire() }
+            let manager = fixture.manager
+            let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)))
+            defer { live.close() }
+            let thumbs = try live.rangeThumbs()
+            try #require(thumbs.count == 4)
+            let stops = try tabRound(live)
+            note("range: Tab stops \(stops)")
+            for thumb in thumbs { #expect(stops.filter { $0 == thumb }.count == 1, "Tab did not stop once at \(thumb)") }
+            // Back to the colour temp's lower limit.
+            for _ in 0..<stops.count where live.focusFrame != thumbs[0] { try live.key(.tab) }
+            try #require(live.focusFrame == thumbs[0], "Tab never came to the lower limit: \(live.focusDescription)")
+            try live.key(.left)
+            #expect(abs(manager.adaptiveMin - 0.19) < 1e-9, "Left did not lower the limit by 1 %: \(manager.adaptiveMin)")
+            try live.key(.home)
+            #expect(manager.adaptiveMin == 0, "Home did not take the limit to 0 %: \(manager.adaptiveMin)")
+            try live.key(.right, shift: true)
+            #expect(abs(manager.adaptiveMin - 0.1) < 1e-9, "Shift-Right did not raise the limit by 10 %")
+            // The upper limit cannot come closer than 5 %.
+            try live.key(.tab)
+            try live.key(.home)
+            #expect(abs(manager.adaptiveMax - 0.15) < 1e-9, "the upper limit went to \(manager.adaptiveMax)")
+            #expect(manager.intensity == manager.adaptiveMax, "Auto did not land in the new range at once")
         }
     }
 
@@ -878,39 +984,24 @@ extension Raster {
         return stops
     }
 
-    /// What has the keyboard when the popover opens, and where Tab and the arrows take it.
-    /// The values rest on their upper limits, as they do by day: the stops that lie on top
-    /// of each other.
+    /// What has the keyboard when the popover opens, and where Tab and the keys take it. Auto
+    /// in the afternoon with a 20–80 % band: the values rest on their upper limits.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
-    func opensWithNoControlFocusedAndTabReachesEveryHandle() async throws {
+    func opensWithNoControlFocusedAndTabVisitsEachSliderOnce() async throws {
         try inRunLoopTurn {
-            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8])
-            defer { fixture.retire() }
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
             let manager = fixture.manager
-            let live = try LivePopover(fixture.view())
-            defer { live.close() }
-            let sliders = try live.sliders()
-            try #require(sliders.count == 2)
             let color = sliders[0], white = sliders[1]
             try #require(abs(manager.intensity - 0.8) < 1e-9 && manager.whitepoint == manager.adaptiveWpMax,
                          "the values are not on their upper limits")
-            @MainActor func colorFace() -> BandSliderFace {
-                color.face(value: manager.intensity, lower: manager.adaptiveMin, upper: manager.adaptiveMax,
-                           range: Self.colorRange, showBand: true)
+            // A column a point left of the grabber's centre, with bare fill 14 pt left of it.
+            @MainActor func grabberHeight(_ slider: LiveSlider, _ value: Double, _ range: ClosedRange<Double>) throws -> CGFloat {
+                try live.markHeight(in: slider, x: slider.x(for: value, range: range) - 1)
             }
-            @MainActor func whiteFace() -> BandSliderFace {
-                white.face(value: manager.whitepoint, lower: manager.adaptiveWpMin, upper: manager.adaptiveWpMax,
-                           range: 0.25...1.0, showBand: true)
-            }
-            // A column a point left of the grabber's centre is the grabber alone, clear of
-            // the tick of the limit it rests on.
-            @MainActor func grabberHeight(_ slider: LiveSlider, _ face: BandSliderFace) throws -> CGFloat {
-                try live.markHeight(in: slider, x: face.valueX - 1)
-            }
-            @MainActor func lowerNotchHeight() throws -> CGFloat {
-                try live.markHeight(in: color, x: colorFace().lowerNotchX, clear: 12)
-            }
-            let rest = 14.5...17.0, notchRest = 7.0...9.0
+            @MainActor func colorGrabber() throws -> CGFloat { try grabberHeight(color, manager.intensity, Self.colorRange) }
+            @MainActor func whiteGrabber() throws -> CGFloat { try grabberHeight(white, manager.whitepoint, Self.whiteRange) }
+            let rest = 14.5...17.0
 
             let loop = live.keyViewLoop()
             note("focus on open: first responder \(live.focusDescription); keyboard navigation "
@@ -918,18 +1009,12 @@ extension Raster {
                  + "window key \(live.window.isKeyWindow)")
             note("focus: Tab stops \(loop)")
 
-            // The keyboard starts with the popover's own root view: no control has it. (The
-            // keys below go nowhere else: a window that is its own first responder answers
-            // a key it has no use for with the alert sound.)
+            // The keyboard starts with the popover's own root view: no control has it.
             let startsOnRoot = live.window.firstResponder === live.scroll
             try #require(startsOnRoot, "the first responder is \(live.focusDescription)")
-            // No handle is drawn focused before a key is pressed.
-            let atOpen = (try grabberHeight(color, colorFace()), try grabberHeight(white, whiteFace()),
-                          try lowerNotchHeight())
-            note("focus on open: grabbers drawn \(atOpen.0) and \(atOpen.1) pt tall (rest 16, focused 22), "
-                 + "lower limit \(atOpen.2) pt (rest 8, focused 22)")
+            let atOpen = (try colorGrabber(), try whiteGrabber())
+            note("focus on open: grabbers drawn \(atOpen.0) and \(atOpen.1) pt tall (rest 16, focused 22)")
             #expect(rest.contains(atOpen.0) && rest.contains(atOpen.1), "a grabber is not at rest")
-            #expect(notchRest.contains(atOpen.2), "the lower limit is not at rest")
 
             // Space and the arrows change nothing there, and nothing shows focus after them.
             let before = fixture.settings
@@ -938,64 +1023,51 @@ extension Raster {
                 #expect(fixture.settings == before, "\(key) changed \(zip(before, fixture.settings).filter { $0 != $1 })")
                 #expect(live.popover.isShown)
             }
-            #expect(rest.contains(try grabberHeight(color, colorFace())))
-            #expect(notchRest.contains(try lowerNotchHeight()))
+            #expect(rest.contains(try colorGrabber()))
 
-            // The first Tab goes to the first handle, the colour temp's lower limit, which
-            // now shows its focus. An arrow moves it by 1 % and nothing else.
-            try #require(loop.count >= 7)
+            // The first Tab goes to the colour temp slider, which shows its focus. The arrows
+            // move it by 1 % and leave the limits; End and Home take it to the ends, moving
+            // the limit in the way.
+            try #require(loop.count >= 3)
             try live.key(.tab)
-            #expect(live.focusFrame == loop[0], "the first Tab went to \(live.focusDescription)")
-            let notchFocused = try lowerNotchHeight()
-            note("focus: after Tab the lower limit is drawn \(notchFocused) pt tall")
-            #expect(notchFocused > 20, "the lower limit does not show the focus Tab gave it")
-            try live.key(.left)
-            #expect(abs(manager.adaptiveMin - 0.19) < 1e-9 && manager.adaptiveMax == 0.8
-                    && abs(manager.intensity - 0.8) < 1e-9, "Left on the lower limit: \(fixture.settings[3])")
-            try live.key(.right)
-            #expect(abs(manager.adaptiveMin - 0.2) < 1e-9)
-
-            // The second goes to the value, which rests on its upper limit. It shows its
-            // focus, the limit behind it is at rest again, and an arrow moves the value by
-            // 1 % and leaves the limit.
-            try live.key(.tab)
-            #expect(live.focusFrame == color.grabber, "the second Tab went to \(live.focusDescription)")
-            let focused = try grabberHeight(color, colorFace())
-            note("focus: after the second Tab the grabber is drawn \(focused) pt tall")
+            #expect(live.focusFrame == color.pill, "the first Tab went to \(live.focusDescription)")
+            let focused = try colorGrabber()
+            note("focus: after Tab the colour temp grabber is drawn \(focused) pt tall")
             #expect(focused > 20, "the grabber does not show the focus Tab gave it")
-            #expect(notchRest.contains(try lowerNotchHeight()), "the lower limit still shows focus")
             try live.key(.left)
-            note("focus: Left on the value: \(fixture.settings[3])")
+            note("focus: Left on the colour temp: \(fixture.settings[3])")
             #expect(abs(manager.intensity - 0.79) < 1e-9, "Left did not lower the value by 1 %")
-            #expect(abs(manager.adaptiveMin - 0.2) < 1e-9 && manager.adaptiveMax == 0.8, "Left moved a limit")
+            #expect(manager.adaptiveMin == 0.2 && manager.adaptiveMax == 0.8, "Left moved a limit")
             try live.key(.right)
             #expect(abs(manager.intensity - 0.8) < 1e-9)
+            try live.key(.left, shift: true)
+            #expect(abs(manager.intensity - 0.7) < 1e-9, "Shift-Left did not lower the value by 10 %")
+            try live.key(.end)
+            note("focus: End on the colour temp: \(fixture.settings[3])")
+            #expect(manager.intensity == 1.0 && manager.adaptiveMax == 1.0, "End did not reach 100 %")
+            try live.key(.home)
+            note("focus: Home on the colour temp: \(fixture.settings[3])")
+            #expect(manager.intensity == 0.0 && manager.adaptiveMin == 0.0, "Home did not reach 0 %")
+            try live.key(.end)
 
-            // Tab goes round every stop and comes back: both sliders' three handles and the
-            // bedtime field. (With keyboard navigation on, the buttons as well.)
+            // Tab goes round every stop once and comes back: both sliders and the bedtime
+            // field. (With keyboard navigation on, the buttons as well.)
             let stops = try tabRound(live) { stop in
-                if stop == loop[2] {
-                    // The upper limit, under the grabber: focused, it is drawn in line with
-                    // the grabber and over it, as one taller bar.
-                    #expect(try grabberHeight(color, colorFace()) > 20,
-                            "the upper limit does not show its focus over the grabber")
-                }
-                guard stop == white.grabber else { return }
-                #expect(try grabberHeight(white, whiteFace()) > 20,
-                        "the white point grabber does not show the focus Tab gave it")
-                // The colour temp's grabber is at rest again now that the focus has moved on.
-                #expect(rest.contains(try grabberHeight(color, colorFace())),
-                        "the colour temp grabber still shows focus")
+                guard stop == white.pill else { return }
+                #expect(try whiteGrabber() > 20, "the white point grabber does not show the focus Tab gave it")
+                #expect(rest.contains(try colorGrabber()), "the colour temp grabber still shows focus")
+                let whitepoint = manager.whitepoint
                 try live.key(.left)
-                #expect(abs(manager.whitepoint - (manager.adaptiveWpMax - 0.01)) < 1e-9,
-                        "Left on the white point's value did not lower it by 1 %")
+                #expect(abs(manager.whitepoint - (whitepoint - 0.01)) < 1e-9,
+                        "Left on the white point did not lower it by 1 %")
                 try live.key(.right)
             }
             note("focus: a round of Tab visited \(stops)")
             #expect(Set(stops.map { "\($0)" }) == Set(loop.map { "\($0)" }), "Tab did not visit every stop")
             #expect(stops.count == loop.count, "Tab visited a stop twice in one round")
+            #expect(stops.filter { $0 == color.pill }.count == 1 && stops.filter { $0 == white.pill }.count == 1)
             let picker = try #require(live.views().compactMap { $0 as? NSDatePicker }.first)
-            #expect(stops.contains(white.grabber) && stops.contains(live.frame(of: picker)))
+            #expect(stops.contains(live.frame(of: picker)))
         }
     }
 
@@ -1027,19 +1099,16 @@ extension Raster {
         }
     }
 
-    /// A pinned band has its three handles on one spot. Tab still goes through all of them
-    /// and on to the next slider.
+    /// A pinned band changes nothing about the Tab order: each slider is one stop.
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
     func tabGoesThroughAPinnedBand() async throws {
         try inRunLoopTurn {
-            let fixture = LivePopoverFixture.auto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
-            defer { fixture.retire() }
-            let live = try LivePopover(fixture.view())
-            defer { live.close() }
+            let (fixture, live, _) = try openAuto(["redlight.adaptiveMin": 0.6, "redlight.adaptiveMax": 0.6])
+            defer { live.close(); fixture.retire() }
             let loop = live.keyViewLoop()
             let stops = try tabRound(live)
             note("focus pinned: Tab stops \(loop), a round visited \(stops)")
-            try #require(loop.count >= 7)
+            try #require(loop.count >= 3)
             #expect(Set(stops.map { "\($0)" }) == Set(loop.map { "\($0)" }), "Tab did not visit every stop")
             #expect(stops.count == loop.count, "Tab visited a stop twice in one round")
         }

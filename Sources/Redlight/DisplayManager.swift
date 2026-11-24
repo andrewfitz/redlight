@@ -62,7 +62,7 @@ final class DisplayManager {
     /// untouched display (0.0 is pure red), and `whitepoint` 1.0 is no white-point reduction.
     /// Intensity defaults to its full range. White Point starts at the Late preset's
     /// 0.30 anchor so factory adaptive values are not silently stretched down to 0.25;
-    /// users can still drag that band marker to the slider's 0.25 floor.
+    /// users can still take that limit to the slider's 0.25 floor.
     enum Defaults {
         static let intensity = 1.0
         static let intensityMin = 0.0
@@ -316,6 +316,48 @@ final class DisplayManager {
     var isWhitepointPinned: Bool { adaptiveWpMin == adaptiveWpMax }
 
     var adaptiveIntensityAdjustment: Double { adaptiveIntensityOffset }
+
+    // MARK: - Slider writes
+
+    /// What the popover's colour temp slider writes: any value from 0 to 1, in Auto too.
+    ///
+    /// In Auto a value outside the band first moves the nearer limit out to it, so the band
+    /// does not clamp the value back. The curve is then worked out again for the wider band
+    /// before the value is written, so the offset the value leaves behind is measured against
+    /// the curve the next tick uses: the screen stays where the slider put it. A pinned band
+    /// is left to `intensity`'s own rule, which moves the pin with the value.
+    func setIntensityPushingBand(_ value: Double) {
+        guard value.isFinite else { return }
+        let v = clamp(value, to: 0...1)
+        if adaptiveEnabled, !isIntensityPinned, !intensityBand.contains(v) {
+            setInternal {
+                if v > adaptiveMax { adaptiveMax = v } else { adaptiveMin = v }
+            }
+            rebaseAdaptiveCurve()
+        }
+        intensity = v
+    }
+
+    /// The same for the white point slider, over 0.25…1.
+    func setWhitepointPushingBand(_ value: Double) {
+        guard value.isFinite else { return }
+        let v = clamp(value, to: 0.25...1)
+        if adaptiveEnabled, !isWhitepointPinned, !whitepointBand.contains(v) {
+            setInternal {
+                if v > adaptiveWpMax { adaptiveWpMax = v } else { adaptiveWpMin = v }
+            }
+            rebaseAdaptiveCurve()
+        }
+        whitepoint = v
+    }
+
+    /// Refreshes the curve values an Auto nudge is measured against, after a limit moved,
+    /// without touching the outputs or the displays. Without a location there is no curve,
+    /// and the nudge waits as a pending value, as it does for any slider write.
+    private func rebaseAdaptiveCurve() {
+        guard adaptiveEnabled else { return }
+        _ = resolveAdaptiveTarget()
+    }
 
     /// "Deepest by": Adaptive reaches the deepest end of its band by this local time. Nil is off.
     private(set) var bedtime: Bedtime?
@@ -689,7 +731,7 @@ final class DisplayManager {
     // desired value until the curve resolves, then convert it to the usual persistent offset.
     @ObservationIgnored private var pendingAdaptiveIntensity: Double?
     @ObservationIgnored private var pendingAdaptiveWhitepoint: Double?
-    // Transient live-preview overrides while a band marker is being dragged.
+    // Transient live-preview overrides while an Auto range limit is being dragged.
     @ObservationIgnored private var previewIntensityValue: Double?
     @ObservationIgnored private var previewWhitepointValue: Double?
     // Transient rendered-output overrides used by the Adaptive and preset crossfades.
@@ -1905,9 +1947,9 @@ final class DisplayManager {
         stopTransitionTimerIfIdle()
     }
 
-    // MARK: - Band marker live preview
+    // MARK: - Range limit live preview
 
-    /// Temporarily drive the live filter to `v` (a dragged intensity-band marker) without
+    /// Temporarily drive the live filter to `v` (an Auto range limit being dragged) without
     /// touching stored state, so the user sees that intensity in real time.
     func previewIntensity(_ v: Double) {
         guard !isTerminating else { return }
@@ -1939,7 +1981,7 @@ final class DisplayManager {
 
     // MARK: - Band change coalescing
 
-    /// A marker drag writes `adaptiveMin/Max` dozens of times per second; recomputing the
+    /// A limit drag writes `adaptiveMin/Max` dozens of times per second; recomputing the
     /// solar curve and rewriting UserDefaults on each tick is wasteful, and the marker's
     /// `previewIntensity` already drives the visible filter during the drag. Coalesce to
     /// a trailing edge; `endPreview()` (drag release) flushes immediately.

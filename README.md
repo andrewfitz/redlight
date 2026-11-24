@@ -7,7 +7,7 @@ the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Contro
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset, showing a monitor and a Sidecar iPad at the top, the next solar event, the sun arc with sunrise and sunset times, Color Temp and White Point sliders with their Auto limits, Deepest by and Location, and Pause at the bottom" height="420"></picture>
+<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset, showing a monitor and a Sidecar iPad at the top, the next solar event, the sun arc with sunrise and sunset times, Color Temp and White Point sliders, Deepest by and Settings, with Pause and the light/dark switch in the header" height="420"></picture>
   <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing the Redlight README" height="420"></p>
 
 ## tl;dr
@@ -43,7 +43,7 @@ Free open source blue light filter mac app that:
 - The headline names the next solar event, such as “Sunset in 1 h 12 m”
 - **Deepest by** sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
 - **Manual location**: enter a latitude and longitude in Settings instead of granting Location access
-- **Band limits**: in Auto, each slider shows its allowed range with the limits labelled beneath it. Drag a limit's mark to set a hard minimum or maximum; when the handle rests on a limit, drag the tick above or below it. Moving the handle inside the range shifts the curve without leaving Auto
+- **Auto range**: set a hard minimum and maximum for each slider in Settings › Auto range. In the popover, the stretch from the value up to the maximum is tinted. Moving a slider shifts the curve without leaving Auto, and dragging past the range moves its limit with you, so 0% and 100% are always reachable
 - **Fixed values**: set equal limits with the CLI to keep one slider fixed while the other follows the sun. For example, `redlight limits whitepoint 80 80` holds White Point at 80%
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
 
@@ -105,13 +105,13 @@ for Day and Warm, two for Sunset and Night, and three for Late.
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
 - Your displays are listed at the top: switch each one on or off, and click **Invert** to flip its colors
 - Choose **Auto** to let the sun drive the filter, or **Manual** to hold a setting
-- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness; drag a limit's mark to set its range. **Deepest by** sits beneath the sliders
+- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness. Press anywhere on a slider to set it there; drag to either end for exactly 0% or 100%. **Deepest by** sits beneath the sliders
 - In **Manual**, click a preset to jump to it, or drag the sliders. **Save to a preset…** turns the presets into overwrite targets
 - **Reset** appears beside a slider's value when it differs from the default; it restores the value and clears its limits
 - The **pause** button beside the header switch suspends the tint for 30 minutes and turns into a play button that resumes it. Its chevron offers 1 hour, 2 hours and Until sunrise
 - The moon or sun button beside it switches the system appearance
-- **Settings** at the bottom opens location for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit. A dot on it means an update or a login item is waiting
-- Press Tab to move between controls, the arrow keys to adjust a focused slider, and Esc to close the popover
+- **Settings** at the bottom opens location and range for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit. A dot on it means an update or a login item is waiting
+- Press Tab to move between controls, the arrow keys to adjust a focused slider (Shift for 10% steps, Home and End for the ends), and Esc to close the popover
 
 ### Pause
 

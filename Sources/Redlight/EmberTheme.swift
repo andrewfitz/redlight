@@ -194,7 +194,7 @@ struct EmberPalette: Equatable, Sendable {
         case grabber
         /// A handle that is pressed or has keyboard focus, and a switch knob: the solid ink.
         case solid
-        /// A slider's limit notch: visible, but quieter than the grabber.
+        /// A quiet mark, visible but softer than the grabber: an off switch's knob.
         case notch
         /// The check on a preset swatch.
         case check

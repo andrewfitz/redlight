@@ -161,8 +161,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 /// The popover's root view, and what has the keyboard when the popover opens.
 ///
 /// The popover's window starts with its content view as first responder, or, when that
-/// declines, with the first view Tab would stop at. In Auto that was the colour temp's
-/// lower limit, so an arrow key pressed on a popover that had just opened moved a limit.
+/// declines, with the first view Tab would stop at. That is the colour temp slider, so an
+/// arrow key pressed on a popover that had just opened would move the colour temp.
 /// On a page with no Tab stop it was the window itself, and Escape, which SwiftUI only
 /// hears from inside its own views, did not close the popover.
 ///

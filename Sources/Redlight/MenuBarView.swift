@@ -712,44 +712,46 @@ struct LocationRow: View {
 
 // MARK: - Sliders
 
-/// A slider with its header row. The bindings are made here, so a drag re-evaluates this
-/// row and nothing above it.
+/// A slider with its header row. The slider is read and written here, so a drag
+/// re-evaluates this row and nothing above it.
+///
+/// The slider sets the value only. In Auto it shows the band read-only, and a value taken
+/// past either limit moves that limit with it (`DisplayManager.setIntensityPushingBand`), so
+/// the whole range is always reachable. The limits themselves are set in Settings.
 struct SliderRow: View {
-    enum Channel { case color, whitepoint }
+    enum Channel {
+        case color, whitepoint
 
-    @Bindable var manager: DisplayManager
+        var title: String { self == .color ? "Color temp" : "White point" }
+        var range: ClosedRange<Double> { self == .color ? 0...1 : 0.25...1 }
+    }
+
+    let manager: DisplayManager
     let channel: Channel
     let dispatch: PopoverDispatch
 
     var body: some View {
+        let auto = manager.adaptiveEnabled
         VStack(alignment: .leading, spacing: 5) {
             SliderHeader(manager: manager, channel: channel, dispatch: dispatch)
+                // Over the slider's slop: where Reset's hit area and the slop meet, Reset wins.
+                .zIndex(1)
             switch channel {
             case .color:
-                BandSlider(
-                    value: $manager.intensity,
-                    lowerBound: $manager.adaptiveMin,
-                    upperBound: $manager.adaptiveMax,
-                    range: 0.0...1.0,
-                    showBand: manager.adaptiveEnabled,
-                    label: "Color Temp",
-                    tone: .accent,
-                    onPreview: { manager.previewIntensity($0) },
-                    onPreviewEnd: { manager.endPreview() },
+                EmberSlider(
+                    value: manager.intensity, range: channel.range,
+                    band: auto ? manager.intensityBand : nil,
+                    label: channel.title, tone: .accent,
+                    onChange: { manager.setIntensityPushingBand($0) },
                     onInteractionBegin: { manager.beginSliderInteraction() },
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
             case .whitepoint:
-                BandSlider(
-                    value: $manager.whitepoint,
-                    lowerBound: $manager.adaptiveWpMin,
-                    upperBound: $manager.adaptiveWpMax,
-                    range: 0.25...1.0,
-                    showBand: manager.adaptiveEnabled,
-                    label: "White Point",
-                    tone: .soft,
-                    onPreview: { manager.previewWhitepoint($0) },
-                    onPreviewEnd: { manager.endPreview() },
+                EmberSlider(
+                    value: manager.whitepoint, range: channel.range,
+                    band: auto ? manager.whitepointBand : nil,
+                    label: channel.title, tone: .soft,
+                    onChange: { manager.setWhitepointPushingBand($0) },
                     onInteractionBegin: { manager.beginSliderInteraction() },
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
@@ -767,9 +769,11 @@ struct SliderHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(channel == .color ? "Color temp" : "White point")
+            // The slider carries the name and the value for VoiceOver.
+            Text(channel.title)
                 .font(.ember(12))
                 .foregroundStyle(palette.secondary)
+                .accessibilityHidden(true)
             Spacer(minLength: 0)
             if showsReset {
                 let help = channel == .color ? "Reset color temp and its limits to default"
@@ -806,13 +810,9 @@ struct SliderHeader: View {
         return isAuto || !hasPreset || !autoSettingsAreDefault
     }
 
-    /// The value the slider shows: under Auto it is held inside the band.
+    /// The value the slider shows, which is the one on screen.
     private var value: Double {
-        let raw = channel == .color ? manager.intensity : manager.whitepoint
-        guard manager.adaptiveEnabled else { return raw }
-        return channel == .color
-            ? BandSliderCore.clampToBand(raw, lower: manager.adaptiveMin, upper: manager.adaptiveMax)
-            : BandSliderCore.clampToBand(raw, lower: manager.adaptiveWpMin, upper: manager.adaptiveWpMax)
+        channel == .color ? manager.intensity : manager.whitepoint
     }
 }
 

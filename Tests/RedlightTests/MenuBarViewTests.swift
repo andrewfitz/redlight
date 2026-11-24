@@ -81,6 +81,12 @@ struct AccessibilityTree {
     /// Activates the element as VoiceOver's "press" does.
     @discardableResult
     static func press(_ node: Node) -> Bool { flag(node.object, "accessibilityPerformPress") }
+
+    /// Steps a slider up or down, as VoiceOver's increment and decrement do.
+    @discardableResult
+    static func increment(_ node: Node) -> Bool { flag(node.object, "accessibilityPerformIncrement") }
+    @discardableResult
+    static func decrement(_ node: Node) -> Bool { flag(node.object, "accessibilityPerformDecrement") }
 }
 
 @MainActor @Suite struct MenuBarViewTests {
@@ -404,7 +410,7 @@ struct AccessibilityTree {
     }
 
     /// A popover that has just opened has no control focused. Left to itself the window
-    /// starts on the first Tab stop, which in Auto is the colour temp's lower limit: an arrow
+    /// starts on the first Tab stop, which is the colour temp slider: an arrow
     /// key would move it. The root view takes the keyboard instead, closes on Escape, and
     /// lets every other key end there without the alert sound.
     @Test func popoverOpensWithTheKeyboardOnItsRootView() async throws {
@@ -452,6 +458,90 @@ struct AccessibilityTree {
         }
         #expect(cancels == 2)
         #expect(before == (manager.intensity, manager.adaptiveMin, manager.adaptiveMax, manager.isOn))
+    }
+
+    /// Each popover slider is one element named by its header, with its value in percent,
+    /// that VoiceOver can step. In Auto a step past a limit takes the limit along.
+    @Test func eachSliderIsOneAccessibleSliderThatSteps() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        for (key, value) in ["redlight.adaptiveEnabled": true, "redlight.adaptiveMin": 0.2,
+                             "redlight.adaptiveMax": 0.8] as [String: Any] {
+            defaults.set(value, forKey: key)
+        }
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location, now: { Self.evening })
+        let hosted = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager)))
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+        for name in ["Color temp", "White point"] {
+            let nodes = tree.named(name)
+            #expect(nodes.count == 1, "\(name) is named \(nodes.count) times: \(nodes.map(\.role))")
+            #expect(nodes.first?.role == NSAccessibility.Role.slider.rawValue)
+        }
+        // No limit handles any more.
+        #expect(!tree.names.contains { $0.contains("minimum") || $0.contains("maximum") })
+        let color = try #require(tree.first("Color temp"))
+        #expect(color.value == SliderCore.spokenPercent(manager.intensity))
+
+        let before = manager.intensity
+        #expect(AccessibilityTree.increment(color))
+        tree = await accessibility(of: hosted.document)
+        #expect(manager.intensity > before, "increment did not raise the colour temp")
+        manager.setIntensityPushingBand(0.8)
+        for _ in 0..<40 {
+            guard manager.intensity < 1, let node = tree.first("Color temp") else { break }
+            AccessibilityTree.increment(node)
+            tree = await accessibility(of: hosted.document)
+        }
+        #expect(manager.intensity == 1, "stepping up stopped at \(manager.intensity)")
+        #expect(manager.adaptiveMax == 1, "the upper limit did not come along")
+        #expect(AccessibilityTree.decrement(try #require(tree.first("Color temp"))))
+        #expect(manager.intensity < 1)
+    }
+
+    /// Settings has the Auto range card after the location: a range control for each
+    /// channel, each with two named sliders, and Reset for a range that is not the default.
+    @Test func settingsShowsTheAutoRangeCard() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        defaults.set(0.2, forKey: "redlight.adaptiveMin")
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location, now: { Self.evening })
+        let hosted = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                                                initialState: MenuBarInitialState(updateAvailable: false),
+                                                initialPage: .settings))
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+        let title = try #require(tree.index(AutoRangeCard.title), "no Auto range card: \(tree.names)")
+        let location_ = try #require(tree.index("Location for Auto"))
+        #expect(location_ < title, "the card is not after the location")
+        for name in ["Color temp minimum", "Color temp maximum", "White point minimum", "White point maximum"] {
+            let nodes = tree.named(name)
+            #expect(nodes.count == 1, "\(name) is named \(nodes.count) times")
+            #expect(nodes.first?.role == NSAccessibility.Role.slider.rawValue)
+        }
+        #expect(tree.first("Color temp minimum")?.value == "20 percent")
+        #expect(tree.first("White point minimum")?.value == "30 percent")
+        let titleIndex = try #require(tree.index("Color temp minimum"))
+        #expect(title < titleIndex)
+
+        // A step on a limit applies it.
+        #expect(AccessibilityTree.increment(try #require(tree.first("Color temp minimum"))))
+        tree = await accessibility(of: hosted.document)
+        #expect(manager.adaptiveMin > 0.2)
+
+        // Reset is there for the colour temp only, and restores its range alone.
+        let reset = "Reset the color temp range to 0–100%"
+        #expect(tree.named(reset).count == 1)
+        #expect(tree.named("Reset the white point range to 30–100%").isEmpty)
+        let intensity = manager.intensity
+        tree = try await press(reset, in: hosted.document)
+        #expect(manager.adaptiveMin == 0 && manager.adaptiveMax == 1)
+        #expect(manager.intensity == intensity, "Reset of the range changed the value in Manual")
+        #expect(tree.named(reset).isEmpty)
     }
 
     @Test func sunArcAccessibilityReportsCurrentElevationWithoutPhaseJargon() {

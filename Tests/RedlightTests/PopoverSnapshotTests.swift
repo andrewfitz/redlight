@@ -135,6 +135,25 @@ struct PopoverState {
         PopoverState("pinned-band", defaults: adaptive([
             "redlight.adaptiveWpMin": 0.6, "redlight.adaptiveWpMax": 0.6,
         ])),
+        // The owner's saved Auto: colour temp limits 59.5–91.8 %, the white point pinned at 100 %.
+        PopoverState("auto-owner", defaults: adaptive([
+            "redlight.adaptiveMin": 0.595, "redlight.adaptiveMax": 0.918,
+            "redlight.adaptiveWpMin": 1.0, "redlight.adaptiveWpMax": 1.0,
+        ])),
+        // A drag past Auto's limits: the colour temp to 100 % and the white point to its
+        // floor, each taking its limit along.
+        PopoverState("auto-pushed", defaults: adaptive([
+            "redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 0.8,
+            "redlight.adaptiveWpMin": 0.45, "redlight.adaptiveWpMax": 1.0,
+        ])) {
+            $0.manager.setIntensityPushingBand(1.0)
+            $0.manager.setWhitepointPushingBand(0.25)
+        },
+        // The Auto range card with ranges that are not the default, one of them pinned.
+        PopoverState("settings-auto-range", defaults: adaptive([
+            "redlight.adaptiveMin": 0.595, "redlight.adaptiveMax": 0.918,
+            "redlight.adaptiveWpMin": 1.0, "redlight.adaptiveWpMax": 1.0,
+        ])).showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
         PopoverState("sliders-nondefault") {
             $0.manager.intensity = 0.62
             $0.manager.whitepoint = 0.8
