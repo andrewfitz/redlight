@@ -946,10 +946,11 @@ struct SettingsNotice: Equatable {
     }
 }
 
-/// Pause and Resume are one button whose face changes, so keyboard and VoiceOver focus stay
-/// on it when a pause starts or ends. Unpaused it is the leading part of a split pill: it
-/// pauses for 30 minutes and the chevron beside it unfolds the other lengths. Paused it is
-/// the whole pill, in the committed-action fill.
+/// Pause and Resume are one button whose glyph changes, so keyboard and VoiceOver focus stay
+/// on it when a pause starts or ends. It is the leading part of a split pill whose chevron
+/// unfolds the other lengths. The pill keeps its size and fill in both states, so nothing
+/// beside it moves: paused, the pause glyph becomes a play glyph in the accent, and the
+/// chevron dims because there are no other lengths to choose.
 private struct PauseControl: View {
     let isPaused: Bool
     let isExpanded: Bool
@@ -964,50 +965,51 @@ private struct PauseControl: View {
     @Environment(\.emberAccent) private var accent
 
     var body: some View {
-        // Only Resume is drawn in the accent, so only a paused control follows the colour temp.
-        let resume = isPaused ? palette.action(accent: accent) : nil
+        // Only the play glyph is drawn in the accent, so only a paused control follows the
+        // colour temp.
+        let glyph = isPaused ? accent.rgb(for: palette).color : palette.text
         let height = EmberMetrics.controlHeight
         HStack(spacing: 0) {
             // Never inside an `if`: this button's identity is what keeps the focus.
             EmberButton(action: toggle) { state in
                 HStack(spacing: 6) {
+                    // Both glyphs in one fixed frame, so the pill's width never changes.
                     Image(systemName: isPaused ? "play.fill" : "pause.fill")
                         .font(.system(size: showsTitle ? 9 : 10.5, weight: .bold))
+                        .foregroundStyle(glyph)
+                        .frame(width: showsTitle ? 10 : 12)
                     if showsTitle {
                         Text(isPaused ? "Resume" : "Pause").lineLimit(1).fixedSize()
+                            .foregroundStyle(palette.text)
                     }
                 }
-                .font(.ember(12.5, isPaused ? .semibold : .medium))
-                .foregroundStyle(resume?.foreground ?? palette.text)
+                .font(.ember(12.5, .medium))
                 .padding(.leading, showsTitle ? 11 : 10)
-                .padding(.trailing, isPaused ? (showsTitle ? 11 : 10) : (showsTitle ? 5 : 2))
+                .padding(.trailing, showsTitle ? 5 : 2)
                 .frame(height: height)
-                .contentShape(isPaused ? AnyShape(Capsule()) : AnyShape(Rectangle()))
-                .background { if let resume { Capsule().fill(resume.background) } }
-                // Resume is a pill with room around it. Pause is half of one: its band lies
-                // inside the half, so it does not run over the chevron beside it.
-                .emberFocusHalo(Capsule(), isFocused: isPaused && state.isFocused)
-                .emberFocusHalo(PauseControlShape.leading, isFocused: !isPaused && state.isFocused, spread: 0)
+                .contentShape(Rectangle())
+                .emberFocusHalo(PauseControlShape.leading, isFocused: state.isFocused, spread: 0)
             }
             .help(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
             .accessibilityLabel(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
             .accessibilityFocused(focus)
-            if !isPaused {
-                EmberButton(action: toggleLengths) { state in
-                    EmberChevron(direction: isExpanded ? .up : .down)
-                        .foregroundStyle(palette.tertiary)
-                        .padding(.leading, showsTitle ? 6 : 3)
-                        .padding(.trailing, showsTitle ? 11 : 9)
-                        .frame(height: height)
-                        .contentShape(Rectangle())
-                        .emberFocusHalo(PauseControlShape.trailing, isFocused: state.isFocused, spread: 0)
-                }
-                .help("Pause for another length")
-                .accessibilityLabel("Pause lengths")
-                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            EmberButton(action: toggleLengths) { state in
+                EmberChevron(direction: isExpanded ? .up : .down)
+                    .foregroundStyle(palette.tertiary)
+                    .padding(.leading, showsTitle ? 6 : 3)
+                    .padding(.trailing, showsTitle ? 11 : 9)
+                    .frame(height: height)
+                    .contentShape(Rectangle())
+                    .emberFocusHalo(PauseControlShape.trailing, isFocused: state.isFocused, spread: 0)
             }
+            // While paused there is no other length to choose; the chevron stays, dimmed,
+            // so the pill does not change shape.
+            .disabled(isPaused)
+            .help(isPaused ? "Resume first to pause for another length" : "Pause for another length")
+            .accessibilityLabel("Pause lengths")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         }
-        .background { if !isPaused { Capsule().fill(palette.fill) } }
+        .background { Capsule().fill(palette.fill) }
     }
 }
 

@@ -761,7 +761,8 @@ struct AccessibilityTree {
         #expect(resume.object === pause.object)
         #expect(resume.isEnabled)
         #expect(tree.first("Pause Redlight for 30 minutes") == nil)
-        #expect(tree.first("Pause lengths") == nil)
+        // The chevron stays, so the pill keeps its shape, but there is no length to choose.
+        #expect(tree.first("Pause lengths")?.isEnabled == false)
 
         tree = try await press("Resume Redlight", in: hosted.document)
         #expect(!manager.isPaused)
