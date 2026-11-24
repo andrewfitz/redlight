@@ -5,10 +5,11 @@ import Testing
 @testable import Redlight
 
 @MainActor @Suite(.serialized) struct IntentTests {
+    let defaultsRegistry = TestDefaultsRegistry()
+
     @Test func everyIntentExecutesThroughTheHandler() async throws {
-        let domain = "RedlightIntentTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: domain)!
-        defer { defaults.removePersistentDomain(forName: domain); IntentBridge.uninstall() }
+        let defaults = defaultsRegistry.makeDefaults(prefix: "RedlightIntentTests")
+        defer { IntentBridge.uninstall() }
         let gamma = MockGammaController()
         // A fixed clock, and the equator at local solar noon for it: the next sunrise is
         // always about 18 hours ahead, never at the edge of the 24-hour search. The clock
@@ -125,7 +126,13 @@ import Testing
     }
 
     @Test func enumsEntitiesAndShortcutsMatchCommands() async throws {
-        #expect(RedlightPreset.allCases.map(\.rawValue) == CommandPreset.allCases.map(\.rawValue))
+        // Saved Shortcuts store these raw values; the names shown beside them may change.
+        #expect(RedlightPreset.allCases.map(\.rawValue) == ["day", "warm", "sunset", "night", "deep-red"])
+        #expect(RedlightPreset.allCases.map(\.command) == CommandPreset.allCases)
+        #expect(RedlightPreset.late.command == .late)
+        #expect(RedlightPreset.allCases.map { RedlightPreset.caseDisplayRepresentations[$0].map { String(localized: $0.title) } }
+                == ["Day", "Warm", "Sunset", "Night", "Late"])
+        #expect(redlightStatusText(Status(on: true, activePreset: .late, version: "1.5")).contains("\nPreset: late\n"))
         #expect(RedlightMode.allCases.map(\.rawValue) == CommandSwitch.allCases.map(\.rawValue))
         #expect(RedlightChannel.allCases.map(\.rawValue) == CommandChannel.allCases.map(\.rawValue))
         #expect(RedlightAppearance.allCases.map(\.rawValue) == CommandAppearance.allCases.map(\.rawValue))

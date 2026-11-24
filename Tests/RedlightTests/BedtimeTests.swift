@@ -247,7 +247,7 @@ private func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: te
                 #expect(t.bedtime == (t.intensity < s.intensity || t.whitepoint < s.whitepoint))
             }
         }
-        // Already at Deep Red: the floor is not the one in effect.
+        // Already at Late: the floor is not the one in effect.
         let deep = target(-70, progress: 0.3)
         #expect(deep.intensity == sun(-70).intensity && deep.whitepoint == sun(-70).whitepoint)
         #expect(!deep.bedtime)
@@ -265,7 +265,7 @@ private func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: te
 
     @Test func midnightSunReleasesTowardTheSunsOwnMidnightValue() {
         // About 70°N in late June: the sun's lowest point is +3.4°, so the sun curve never
-        // reaches Deep Red. Snapping from the floor to it at solar midnight would jump.
+        // reaches Late. Snapping from the floor to it at solar midnight would jump.
         let atMidnight = sun(3.4, minElevation: 3.4)
         #expect(atMidnight.intensity > 0.3)
         #expect(target(3.5, minElevation: 3.4, progress: 1).intensity == 0.2)
@@ -277,8 +277,8 @@ private func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: te
         #expect(abs(released.whitepoint - atMidnight.whitepoint) < 1e-12)
     }
 
-    @Test func releaseIsANoOpOnNightsThatReachDeepRed() {
-        // Nights below the horizon are stretched so solar midnight is already Deep Red.
+    @Test func releaseIsANoOpOnNightsThatReachLate() {
+        // Nights below the horizon are stretched so solar midnight is already Late.
         for minElevation in [-6.6, -30, -70] {
             for release in [0.0, 0.5, 1] {
                 let t = target(minElevation + 0.5, minElevation: minElevation, progress: 1, release: release)
@@ -484,7 +484,7 @@ final class BedtimeTestClock {
     }
 
     @Test func holdsTheDeepestEndUntilSolarMidnightThenTheSunTakesOver() {
-        // About 60°N at midsummer: a short night, stretched so solar midnight is Deep Red.
+        // About 60°N at midsummer: a short night, stretched so solar midnight is Late.
         let clock = BedtimeTestClock(date("2025-06-21T22:30:00Z"))
         let floored = makeManager(clock: clock)
         let plain = makeManager(clock: clock)
@@ -509,7 +509,7 @@ final class BedtimeTestClock {
 
     @Test func midnightSunEasesOutInsteadOfSnapping() {
         // About 70°N at midsummer the sun never sets, so the sun curve at solar midnight is
-        // far from Deep Red. The floor eases to it over the last hour instead of snapping.
+        // far from Late. The floor eases to it over the last hour instead of snapping.
         let clock = BedtimeTestClock(date("2025-06-21T22:00:00Z"))
         let floored = makeManager(latitude: 70, clock: clock)
         let plain = makeManager(latitude: 70, clock: clock)

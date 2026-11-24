@@ -6,11 +6,10 @@ import Testing
     private let executable = "/Applications/Redlight.app/Contents/MacOS/Redlight"
     private let home = "/Users/test"
 
+    private let defaultsRegistry = TestDefaultsRegistry()
+
     private func preferences() -> UserDefaults {
-        let name = "Redlight.CLIInstallerTests." + UUID().uuidString
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+        defaultsRegistry.makeDefaults(prefix: "CLIInstallerTests")
     }
 
     @Test func acceptsOnlyInstalledAppLocations() {

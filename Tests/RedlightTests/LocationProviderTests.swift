@@ -17,10 +17,10 @@ import Testing
         override func stopUpdatingLocation() {}
     }
 
+    let defaultsRegistry = TestDefaultsRegistry()
+
     @Test func missingCacheFallsBackToTimeZoneSoAdaptiveIsNeverStuck() throws {
-        let name = "RedlightLocationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
+        let defaults = freshDefaults()
 
         let provider = LocationProvider(
             defaults: defaults,
@@ -35,9 +35,7 @@ import Testing
     }
 
     @Test func cachedCoordinateIsPreferredOverTimeZone() throws {
-        let name = "RedlightLocationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
+        let defaults = freshDefaults()
         defaults.set(37.77, forKey: "redlight.location.lat")
         defaults.set(-122.42, forKey: "redlight.location.lon")
 
@@ -53,9 +51,7 @@ import Testing
     }
 
     @Test func corruptCachedCoordinateFallsBackToTimeZone() throws {
-        let name = "RedlightLocationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
+        let defaults = freshDefaults()
         defaults.set(Double.nan, forKey: "redlight.location.lat")
         defaults.set(500.0, forKey: "redlight.location.lon")
 
@@ -70,10 +66,7 @@ import Testing
     }
 
     private func freshDefaults() -> UserDefaults {
-        let name = "RedlightLocationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+        defaultsRegistry.makeDefaults(prefix: "RedlightLocationTests")
     }
 
     // These tests never reach a Core Location request: with a manual coordinate set the

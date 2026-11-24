@@ -138,6 +138,31 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         let assigned = Array(store.shortcuts.values)
         #expect(Set(assigned).count == assigned.count)
     }
+
+    @Test func savedAssignmentKeysAreStable() {
+        // These are the keys inside the saved "redlight.shortcuts" value.
+        #expect(ShortcutAction.allCases.map(\.rawValue) == [
+            "toggle", "pause", "warmer", "cooler", "dimmer", "brighter", "appearance", "adaptive",
+            "presetDay", "presetWarm", "presetSunset", "presetNight", "presetDeepRed",
+        ])
+        #expect(ShortcutAction.presetLate.title == "Late Preset")
+        #expect(ShortcutAction.presetLate.preset == .late)
+        #expect(ShortcutAction.allCases.compactMap(\.preset) == CommandPreset.allCases)
+    }
+
+    @Test func aShortcutSavedForDeepRedStillBelongsToLate() throws {
+        let defaults = registry.makeDefaults(prefix: "ShortcutStoreTests")
+        let shortcut = KeyShortcut(keyCode: UInt32(kVK_F13), modifiers: 0)
+        defaults.set(Data(#"{"presetDeepRed":{"keyCode":\#(kVK_F13),"modifiers":0}}"#.utf8), forKey: "redlight.shortcuts")
+        let store = ShortcutStore(defaults: defaults, reserved: { [] })
+        #expect(store.shortcuts == [.presetLate: shortcut])
+
+        // Saving again keeps the same key, so an older copy of the app still reads it.
+        store.set(KeyShortcut(keyCode: UInt32(kVK_F14), modifiers: 0), for: .presetDay)
+        let data = try #require(defaults.data(forKey: "redlight.shortcuts"))
+        let saved = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(saved.keys) == ["presetDeepRed", "presetDay"])
+    }
 }
 
 @MainActor @Suite struct ShortcutControllerTests {
@@ -381,5 +406,13 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         send(.toggle, pressed: false, to: controller)
         send(.toggle, pressed: true, to: controller)
         #expect(readout.shown.last?.text == "Redlight Off")
+    }
+
+    @Test func thePresetShortcutShowsThePresetName() {
+        let (controller, manager) = makeController()
+        controller.store.set(KeyShortcut(keyCode: UInt32(kVK_F13), modifiers: 0), for: .presetLate)
+        send(.presetLate, pressed: true, to: controller)
+        #expect(manager.activePresetIndex == 4)
+        #expect(readout.shown.last?.text == "Late")
     }
 }

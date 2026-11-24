@@ -114,6 +114,19 @@ final class ImmediateFixLocationProvider: LocationProviding {
         defaultsRegistry.makeDefaults()
     }
 
+    @Test func backstageDisplaysStayHiddenAcrossRefreshes() {
+        var names: [CGDirectDisplayID: String] = [
+            1: "Monitor", 2: "Backstage (agent display) (1)", 3: "BACKSTAGE (agent display) (2)"
+        ]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { [2, 1, 3] }, getDisplayName: { names[$0]! },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        #expect(manager.displays.map(\.id) == [1])
+        names[1] = "Backstage"
+        manager.refreshDisplays()
+        #expect(manager.displays.isEmpty)
+    }
+
     @Test func sameIDScreenRefreshInvalidatesBackendCachesWithoutResettingCalibration() {
         let manager = makeManager()
         #expect(mock.displayChangeCount == 0)
@@ -1671,12 +1684,12 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let manager = makeManager(location: loc, now: { noon })
         manager.adaptiveEnabled = true           // day → intensity 1.0
 
-        manager.saveToPreset(4)                  // redefine Deep Red = current (1.0, 1.0)
+        manager.saveToPreset(4)                  // redefine Late = current (1.0, 1.0)
 
         #expect(manager.adaptiveEnabled == true)
         #expect(manager.activePresetIndex == nil)          // adaptive isn't a preset
         #expect(manager.presets[4].intensity == 1.0)
-        // Day and Deep Red anchors now coincide (flat curve) — the mapping must not
+        // Day and Late anchors now coincide (flat curve) — the mapping must not
         // blow up or pin to the band max; the raw value clamps into the band.
         manager.applyAdaptive()
         #expect(manager.intensity >= 0.0 && manager.intensity <= 1.0)
@@ -2022,6 +2035,65 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.applyCalls.allSatisfy { $0.intensity <= 1 && $0.whitepoint >= 0.25 })
     }
 
+    /// Presets as a version that still called the last one "Deep Red" saved them.
+    private func presetsSavedBeforeTheRename() -> [Preset] {
+        var presets = Preset.defaults
+        presets[4].name = "Deep Red"
+        return presets
+    }
+
+    private func savedPresets(_ defaults: UserDefaults) throws -> [Preset] {
+        try JSONDecoder().decode([Preset].self, from: #require(defaults.data(forKey: "redlight.presets")))
+    }
+
+    @Test func savedDeepRedPresetIsRenamedToLateAndPersisted() throws {
+        #expect(Preset.defaults.map(\.name) == ["Day", "Warm", "Sunset", "Night", "Late"])
+        let d = freshDefaults()
+        d.set(try JSONEncoder().encode(presetsSavedBeforeTheRename()), forKey: "redlight.presets")
+
+        let manager = makeManager(defaults: d)
+        #expect(manager.presets == Preset.defaults)
+        // Saved at load, before anything else changes a setting.
+        #expect(try savedPresets(d) == Preset.defaults)
+        #expect(makeManager(defaults: d).presets == Preset.defaults)
+    }
+
+    @Test func migratingTheDeepRedNameKeepsTheSavedValues() throws {
+        let d = freshDefaults()
+        var saved = presetsSavedBeforeTheRename()
+        saved[1] = Preset(name: "Warm", intensity: 0.62, whitepoint: 0.8)
+        saved[4].intensity = 0.1
+        saved[4].whitepoint = 0.4
+        d.set(try JSONEncoder().encode(saved), forKey: "redlight.presets")
+        d.set(0.1, forKey: "redlight.intensity")
+        d.set(0.4, forKey: "redlight.whitepoint")
+        d.set(4, forKey: "redlight.activePresetIndex")
+
+        var expected = saved
+        expected[4].name = "Late"
+        let manager = makeManager(defaults: d)
+        #expect(manager.presets == expected)
+        #expect(manager.presets[4] == Preset(name: "Late", intensity: 0.1, whitepoint: 0.4))
+        #expect(manager.activePresetIndex == 4)
+        #expect(try savedPresets(d) == expected)
+    }
+
+    @Test func otherSavedPresetNamesAreLeftAlone() throws {
+        #expect(makeManager().presets.last?.name == "Late")
+        // Only the exact old default name in the last slot is migrated.
+        for name in ["Late", "deep red", "Deep Red ", "Deeper Red", "Mine", ""] {
+            let d = freshDefaults()
+            var saved = Preset.defaults
+            saved[0].name = "Deep Red"
+            saved[4] = Preset(name: name, intensity: 0.1, whitepoint: 0.4)
+            let data = try JSONEncoder().encode(saved)
+            d.set(data, forKey: "redlight.presets")
+
+            #expect(makeManager(defaults: d).presets == saved)
+            #expect(d.data(forKey: "redlight.presets") == data)
+        }
+    }
+
     @Test func hiddenAdaptiveNudgeKeepsResetEnabledWhileAdaptiveIsOff() {
         let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
         let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
@@ -2106,7 +2178,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.whitepoint = 0.9
         mock.applyCalls.removeAll()
 
-        manager.applyPreset(4)   // Deep Red: 0.0 / 0.3
+        manager.applyPreset(4)   // Late: 0.0 / 0.3
 
         // Model, persistence and the command target land on the preset at once…
         #expect(manager.intensity == 0.0)
@@ -2313,6 +2385,55 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(scans == 1)
     }
 
+    @Test func aTickWithoutALocationInvalidatesNothingUntilSomethingChanges() {
+        let location = FakeLocationProvider()
+        location.authorization = .denied
+        let manager = makeManager(location: location)
+        manager.adaptiveEnabled = true
+        #expect(manager.coordinate == nil)
+        #expect(manager.adaptiveStatusText == "Location needed")
+
+        // The 5 s tick with nothing new: no observer of the headline's inputs is told.
+        let idle = ObservationFlag()
+        withObservationTracking {
+            _ = manager.adaptiveStatusText
+            _ = manager.coordinate
+            _ = manager.nextSolarEventText
+        } onChange: { idle.fired = true }
+        for _ in 0..<3 { manager.applyAdaptive() }
+        #expect(!idle.fired)
+
+        // A change is still told: the prompt is answered differently, then a fix arrives.
+        let status = ObservationFlag()
+        withObservationTracking { _ = manager.adaptiveStatusText } onChange: { status.fired = true }
+        location.authorization = .notDetermined
+        manager.applyAdaptive()
+        #expect(status.fired)
+        #expect(manager.adaptiveStatusText == "Locating…")
+
+        let fix = ObservationFlag()
+        withObservationTracking { _ = manager.coordinate } onChange: { fix.fired = true }
+        location.coordinate = (41.88, -87.63)
+        manager.applyAdaptive()
+        #expect(fix.fired)
+        #expect(manager.coordinate?.latitude == 41.88)
+
+        // And losing it again is told once, not on every tick after.
+        let lost = ObservationFlag()
+        withObservationTracking { _ = manager.coordinate } onChange: { lost.fired = true }
+        location.coordinate = nil
+        manager.applyAdaptive()
+        #expect(lost.fired)
+        #expect(manager.coordinate == nil)
+        let after = ObservationFlag()
+        withObservationTracking {
+            _ = manager.coordinate
+            _ = manager.adaptiveStatusText
+        } onChange: { after.fired = true }
+        manager.applyAdaptive()
+        #expect(!after.fired)
+    }
+
     @Test func nextSolarEventRescansOnlyAfterItPassesOrTheCoordinateMoves() {
         let iso = ISO8601DateFormatter()
         let events = [
@@ -2426,5 +2547,184 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let polarDay = makeManager(location: polar, now: { afternoon.addingTimeInterval(93 * 86_400) })
         polarDay.adaptiveEnabled = true
         #expect(polarDay.nextSolarEventText == nil)
+    }
+
+    // MARK: - Read-only state for the popover
+
+    @Test func locationSourceNamesWhereTheCoordinateComesFromAsTheStatusLineDoes() {
+        let noon = ISO8601DateFormatter().date(from: "2025-03-21T12:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+        #expect(manager.locationSource == .automatic)
+        #expect(!manager.adaptiveStatusText.contains("time zone"))
+
+        // Never had a fix: the time-zone city, whatever the permission says.
+        loc.automaticIsApproximate = true
+        loc.onChange?()
+        #expect(manager.locationSource == .timeZone)
+        #expect(manager.adaptiveStatusText.hasSuffix(" · time zone"))
+        loc.authorization = .denied
+        loc.onChange?()
+        #expect(manager.locationSource == .timeZone)
+        #expect(manager.adaptiveStatusText.hasSuffix(" · time zone"))
+
+        // Permission withdrawn after a fix.
+        loc.automaticIsApproximate = false
+        loc.onChange?()
+        #expect(manager.locationSource == .lastKnown)
+        #expect(manager.adaptiveStatusText.hasSuffix(" · last known"))
+
+        // The user's coordinate wins over both.
+        manager.setManualLocation((41.88, -87.63))
+        #expect(manager.locationSource == .manual)
+        #expect(manager.adaptiveStatusText.hasSuffix(" · manual"))
+        manager.setManualLocation(nil)
+        #expect(manager.locationSource == .lastKnown)
+
+        // Nothing to follow at all is still the automatic setting, not a stale fix.
+        loc.coordinate = nil
+        loc.onChange?()
+        #expect(manager.locationSource == .automatic)
+        #expect(manager.adaptiveStatusText == "Location needed")
+    }
+
+    @Test func locationSourceChangesReachAnObserver() {
+        let noon = ISO8601DateFormatter().date(from: "2025-03-21T12:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc, now: { noon })
+        manager.adaptiveEnabled = true
+
+        final class Flag: @unchecked Sendable { var changed = false }
+        let fix = Flag()
+        withObservationTracking { _ = manager.locationSource } onChange: { fix.changed = true }
+        loc.automaticIsApproximate = true
+        loc.onChange?()
+        #expect(fix.changed)
+
+        let manual = Flag()
+        withObservationTracking { _ = manager.locationSource } onChange: { manual.changed = true }
+        manager.setManualLocation((41.88, -87.63))
+        #expect(manual.changed)
+    }
+
+    @Test func currentCoordinateIsTheProvidersEvenWhileAdaptiveIsOff() {
+        let loc = FakeLocationProvider()
+        let manager = makeManager(location: loc)
+        #expect(manager.currentCoordinate == nil)
+
+        // `coordinate` is only resolved by Adaptive; the provider already has a fix.
+        loc.coordinate = (41.88, -87.63)
+        #expect(manager.coordinate == nil)
+        #expect(manager.currentCoordinate?.latitude == 41.88)
+        #expect(manager.currentCoordinate?.longitude == -87.63)
+
+        // It does not go stale when the fix moves after Adaptive stopped.
+        manager.adaptiveEnabled = true
+        manager.adaptiveEnabled = false
+        loc.coordinate = (51.5, -0.13)
+        #expect(manager.coordinate?.latitude == 41.88)
+        #expect(manager.currentCoordinate?.latitude == 51.5)
+
+        manager.setManualLocation((35.68, 139.69))
+        #expect(manager.currentCoordinate?.latitude == 35.68)
+    }
+
+    /// Greenwich on the March equinox: solar noon is about 12:07 UTC and solar midnight
+    /// about 00:07 UTC.
+    private func bedtimeManager(now: @escaping () -> Date, location: FakeLocationProvider? = nil) -> DisplayManager {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let greenwich = FakeLocationProvider()
+        greenwich.coordinate = (51.48, 0)
+        return DisplayManager(
+            gamma: mock, getDisplayIDs: { [1] }, getDisplayName: { "Display \($0)" },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(),
+            location: location ?? greenwich, now: now, calendar: utc,
+            adaptiveTransitionDuration: 0, displayTransitionDuration: 0)
+    }
+
+    @Test func effectiveBedtimeIsTheBedtimeOnlyWhenTheRampWillUseIt() {
+        let formatter = ISO8601DateFormatter()
+        let morning = formatter.date(from: "2025-03-21T06:00:00Z")!
+        let evening = formatter.date(from: "2025-03-21T20:00:00Z")!
+        let late = formatter.date(from: "2025-03-21T23:30:00Z")!
+        for now in [morning, evening, late] {
+            let manager = bedtimeManager(now: { now })
+            #expect(manager.effectiveBedtime == nil)   // none set
+
+            // Used tonight: an evening time, and midnight, which is just before solar midnight.
+            for (hour, minute) in [(22, 30), (14, 30), (0, 0)] {
+                let bedtime = Bedtime(hour: hour, minute: minute)!
+                manager.setBedtime(bedtime)
+                #expect(manager.effectiveBedtime == bedtime, "\(bedtime.text) at \(now)")
+            }
+            // Ignored: after solar midnight, or less than one ramp after solar noon.
+            for (hour, minute) in [(3, 0), (0, 30), (12, 30), (13, 30), (9, 0)] {
+                let bedtime = Bedtime(hour: hour, minute: minute)!
+                manager.setBedtime(bedtime)
+                #expect(manager.bedtime == bedtime)
+                #expect(manager.effectiveBedtime == nil, "\(bedtime.text) at \(now)")
+            }
+        }
+
+        // Without a coordinate nothing follows the sun, so no bedtime applies either.
+        let nowhere = bedtimeManager(now: { evening }, location: FakeLocationProvider())
+        nowhere.setBedtime(Bedtime(hour: 22, minute: 30))
+        #expect(nowhere.effectiveBedtime == nil)
+    }
+
+    @Test func effectiveBedtimeAgreesWithTheRampForEveryHalfHour() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let morning = ISO8601DateFormatter().date(from: "2025-03-21T06:00:00Z")!
+        let manager = bedtimeManager(now: { morning })
+        let solarMidnight = SolarCalculator.nextSolarMidnight(after: morning, longitude: 0)
+        for minute in stride(from: 0, to: 1440, by: 30) {
+            let bedtime = Bedtime(minuteOfDay: minute)!
+            manager.setBedtime(bedtime)
+            // The ramp itself, sampled every five minutes up to this evening's solar midnight.
+            let ramps = stride(from: 0.0, to: solarMidnight.timeIntervalSince(morning), by: 300).contains {
+                BedtimeRamp.weights(at: morning.addingTimeInterval($0), bedtime: bedtime,
+                                    solarMidnight: solarMidnight, calendar: utc).progress > 0
+            }
+            #expect((manager.effectiveBedtime != nil) == ramps, "\(bedtime.text)")
+        }
+    }
+
+    @Test func autoSettingsDefaultsCoverOnlyTheLimitsAndTheNudge() {
+        let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
+        let loc = FakeLocationProvider(); loc.coordinate = (0, 0)
+        let manager = makeManager(location: loc, now: { midnight })
+        #expect(manager.intensityAutoSettingsAreDefault)
+        #expect(manager.whitepointAutoSettingsAreDefault)
+
+        // A preset moves the values, not the Auto limits or the nudge.
+        manager.applyPreset(3)
+        #expect(!manager.intensityIsDefault && !manager.whitepointIsDefault)
+        #expect(manager.intensityAutoSettingsAreDefault)
+        #expect(manager.whitepointAutoSettingsAreDefault)
+
+        // A nudge made under Auto stays behind a preset chosen in Manual.
+        manager.adaptiveEnabled = true
+        manager.intensity = min(1, manager.intensity + 0.2)
+        #expect(manager.adaptiveIntensityAdjustment != 0)
+        manager.adaptiveEnabled = false
+        manager.applyPreset(3)
+        #expect(manager.activePresetIndex == 3)
+        #expect(!manager.intensityAutoSettingsAreDefault)
+        #expect(manager.whitepointAutoSettingsAreDefault)
+        manager.resetIntensity()
+        #expect(manager.intensityAutoSettingsAreDefault)
+
+        // So do limits, per channel.
+        manager.adaptiveWpMin = 0.5
+        manager.applyPreset(3)
+        #expect(manager.intensityAutoSettingsAreDefault)
+        #expect(!manager.whitepointAutoSettingsAreDefault)
+        manager.resetWhitepoint()
+        #expect(manager.whitepointAutoSettingsAreDefault)
+        manager.adaptiveMax = 0.8
+        #expect(!manager.intensityAutoSettingsAreDefault)
     }
 }

@@ -3,26 +3,6 @@ import Foundation
 import CoreGraphics
 @testable import Redlight
 
-/// Retained by each suite fixture, so cleanup runs after the test's managers are released.
-final class TestDefaultsRegistry {
-    private var suites: [(name: String, defaults: UserDefaults)] = []
-
-    func makeDefaults(prefix: String = "RedlightTests") -> UserDefaults {
-        let name = "\(prefix)-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        suites.append((name, defaults))
-        return defaults
-    }
-
-    deinit {
-        for suite in suites {
-            suite.defaults.removePersistentDomain(forName: suite.name)
-            suite.defaults.synchronize()
-        }
-    }
-}
-
 @MainActor @Suite struct CommandDisplayManagerTests {
     let defaultsRegistry = TestDefaultsRegistry()
 
@@ -38,6 +18,15 @@ final class TestDefaultsRegistry {
         #expect(defaults.bool(forKey: "redlight.cleanupMarker"))
         registry = nil
         #expect(defaults.object(forKey: "redlight.cleanupMarker") == nil)
+    }
+
+    @Test func testDomainsPersistForRealOutsideTheUsersPreferences() {
+        let (name, defaults) = defaultsRegistry.makeDomain()
+        #expect(name.hasPrefix(TestDefaultsPool.shared.directory.path + "/"))
+        defaults.set(true, forKey: "redlight.cleanupMarker")
+        #expect(defaults.synchronize())
+        #expect(UserDefaults(suiteName: name)?.bool(forKey: "redlight.cleanupMarker") == true)
+        #expect(UserDefaults.standard.object(forKey: "redlight.cleanupMarker") == nil)
     }
 
     func makeManager(
@@ -110,9 +99,7 @@ final class TestDefaultsRegistry {
 
     @Test func controlExtensionReadsOwnerStateFromExplicitDomain() {
         let settings = freshDefaults()
-        let domain = "RedlightControlTests-\(UUID().uuidString)"
-        let shared = UserDefaults(suiteName: domain)!
-        defer { shared.removePersistentDomain(forName: domain) }
+        let (domain, shared) = defaultsRegistry.makeDomain()
         let manager = makeManager(defaults: settings, controlDefaults: shared)
         manager.setEnabled(true, for: 1)
         #expect(RedlightControlPreferences.currentValue(domain: domain))

@@ -3,7 +3,7 @@ import Testing
 
 @Suite struct AdaptiveMappingTests {
     let presets = Preset.defaults
-    // Day(1.0,1.0) Warm(0.7,0.85) Sunset(0.5,0.65) Night(0.25,0.45) DeepRed(0.0,0.3)
+    // Day(1.0,1.0) Warm(0.7,0.85) Sunset(0.5,0.65) Night(0.25,0.45) Late(0.0,0.3)
 
     func banded(elevation: Double, iMin: Double = 0, iMax: Double = 1,
                 wMin: Double = 0.3, wMax: Double = 1, presets: [Preset]? = nil)
@@ -61,7 +61,7 @@ import Testing
     }
 
     @Test func flatIntensityAnchorsClampInsteadOfPinningToMax() {
-        // User saved Day.intensity == Deep Red.intensity → no Day…Deep span to normalize.
+        // User saved Day.intensity == Late.intensity → no Day…Late span to normalize.
         // The old `frac = 1` fallback pinned the output to the band max at ALL elevations;
         // it must clamp the raw curve value into the band instead.
         var p = presets

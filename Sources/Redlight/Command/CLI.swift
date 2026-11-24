@@ -21,7 +21,7 @@ enum CLIParser {
       color <0-100> | whitepoint <25-100>
       color <up|down> [step] | whitepoint <up|down> [step]
       reset <color|whitepoint>
-      preset [save] <day|warm|sunset|night|deep-red>
+      preset [save] <day|warm|sunset|night|late>
       adaptive <on|off|toggle>
       adaptive bedtime <HH:MM|off>
       location <latitude> <longitude> | location auto
@@ -86,11 +86,11 @@ enum CLIParser {
             command = .reset(try enumeration(tail[0], valid: CommandChannel.allCases))
         case "preset":
             if tail.first == "save" {
-                try count(2, "preset save <day|warm|sunset|night|deep-red>")
-                command = .savePreset(try enumeration(tail[1], valid: CommandPreset.allCases))
+                try count(2, "preset save <day|warm|sunset|night|late>")
+                command = .savePreset(try preset(tail[1]))
             } else {
-                try count(1, "preset <day|warm|sunset|night|deep-red>")
-                command = .preset(try enumeration(tail[0], valid: CommandPreset.allCases))
+                try count(1, "preset <day|warm|sunset|night|late>")
+                command = .preset(try preset(tail[0]))
             }
         case "adaptive":
             if tail.first == "bedtime" {
@@ -165,6 +165,14 @@ enum CLIParser {
                 "Usage: redlight pause [minutes|until sunrise]; minutes must be a whole number from 1 to 1440.")
         }
         return .minutes(minutes)
+    }
+
+    private static func preset(_ text: String) throws -> CommandPreset {
+        guard let value = CommandPreset(cliName: text) else {
+            throw CommandError.invalidInput(
+                "Invalid value '\(text)'; valid values: \(CommandPreset.allCases.map(\.cliName).joined(separator: ", ")).")
+        }
+        return value
     }
 
     private static func stepAmount(_ text: String) throws -> Double {
@@ -242,7 +250,7 @@ enum RedlightCLI {
         Color temp: \(status.color.set)% (target \(status.color.target)%)
         White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
         Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
-        Preset: \(status.activePreset?.rawValue ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.fading ? "; fading" : "")
+        Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")
         \(status.statusLine)

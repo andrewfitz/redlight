@@ -477,7 +477,7 @@ private struct CommandFixture {
         location.coordinate = (latitude: 41.88, longitude: -87.63)
         let f = makeFixture(location: location, fadeDuration: 2)
         _ = try f.handler.execute(.adaptive(.on))
-        let status = try f.handler.execute(.preset(.deepRed))
+        let status = try f.handler.execute(.preset(.late))
         #expect(status.fading)
         #expect(status.color.target == 0)
         #expect(status.whitepoint.target == 30)

@@ -21,9 +21,22 @@ enum CommandChannel: String, Codable, Sendable, CaseIterable {
 enum CommandAppearance: String, Codable, Sendable, CaseIterable { case light, dark, toggle }
 enum CommandPreset: String, Codable, Sendable, CaseIterable {
     case day, warm, sunset, night
-    case deepRed = "deep-red"
+    /// The preset was named "Deep Red". The raw value is the wire and `--json` spelling,
+    /// which same-protocol peers and saved scripts already use, so it keeps the old name.
+    case late = "deep-red"
 
     var index: Int { Self.allCases.firstIndex(of: self)! }
+
+    /// The spelling the CLI shows in help and plain-text status.
+    var cliName: String { self == .late ? "late" : rawValue }
+
+    /// Accepts the CLI spelling and the wire spelling, so `preset deep-red` keeps working.
+    init?(cliName: String) {
+        guard let preset = Self.allCases.first(where: { $0.cliName == cliName || $0.rawValue == cliName }) else {
+            return nil
+        }
+        self = preset
+    }
 }
 
 /// A pause with its own length. The plain `pause(.on)` stays the 30-minute default.

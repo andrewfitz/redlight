@@ -3,7 +3,7 @@ import Foundation
 /// Maps real solar elevation to the adaptive filter target. The named presets line up with
 /// what is happening outdoors: the gentle ramp begins while the sun is still up, reaches
 /// Warm during golden hour, Sunset at the horizon, Night at astronomical dusk, then eases
-/// toward Deep Red until solar midnight. Dawn mirrors dusk below the horizon; after sunrise
+/// toward Late until solar midnight. Dawn mirrors dusk below the horizon; after sunrise
 /// the screen clears quickly, reaching Day once the sun is a few degrees up.
 enum SolarCurve {
     struct ElevationMarker: Identifiable, Sendable {
@@ -27,7 +27,7 @@ enum SolarCurve {
     static let morningWarmElevation = 2.0
 
     /// Where a short night's lowest point is mapped. Nights whose sun never sinks this far
-    /// (high-latitude summer) are stretched so solar midnight still reaches Deep Red; at
+    /// (high-latitude summer) are stretched so solar midnight still reaches Late; at
     /// −24° the stretch is 1, so the curve is continuous as nights lengthen.
     static let shortNightFloor = -24.0
 

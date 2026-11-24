@@ -40,12 +40,21 @@ extension IntentBridge {
 
 enum RedlightPreset: String, AppEnum {
     case day, warm, sunset, night
-    case deepRed = "deep-red"
+    /// Saved Shortcuts store the raw value, so it keeps the preset's old name.
+    case late = "deep-red"
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Redlight Preset"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .day: "Day", .warm: "Warm", .sunset: "Sunset", .night: "Night", .deepRed: "Deep Red",
+        .day: "Day", .warm: "Warm", .sunset: "Sunset", .night: "Night", .late: "Late",
     ]
-    var command: CommandPreset { CommandPreset(rawValue: rawValue)! }
+    var command: CommandPreset {
+        switch self {
+        case .day: .day
+        case .warm: .warm
+        case .sunset: .sunset
+        case .night: .night
+        case .late: .late
+        }
+    }
 }
 
 enum RedlightMode: String, AppEnum {
@@ -499,7 +508,7 @@ func redlightStatusText(_ status: Status) -> String {
     if let app = status.suspendedFor { text += " (suspended for \(app))" }
     text += "\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
     if let bedtime = status.bedtime { text += "\nBedtime: \(bedtime)" }
-    text += "\nPreset: \(status.activePreset?.rawValue ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
+    text += "\nPreset: \(status.activePreset?.cliName ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }
     if !status.statusLine.isEmpty { text += "\n" + status.statusLine }

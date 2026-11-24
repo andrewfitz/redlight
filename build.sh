@@ -96,7 +96,7 @@ if [[ -n "${REDLIGHT_BUILD_SNAPSHOT_DIR:-}" ]]; then BUILD_FLAGS+=(--force-resol
 BIN_DIR="$(xcrun swift build "${BUILD_FLAGS[@]}" --show-bin-path)"
 xcrun swift build "${BUILD_FLAGS[@]}"
 
-# App icon: regenerated from Tools/make-icon.swift each build (fast, no deps).
+# App icon: resampled from Resources/AppIcon.png by Tools/make-icon.swift each build (fast, no deps).
 # Fall back to the checked-in icon if generation fails.
 ICONSET="$INVOCATION_DIR/Redlight.iconset"
 ICNS="$INVOCATION_DIR/Redlight.icns"

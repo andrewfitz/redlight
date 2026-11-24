@@ -254,7 +254,9 @@ enum RedlightApp {
             manager.beginTerminationFade(completion: completion)
         }
         AppDelegate.makeStatusItem = {
-            StatusItemController(isActive: { manager.isAnyActive }) {
+            StatusItemController(iconLevel: {
+                MenuBarIcon.Level(isActive: manager.isAnyActive, intensity: manager.intensity)
+            }) {
                 MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
                             openShortcuts: { shortcutsWindow.show() }, apps: appSuspension)
                     .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }

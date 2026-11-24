@@ -89,7 +89,7 @@ final class CommandHandler {
             addressed = try resolve(selector)
         case .preset(let preset), .savePreset(let preset):
             guard manager.presets.indices.contains(preset.index) else {
-                throw CommandError.system("The \(preset.rawValue) preset is unavailable.")
+                throw CommandError.system("The \(preset.cliName) preset is unavailable.")
             }
             addressed = []
         case .update:

@@ -4,7 +4,9 @@ import Observation
 
 enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     case toggle, pause, warmer, cooler, dimmer, brighter, appearance, adaptive
-    case presetDay, presetWarm, presetSunset, presetNight, presetDeepRed
+    case presetDay, presetWarm, presetSunset, presetNight
+    /// Saved shortcut assignments are keyed by raw value, so it keeps the preset's old name.
+    case presetLate = "presetDeepRed"
 
     var title: String {
         switch self {
@@ -20,7 +22,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .presetWarm: "Warm Preset"
         case .presetSunset: "Sunset Preset"
         case .presetNight: "Night Preset"
-        case .presetDeepRed: "Deep Red Preset"
+        case .presetLate: "Late Preset"
         }
     }
 
@@ -44,7 +46,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .presetWarm: .warm
         case .presetSunset: .sunset
         case .presetNight: .night
-        case .presetDeepRed: .deepRed
+        case .presetLate: .late
         default: nil
         }
     }

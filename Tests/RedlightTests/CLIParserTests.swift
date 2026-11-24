@@ -9,8 +9,10 @@ import Testing
             (["status"], .status), (["color", "0"], .color(0)), (["color", "100"], .color(100)),
             (["whitepoint", "25"], .whitepoint(25)), (["whitepoint", "72.5"], .whitepoint(72.5)),
             (["reset", "color"], .reset(.color)), (["reset", "whitepoint"], .reset(.whitepoint)),
-            (["preset", "day"], .preset(.day)), (["preset", "deep-red"], .preset(.deepRed)),
-            (["preset", "save", "warm"], .savePreset(.warm)),
+            (["preset", "day"], .preset(.day)), (["preset", "late"], .preset(.late)),
+            (["preset", "deep-red"], .preset(.late)),
+            (["preset", "save", "warm"], .savePreset(.warm)), (["preset", "save", "late"], .savePreset(.late)),
+            (["preset", "save", "deep-red"], .savePreset(.late)),
             (["adaptive", "toggle"], .adaptive(.toggle)),
             (["limits", "color", "0", "100"], .limits(.color, min: 0, max: 100)),
             (["limits", "whitepoint", "25", "90"], .limits(.whitepoint, min: 25, max: 90)),
@@ -48,13 +50,49 @@ import Testing
             #expect(try CLIParser.parse(["--json"] + arguments).command == expected)
         }
         for preset in CommandPreset.allCases {
-            #expect(try CLIParser.parse(["preset", preset.rawValue]).command == .preset(preset))
-            #expect(try CLIParser.parse(["preset", "save", preset.rawValue]).command == .savePreset(preset))
+            // The wire spelling stays accepted so existing scripts keep working.
+            for name in [preset.cliName, preset.rawValue] {
+                #expect(try CLIParser.parse(["preset", name]).command == .preset(preset))
+                #expect(try CLIParser.parse(["preset", "save", name]).command == .savePreset(preset))
+            }
         }
         for state in CommandSwitch.allCases {
             #expect(try CLIParser.parse(["adaptive", state.rawValue]).command == .adaptive(state))
             #expect(try CLIParser.parse(["display", "all", "invert", state.rawValue]).command == .invert(.all, state))
         }
+    }
+
+    @Test func presetHelpAndErrorsNameLateWhileDeepRedStillParses() {
+        func message(_ arguments: [String]) -> String {
+            do { _ = try CLIParser.parse(arguments) } catch let error as CommandError { return error.message } catch {}
+            return ""
+        }
+        #expect(CommandPreset.allCases.map(\.cliName) == ["day", "warm", "sunset", "night", "late"])
+        #expect(CommandPreset(cliName: "late") == .late)
+        #expect(CommandPreset(cliName: "deep-red") == .late)
+        for name in ["Late", "Deep Red", "deepRed", "deep_red", ""] { #expect(CommandPreset(cliName: name) == nil) }
+
+        #expect(CLIParser.help.contains("preset [save] <day|warm|sunset|night|late>"))
+        #expect(!CLIParser.help.contains("deep-red"))
+        #expect(message(["preset"]) == "Usage: redlight preset <day|warm|sunset|night|late>")
+        #expect(message(["preset", "save"]) == "Usage: redlight preset save <day|warm|sunset|night|late>")
+        for arguments in [["preset", "noon"], ["preset", "save", "noon"]] {
+            #expect(message(arguments) == "Invalid value 'noon'; valid values: day, warm, sunset, night, late.")
+        }
+    }
+
+    @Test func statusNamesLateInTextAndKeepsTheWireValueInJSON() async throws {
+        let status = Status(on: true, activePreset: .late, version: "1.2")
+        let client = CommandClient(hasPort: { true }, send: { _ in status })
+        var output = ""
+        #expect(await RedlightCLI.run(arguments: ["status"], client: client, writeOutput: { output = $0 }) == 0)
+        #expect(output.contains("Preset: late;"))
+        #expect(!output.localizedCaseInsensitiveContains("deep"))
+
+        // Scripts read `--json`, so it keeps the value they already match on.
+        #expect(await RedlightCLI.run(arguments: ["status", "--json"], client: client, writeOutput: { output = $0 }) == 0)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        #expect(object["activePreset"] as? String == "deep-red")
     }
 
     @Test func invalidInputAlwaysHasExitOne() {

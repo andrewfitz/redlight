@@ -3,74 +3,118 @@ import Testing
 @testable import Redlight
 
 @MainActor @Suite struct MenuBarIconTests {
-    @Test(arguments: [false, true])
-    func bothStatesAreTemplatesWithTheCircularSunCanvas(active: Bool) {
-        let image = active ? MenuBarIcon.activeImage() : MenuBarIcon.inactiveImage()
+    @Test(arguments: MenuBarIcon.Level.allCases)
+    func everyLevelIsAnEighteenPointTemplate(level: MenuBarIcon.Level) {
+        let image = MenuBarIcon.image(for: level)
         #expect(image.isTemplate)
         #expect(image.size == NSSize(width: 18, height: 18))
     }
 
-    @Test func monitorIsModestlyShorterAndKeepsItsTopBezel() {
-        #expect(MenuBarIcon.monitorHeight < 11.6)
-        #expect(abs(MenuBarIcon.monitorHeight - MenuBarIcon.screenRect.maxY - 1.5) < 1e-9)
-        #expect(MenuBarIcon.sunCenter == CGPoint(x: 9, y: 12))
-        #expect(MenuBarIcon.sunRadius == 5.4)
+    @Test func levelFollowsTheFilterAndIsOffWheneverNothingShows() {
+        // Inactive wins whatever the slider says: off, paused and suspended all look off.
+        for intensity in [0.0, 0.25, 0.7, 1.0] {
+            #expect(MenuBarIcon.Level(isActive: false, intensity: intensity) == .off)
+        }
+        // The default presets land on the level named for them.
+        let expected: [MenuBarIcon.Level] = [.low, .low, .mid, .mid, .deep]
+        #expect(Preset.defaults.map { MenuBarIcon.Level(isActive: true, intensity: $0.intensity) } == expected)
+        // The steps sit between presets, and each boundary belongs to the deeper level.
+        #expect(MenuBarIcon.Level(isActive: true, intensity: 0.6) == .mid)
+        #expect(MenuBarIcon.Level(isActive: true, intensity: 0.6001) == .low)
+        #expect(MenuBarIcon.Level(isActive: true, intensity: 0.125) == .deep)
+        #expect(MenuBarIcon.Level(isActive: true, intensity: 0.1251) == .mid)
+        // Out-of-range and non-finite values never trap and never read as off.
+        #expect(MenuBarIcon.Level(isActive: true, intensity: -1) == .deep)
+        #expect(MenuBarIcon.Level(isActive: true, intensity: 2) == .low)
+        #expect(MenuBarIcon.Level(isActive: true, intensity: .nan) == .low)
     }
 
-    @Test(arguments: [1, 2])
-    func disabledGlassHasTenPercentOpacityAndEnabledGlassHasSeventy(scale: Int) throws {
-        let disabled = try rasterize(MenuBarIcon.inactiveImage(), scale: scale)
-        let enabled = try rasterize(MenuBarIcon.activeImage(), scale: scale)
-        // y=8 is inside the underlying sun, proving the hidden sun cannot fill the glass.
-        for y in [4, 8] {
-            let offAlpha = try alpha(in: disabled, x: 9 * scale, logicalY: y * scale)
-            let onAlpha = try alpha(in: enabled, x: 9 * scale, logicalY: y * scale)
-            #expect(offAlpha > 0.08 && offAlpha < 0.12)
-            #expect(onAlpha > 0.68 && onAlpha < 0.72)
+    @Test func eachDeeperLevelAddsOneSlitAboveTheLast() {
+        #expect(MenuBarIcon.slits(for: .off).isEmpty)
+        #expect(MenuBarIcon.slits(for: .low).map(\.minY) == [4])
+        #expect(MenuBarIcon.slits(for: .mid).map(\.minY) == [4, 7])
+        #expect(MenuBarIcon.slits(for: .deep).map(\.minY) == [4, 7, 10])
+        for slit in MenuBarIcon.slits(for: .deep) {
+            // Whole points, so a slit is one clean pixel row at 1x.
+            #expect(slit.minY == slit.minY.rounded())
+            #expect(slit.height == 1)
+            #expect(slit.minX == 0 && slit.width == MenuBarIcon.size.width)
         }
     }
 
     @Test(arguments: [1, 2])
-    func sunIsIdenticalInBothStatesAndHasNoEyeCutouts(scale: Int) throws {
-        let disabled = try rasterize(MenuBarIcon.inactiveImage(), scale: scale)
-        let enabled = try rasterize(MenuBarIcon.activeImage(), scale: scale)
-        for bitmap in [disabled, enabled] {
-            // The sun stays solid across its center and visible circular arc.
-            for (x, y) in [(9, 12), (9, 14), (9, 16), (7, 13), (5, 12), (12, 12)] {
-                #expect(try alpha(in: bitmap, x: x * scale, logicalY: y * scale) > 0.95)
+    func offIsARingWithAClearCentre(scale: Int) throws {
+        let bitmap = try rasterize(MenuBarIcon.image(for: .off), scale: scale)
+        #expect(try alpha(in: bitmap, x: 9 * scale, logicalY: 9 * scale) < 0.01)
+        #expect(try alpha(in: bitmap, x: 9 * scale, logicalY: 4 * scale) < 0.01)
+        // The ring itself, at the four compass points, half a line width in from the edge.
+        // The line is 1.25 pt wide, so at 1x it covers three quarters of its pixel.
+        let inset = Int((1.5 + 0.625) * CGFloat(scale))
+        let far = 18 * scale - 1 - inset
+        for (x, y) in [(9 * scale, inset), (9 * scale, far), (inset, 9 * scale), (far, 9 * scale)] {
+            #expect(try alpha(in: bitmap, x: x, logicalY: y) > 0.6)
+        }
+    }
+
+    @Test(arguments: [1, 2])
+    func activeLevelsAreASolidDiscCutOnlyByTheirSlits(scale: Int) throws {
+        for level in [MenuBarIcon.Level.low, .mid, .deep] {
+            let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
+            let slitRows = Set(MenuBarIcon.slits(for: level).map { Int($0.minY) })
+            // Down the middle of the disc, away from its rounded edge.
+            for row in 2..<16 {
+                let value = try alpha(in: bitmap, x: 9 * scale, logicalY: row * scale + scale / 2)
+                if slitRows.contains(row) {
+                    #expect(value < 0.01, "level \(level) row \(row) should be a slit")
+                } else {
+                    #expect(value > 0.99, "level \(level) row \(row) should be solid")
+                }
             }
         }
-        let firstSunRow = Int(ceil(MenuBarIcon.monitorHeight * CGFloat(scale)))
-        for y in firstSunRow..<enabled.pixelsHigh {
-            for x in 0..<enabled.pixelsWide {
-                #expect(try alpha(in: enabled, x: x, logicalY: y)
-                        == alpha(in: disabled, x: x, logicalY: y))
+    }
+
+    @Test(arguments: MenuBarIcon.Level.allCases)
+    func nothingIsPartlyTransparentAwayFromTheCurvedEdge(level: MenuBarIcon.Level) throws {
+        // State is shape, not alpha: inside the disc every pixel is fully on or fully off.
+        let scale = 2
+        let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
+        let inner = (MenuBarIcon.radius - MenuBarIcon.ringWidth - 1) * CGFloat(scale)
+        let centre = CGFloat(9 * scale) - 0.5
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide where hypot(CGFloat(x) - centre, CGFloat(y) - centre) < inner {
+                let value = try alpha(in: bitmap, x: x, logicalY: y)
+                #expect(value < 0.01 || value > 0.99)
             }
         }
     }
 
-    @Test(arguments: [1, 2])
-    func monitorBezelRemainsOpaqueInBothStates(scale: Int) throws {
-        let disabled = try rasterize(MenuBarIcon.inactiveImage(), scale: scale)
-        let enabled = try rasterize(MenuBarIcon.activeImage(), scale: scale)
-        for (x, y) in [(1, 4), (9, 0)] {
-            let offAlpha = try alpha(in: disabled, x: x * scale, logicalY: y * scale)
-            let onAlpha = try alpha(in: enabled, x: x * scale, logicalY: y * scale)
-            #expect(offAlpha > 0.95)
-            #expect(onAlpha == offAlpha)
+    @Test(arguments: MenuBarIcon.Level.allCases)
+    func theGlyphStaysInsideItsCircleAndLeavesTheCornersClear(level: MenuBarIcon.Level) throws {
+        let scale = 2
+        let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
+        let limit = (MenuBarIcon.radius + 0.75) * CGFloat(scale)
+        let centre = CGFloat(9 * scale) - 0.5
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide where hypot(CGFloat(x) - centre, CGFloat(y) - centre) > limit {
+                #expect(try alpha(in: bitmap, x: x, logicalY: y) < 0.01)
+            }
         }
     }
 
-    @Test(arguments: [false, true])
-    func visibleSunFitsWithoutClippingAtTheTopOrAddingSideMarks(active: Bool) throws {
-        let image = active ? MenuBarIcon.activeImage() : MenuBarIcon.inactiveImage()
-        let bitmap = try rasterize(image, scale: 2)
-        for x in 0..<bitmap.pixelsWide {
-            #expect(try alpha(in: bitmap, x: x, logicalY: bitmap.pixelsHigh - 1) < 0.01)
-        }
-        for y in (11 * 2)..<bitmap.pixelsHigh {
-            #expect(try alpha(in: bitmap, x: 0, logicalY: y) < 0.01)
-            #expect(try alpha(in: bitmap, x: bitmap.pixelsWide - 1, logicalY: y) < 0.01)
+    @Test func everyLevelLooksDifferentFromEveryOther() throws {
+        let bitmaps = try MenuBarIcon.Level.allCases.map { try rasterize(MenuBarIcon.image(for: $0), scale: 1) }
+        for first in bitmaps.indices {
+            for second in bitmaps.indices where second > first {
+                var differing = 0
+                for y in 0..<18 {
+                    for x in 0..<18 where abs(try alpha(in: bitmaps[first], x: x, logicalY: y)
+                                              - alpha(in: bitmaps[second], x: x, logicalY: y)) > 0.5 {
+                        differing += 1
+                    }
+                }
+                // A whole slit across the disc is at least ten pixels at 1x.
+                #expect(differing >= 10)
+            }
         }
     }
 

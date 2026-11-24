@@ -161,13 +161,9 @@ import Testing
         handoff.install(setOn: { _ in throw ControlHandoffError.failed("command rejected") })
         #expect(handoff.handle(url: url(true, UUID())))
         #expect(receipt?.error == "command rejected")
-        let domain = "RedlightControlTests-\(UUID().uuidString)"
-        defer {
-            for key in [RedlightControlPreferences.stateKey, RedlightControlPreferences.receiptsKey] {
-                CFPreferencesSetValue(key as CFString, nil, domain as CFString, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
-            }
-            CFPreferencesSynchronize(domain as CFString, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
-        }
+        let registry = TestDefaultsRegistry()
+        defer { withExtendedLifetime(registry) {} }
+        let domain = registry.makeDomain().name
         #expect(!RedlightControlPreferences.currentValue(domain: domain))
         #expect(RedlightControlPreferences.publish(true, domain: domain))
         #expect(RedlightControlPreferences.currentValue(domain: domain))

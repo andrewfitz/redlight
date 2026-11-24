@@ -7,7 +7,7 @@ the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Contro
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><img src="screenshots/menubar.png" alt="Redlight popover open from the menu bar, showing the Pause button, a monitor and a Sidecar iPad, Color Temp and White Point sliders with Adaptive limits, presets, and the Adaptive sun arc" height="420">
+<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset, showing a monitor and a Sidecar iPad at the top, the next solar event, the sun arc with sunrise and sunset times, Color Temp and White Point sliders with their Auto limits, Deepest by and Location, and Pause at the bottom" height="420"></picture>
   <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing the Redlight README" height="420"></p>
 
 ## tl;dr
@@ -33,17 +33,17 @@ Free open source blue light filter mac app that:
 
 - **Color Temp** goes from a normal screen (100%) to pure red (0%), passing through warm orange. Blue drops faster than green, so it never turns purple
 - **White Point** dims bright areas while leaving darks mostly unchanged, like iOS Reduce White Point but adjustable
-- **Presets**: one-click Day, Warm, Sunset, Night and Deep Red, each fading in over two seconds. **Save to Preset…** overwrites a preset with the current sliders
+- **Presets**: one-click Day, Warm, Sunset, Night and Late, each fading in over two seconds. In Manual, **Save to a preset…** overwrites a preset with the current sliders
 - **Invert** per display flips light and dark beneath the red filter
 
 **Adaptive**
 
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
-- The **sun arc** graphs today's solar elevation, the sun's position, and the filter level Adaptive applies
-- The status line names the next solar event, such as “Sunset in 1 h 12 m”
+- The **sun arc** graphs today's solar elevation and the sun's position, with sunrise and sunset times and your bedtime
+- The headline names the next solar event, such as “Sunset in 1 h 12 m”
 - **Deepest by** sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
-- **Manual location**: enter a latitude and longitude instead of granting Location access
-- **Band limits**: drag the red bracket markers on each slider to set a hard minimum and maximum. Moving a slider inside the band shifts the curve without turning Adaptive off
+- **Manual location**: enter a latitude and longitude in Settings instead of granting Location access
+- **Band limits**: in Auto, each slider shows its allowed range with the limits labelled beneath it. Drag a limit's mark to set a hard minimum or maximum; when the handle rests on a limit, drag the tick above or below it. Moving the handle inside the range shifts the curve without leaving Auto
 - **Fixed values**: set equal limits with the CLI to keep one slider fixed while the other follows the sun. For example, `redlight limits whitepoint 80 80` holds White Point at 80%
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
 
@@ -66,7 +66,7 @@ Free open source blue light filter mac app that:
 - Lives in the menu bar only, with no Dock icon
 - Remembers your settings across launches
 - Optional **Launch at Login**, off by default and never registered behind your back
-- **Automatic updates** through Sparkle, plus an **Updates…** button
+- **Automatic updates** through Sparkle, plus **Check for updates** in Settings
 
 ## New in 1.6
 
@@ -98,17 +98,19 @@ Free open source blue light filter mac app that:
 
 ## Using it
 
-Click the menu bar icon (a sun behind a monitor) to open the popover. The icon's screen is
-solid while a filter or inversion is showing and faint when both are off.
+Click the menu bar icon (a setting sun) to open the popover. The sun is an outlined ring
+when no filter or inversion is showing. While one is, it is solid, with one line across it
+for Day and Warm, two for Sunset and Night, and three for Late.
 
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
-- The **pause** button beside it suspends the tint for 30 minutes; click it again to resume early. The chevron next to it offers 1 hour, 2 hours and Until sunrise
-- Toggle each display, or check **Invert** to flip its colors
-- Drag **Color Temp** to remove blue and green light, and **White Point** to reduce peak brightness
-- Click a preset to jump to it. The reset button beside each slider restores its default and clears its limits
-- Turn on **Adaptive** to let the sun drive the filter, then drag the red brackets to set its limits. **Deepest by** and the location fields appear beneath it
-- Open **Pause for apps** to choose apps that suspend the tint while they are in front
-- The keyboard button at the bottom opens **Keyboard Shortcuts**
+- Your displays are listed at the top: switch each one on or off, and click **Invert** to flip its colors
+- Choose **Auto** to let the sun drive the filter, or **Manual** to hold a setting
+- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness; drag a limit's mark to set its range. **Deepest by** and **Location** sit beneath the sliders
+- In **Manual**, click a preset to jump to it, or drag the sliders. **Save to a preset…** turns the presets into overwrite targets
+- **Reset** appears beside a slider's value when it differs from the default; it restores the value and clears its limits
+- **Pause** at the bottom suspends the tint for 30 minutes and becomes **Resume** while paused. Its chevron offers 1 hour, 2 hours and Until sunrise
+- The moon or sun button switches the system appearance. The button beside it opens **Settings**: location for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit
+- Press Tab to move between controls, the arrow keys to adjust a focused slider, and Esc to close the popover
 
 ### Pause
 
@@ -118,15 +120,15 @@ survives sleep and relaunch. A fixed-duration pause lasts from 1 minute to 24 ho
 clock change cannot extend it beyond the length you chose. **Until sunrise** needs a
 location and looks up to 25 hours ahead to allow for changes in sunrise time between days.
 
-While paused, Control Center and `redlight status` show off. The menu bar icon dims once
-the fade finishes unless a display still uses Invert. Turning Redlight on ends the pause.
+While paused, Control Center and `redlight status` show off. The menu bar icon becomes an
+outlined ring once the fade finishes unless a display still uses Invert. Turning Redlight on ends the pause.
 Slider and preset changes made while paused are saved and appear on resume. Pause is unavailable while Redlight is off.
 
 ### Pause for apps
 
-Open **Pause for apps** in the popover and add any running app. While a chosen app is in
-front, the tint fades out and the header shows “Suspended for” and its name; it fades back
-when you switch to another app. Invert stays on, and the menu bar icon goes faint.
+Open **Pause for apps** in Settings and add any running app. While a chosen app is in
+front, the tint fades out and the header shows “Off for” and its name; it fades back
+when you switch to another app. Invert stays on, and the menu bar icon becomes an outlined ring.
 
 Unlike Pause, this does not count as off: Control Center and `redlight status` still show
 on, and turning Redlight off and on again while the app is in front leaves the tint
@@ -135,26 +137,28 @@ appear when the suspension ends.
 
 ### Bedtime
 
-With Adaptive on, set a time and check **Deepest by**; to change it later, edit the time and
+In Auto, set a time and turn on **Deepest by**; to change it later, edit the time and
 click **Set**. Starting two hours before it, the
 filter eases to the deepest end of your limits and holds there until solar midnight, when
 the normal morning curve takes over. Bedtime can only make the evening redder, never
-lighter, and the sun arc shows the result. The status line reads “bedtime” while it is in
-effect.
+lighter. While a bedtime applies, the line under the headline reads “Deepest red by” and the
+time, and the sun arc marks it.
 
 A bedtime later than solar midnight (around 01:00 during summer time in many places) has no
-effect that night. Under the midnight sun the tint lifts again after solar midnight.
+effect that night, and the popover does not show it as active. Under the midnight sun the tint lifts again after solar midnight.
 
 ### Location
 
-Adaptive normally uses Location Services, falling back to a city in your time zone. To set
-it yourself, enter a latitude and longitude under Adaptive, or run `redlight location`.
+Adaptive normally uses Location Services, falling back to a city in your time zone. The
+**Location** row in Auto names the source: Automatic, Time zone, Last known or Manual. To set
+it yourself, choose **Coordinates** under Location for Auto in Settings and enter a latitude
+and longitude, or run `redlight location`.
 With a manual location Redlight makes no Location requests and does not ask for permission.
 Switch back to automatic at any time.
 
 ## Keyboard shortcuts
 
-Open the popover and click the keyboard button. Click a field and press a combination to
+Open Settings in the popover and click **Keyboard shortcuts**. Click a field and press a combination to
 assign it. Esc cancels, and Delete or the clear button removes a shortcut.
 
 Nothing is assigned until you choose. **Use Suggested Shortcuts** assigns:
@@ -308,9 +312,9 @@ locked dependencies. Commit any changes you want included before running the rel
 caches it for offline use, refreshes it hourly and after wake, and computes the sun's elevation locally with the
 NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6° and Sunset at
 0°, follows the civil, nautical and astronomical twilight boundaries at −6°, −12° and −18°,
-and reaches Deep Red at solar midnight. Mornings mirror the night up to sunrise, then reach
+and reaches Late at solar midnight. Mornings mirror the night up to sunrise, then reach
 Day by +4°. Where the sun never sinks to −24° (high-latitude summer), the night is stretched
-so its lowest point still reaches Deep Red.
+so its lowest point still reaches Late.
 
 ## Testing
 

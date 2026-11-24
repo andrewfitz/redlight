@@ -60,7 +60,7 @@ final class DisplayManager {
     ///
     /// Default means *no filter at all*, not "a bit of filter": `intensity` 1.0 is an
     /// untouched display (0.0 is pure red), and `whitepoint` 1.0 is no white-point reduction.
-    /// Intensity defaults to its full range. White Point starts at the Deep Red preset's
+    /// Intensity defaults to its full range. White Point starts at the Late preset's
     /// 0.30 anchor so factory adaptive values are not silently stretched down to 0.25;
     /// users can still drag that band marker to the slider's 0.25 floor.
     enum Defaults {
@@ -275,6 +275,33 @@ final class DisplayManager {
     private(set) var manualLocation: (latitude: Double, longitude: Double)?
     var isLocationApproximate: Bool { location.isApproximate }
     var hasLocation: Bool { location.coordinate != nil }
+    /// The coordinate the provider holds now: the user's, a fix, or the time-zone city.
+    /// `coordinate` is only kept current while Adaptive runs; this one is read on demand.
+    var currentCoordinate: (latitude: Double, longitude: Double)? { location.coordinate }
+
+    /// Where the coordinate Adaptive follows comes from.
+    enum LocationSource: Equatable, Sendable {
+        /// A Core Location fix, or no coordinate yet.
+        case automatic
+        /// The time-zone city, because there has never been a fix.
+        case timeZone
+        /// The last fix, kept after Location Services was turned off.
+        case lastKnown
+        /// Coordinates the user entered.
+        case manual
+    }
+
+    /// In the same order as the suffix of `adaptiveStatusText`.
+    var locationSource: LocationSource {
+        // The provider is not observable. A change of source reaches a view through these
+        // two, which Adaptive rewrites when the provider reports one.
+        _ = manualLocation
+        _ = adaptiveStatusText
+        if location.manualCoordinate != nil { return .manual }
+        guard location.coordinate != nil else { return .automatic }
+        if location.isApproximate { return .timeZone }
+        return location.authorization == .denied ? .lastKnown : .automatic
+    }
 
     /// The band as hard limits, lo/hi order normalized.
     var intensityBand: ClosedRange<Double> {
@@ -292,6 +319,18 @@ final class DisplayManager {
 
     /// "Deepest by": Adaptive reaches the deepest end of its band by this local time. Nil is off.
     private(set) var bedtime: Bedtime?
+
+    /// The bedtime, when it will change the curve on the evening that is running or comes
+    /// next. `BedtimeRamp` ignores one that falls after solar midnight or less than one ramp
+    /// after solar noon, and nothing can follow the sun without a coordinate.
+    var effectiveBedtime: Bedtime? {
+        guard let bedtime, let coordinate = location.coordinate else { return nil }
+        let solarMidnight = SolarCalculator.nextSolarMidnight(after: now(), longitude: coordinate.longitude)
+        // A bedtime the ramp accepts has started by the last second of its evening.
+        let last = BedtimeRamp.weights(at: solarMidnight.addingTimeInterval(-1), bedtime: bedtime,
+                                       solarMidnight: solarMidnight, calendar: calendar)
+        return last.progress > 0 ? bedtime : nil
+    }
 
     /// Set or clear the bedtime. An active curve fades to the new target over the usual
     /// Adaptive fade; the 5 s tick then advances the ramp, so no timer of its own is needed.
@@ -375,10 +414,13 @@ final class DisplayManager {
         // A denied prompt is not fatal: the time-zone city (or the last precise fix) still
         // gives the curve a solar position. Only a total absence of any coordinate blocks.
         guard let coord = location.coordinate else {
-            coordinate = nil
+            // Equal writes still invalidate observers; without a location this runs on
+            // every 5 s tick with nothing changed.
+            if coordinate != nil { coordinate = nil }
             lastCurveIntensity = nil
             lastCurveWhitepoint = nil
-            adaptiveStatusText = location.authorization == .denied ? "Location needed" : "Locating…"
+            let status = location.authorization == .denied ? "Location needed" : "Locating…"
+            if adaptiveStatusText != status { adaptiveStatusText = status }
             if nextSolarEventText != nil { nextSolarEventText = nil }
             return nil
         }
@@ -540,6 +582,18 @@ final class DisplayManager {
         guard adaptiveWpMin == Defaults.whitepointMin, adaptiveWpMax == Defaults.whitepointMax,
               adaptiveWhitepointOffset == 0, pendingAdaptiveWhitepoint == nil else { return false }
         return adaptiveEnabled || whitepoint == Defaults.whitepoint
+    }
+
+    /// The Auto half of `intensityIsDefault`: the limits and the nudge. Manual does not show
+    /// them, and they return with Auto.
+    var intensityAutoSettingsAreDefault: Bool {
+        adaptiveMin == Defaults.intensityMin && adaptiveMax == Defaults.intensityMax
+            && adaptiveIntensityOffset == 0 && pendingAdaptiveIntensity == nil
+    }
+
+    var whitepointAutoSettingsAreDefault: Bool {
+        adaptiveWpMin == Defaults.whitepointMin && adaptiveWpMax == Defaults.whitepointMax
+            && adaptiveWhitepointOffset == 0 && pendingAdaptiveWhitepoint == nil
     }
 
     /// Restore Intensity to factory settings: the band back to its full default range, any
@@ -862,8 +916,14 @@ final class DisplayManager {
         if apply { gamma.displaysDidChange() }
         // Dedupe defensively — a duplicate ID from the system would otherwise both trap
         // the uniquing dictionary and confuse SwiftUI's Identifiable ForEach.
-        var currentIDs = Set<CGDirectDisplayID>()
-        let ids = discoveredIDs.filter { currentIDs.insert($0).inserted }
+        var names: [CGDirectDisplayID: String] = [:]
+        let ids = discoveredIDs.filter { id in
+            guard names[id] == nil else { return false }
+            let name = getDisplayName(id)
+            names[id] = name
+            return !name.localizedCaseInsensitiveContains("backstage")
+        }
+        let currentIDs = Set(ids)
         let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
         let keys = Dictionary(uniqueKeysWithValues: ids.map { id in
             let key = getDisplayPersistenceKey(id)
@@ -904,14 +964,14 @@ final class DisplayManager {
                 let inverted = retained?.isInverted
                     ?? persistedDisplayFlag(id, persistenceKey: key, suffix: "inverted")
                 return DisplayInfo(
-                    id: id, persistenceKey: key, name: getDisplayName(id),
+                    id: id, persistenceKey: key, name: names[id]!,
                     isEnabled: enabled, isInverted: inverted)
             }
         } else {
             // Same displays: refresh names in place (a monitor can be renamed in System
             // Settings) without replacing the array and invalidating every row's identity.
             for i in displays.indices {
-                let name = getDisplayName(displays[i].id)
+                let name = names[displays[i].id]!
                 if displays[i].name != name { displays[i].name = name }
             }
         }
@@ -1980,6 +2040,15 @@ final class DisplayManager {
                 return p
             }
             lastSavedPresets = saved
+            // Saved presets keep their stored name, so the renamed default is migrated here.
+            // Write it now: nothing else saves until the user next changes a setting.
+            if let last = presets.indices.last, presets[last].name == Preset.legacyLastName {
+                presets[last].name = Preset.defaults[last].name
+                if let data = try? JSONEncoder().encode(presets) {
+                    defaults.set(data, forKey: "redlight.presets")
+                    lastSavedPresets = presets
+                }
+            }
         }
         if let index = defaults.object(forKey: "redlight.activePresetIndex") as? Int,
            presets.indices.contains(index),

@@ -190,13 +190,44 @@ import Testing
         #expect(CommandError.unreachable("no server").exitCode == 2)
         #expect(CommandPreset.allCases.map(\.rawValue) == ["day", "warm", "sunset", "night", "deep-red"])
         #expect(CommandPreset.allCases.map(\.index) == Array(Preset.defaults.indices))
+        #expect(CommandPreset.late.index == Preset.defaults.count - 1)
+    }
+
+    /// The preset is named Late, but both directions of the wire keep "deep-red": a peer on
+    /// the same protocol version that predates the rename neither sends nor decodes "late".
+    @Test func latePresetKeepsItsDeepRedWireValueInBothDirections() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        func json(_ command: RedlightCommand) throws -> String {
+            String(decoding: try encoder.encode(CommandRequest(command: command)), as: UTF8.self)
+        }
+        let apply = #"{"command":{"preset":{"_0":"deep-red"}},"v":3}"#
+        let save = #"{"command":{"savePreset":{"_0":"deep-red"}},"v":3}"#
+        #expect(try json(.preset(.late)) == apply)
+        #expect(try json(.savePreset(.late)) == save)
+        #expect(try JSONDecoder().decode(CommandRequest.self, from: Data(apply.utf8)).command == .preset(.late))
+        #expect(try JSONDecoder().decode(CommandRequest.self, from: Data(save.utf8)).command == .savePreset(.late))
+
+        let status = Status(on: true, activePreset: .late, version: "1.2")
+        let encoded = try JSONEncoder().encode(CommandReply.success(status))
+        let reply = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect((reply["status"] as? [String: Any])?["activePreset"] as? String == "deep-red")
+
+        // A reply as an app from before the rename writes it.
+        let older = Data(#"""
+        {"v":3,"ok":true,"status":{"running":true,"on":true,"displays":[],"color":{"set":0,"target":0},\#
+        "whitepoint":{"set":30,"target":30},"activePreset":"deep-red","adaptive":false,"statusLine":"",\#
+        "limits":{"color":{"min":0,"max":100},"whitepoint":{"min":30,"max":100}},"appearance":"dark",\#
+        "login":{"enabled":false,"requiresApproval":false},"version":"1.5.1","fading":false}}
+        """#.utf8)
+        #expect(try CommandClient.decodeReply(older).activePreset == .late)
     }
 
     @Test func everyPopoverDescriptorDispatchesTheActualPayload() {
         let pairs: [(PopoverAction, RedlightCommand)] = [
             (.master(.toggle), .master(.toggle)), (.pause(.on), .pause(.on)),
             (.reset(.color), .reset(.color)), (.reset(.whitepoint), .reset(.whitepoint)),
-            (.preset(.deepRed), .preset(.deepRed)), (.savePreset(.warm), .savePreset(.warm)),
+            (.preset(.late), .preset(.late)), (.savePreset(.warm), .savePreset(.warm)),
             (.adaptive(.off), .adaptive(.off)),
             (.display(.key("selected-display"), .on), .display(.key("selected-display"), .on)),
             (.invert(.key("selected-display"), .off), .invert(.key("selected-display"), .off)),

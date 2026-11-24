@@ -5,17 +5,13 @@ import Testing
 @testable import Redlight
 
 @Suite struct AppLifecycleTests {
-    /// `DisplaySessionRecovery` calls `synchronize()`, which writes a real plist under
-    /// ~/Library/Preferences. Clean it up afterwards so test runs leave no litter.
+    /// `DisplaySessionRecovery` calls `synchronize()`, which writes a real plist. The
+    /// registry keeps it out of ~/Library/Preferences.
     func withFreshDefaults(_ body: (UserDefaults) -> Void) {
-        let name = "RedlightLifecycleTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        defer {
-            defaults.removePersistentDomain(forName: name)
-            defaults.synchronize()
+        let registry = TestDefaultsRegistry()
+        withExtendedLifetime(registry) {
+            body(registry.makeDefaults(prefix: "RedlightLifecycleTests"))
         }
-        body(defaults)
     }
 
     @Test func cleanSessionDoesNotTriggerRecoveryButUncleanSessionDoes() {

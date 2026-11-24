@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Redesigned the menu bar popover. Displays are at the top, each with its Invert control. **Auto** follows the sun and shows the next solar event, the sun arc and your limits; **Manual** shows the presets and holds a setting. Sliders show their value as a percentage, and limits are labelled.
+- Moved Launch at Login, Pause for apps, Keyboard Shortcuts, manual location, Updates, About and Quit to a Settings page inside the popover.
+- New menu bar icon: a setting sun. It is an outlined ring when no filter is showing, and a solid disc with one, two or three lines across it as the filter deepens.
+- New app icon: a red sun setting behind a beige CRT monitor with a red screen, under a starry sky.
+- Renamed the Deep Red preset to **Late**. A saved preset still named Deep Red is renamed on launch. `redlight preset late` is the new spelling; `deep-red` keeps working, and `status --json` still reports `deep-red`. Existing Shortcuts and keyboard shortcuts are unaffected.
+- The Location row names where Auto's location comes from: Automatic, Time zone, Last known or Manual. A bedtime that is too early or too late to take effect is no longer shown as active.
+- Pressing a slider's handle moves the value, even when it rests on a limit. Limits are dragged by the ticks above and below it.
+- The popover redraws about twice as fast while a slider is dragged.
+- Slider handles, switches and buttons stay readable with the Late preset on, in light and dark appearance. Text and marks are stronger with Increase Contrast on.
+
 ## 1.5.1 - 2026-11-22
 
 - Preserved native display calibration resolution and fixed stale slider previews when switching controls.

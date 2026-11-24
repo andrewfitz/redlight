@@ -43,7 +43,7 @@ enum AdaptiveMapping {
         }
 
         // Where the sun curve itself sits at solar midnight. Nights that dip below the horizon
-        // are stretched to Deep Red there, so this is the band minimum and the release below
+        // are stretched to Late there, so this is the band minimum and the release below
         // does nothing. Under the midnight sun it is far lighter, and the floor eases to it
         // over the last stretch instead of snapping at solar midnight.
         let midnight = sunBanded(
@@ -81,7 +81,7 @@ enum AdaptiveMapping {
                 remap(t.whitepoint, day: presets[0].whitepoint, deep: presets[4].whitepoint, lo: wLo, hi: wHi))
     }
 
-    /// Normalize a curve value from its Day…Deep Red anchors onto the band. When the user
+    /// Normalize a curve value from its Day…Late anchors onto the band. When the user
     /// has saved identical anchors (a flat curve) there is no fraction to take — fall back
     /// to clamping the raw value into the band instead of pinning to either end.
     private static func remap(_ v: Double, day: Double, deep: Double, lo: Double, hi: Double) -> Double {
