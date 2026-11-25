@@ -27,45 +27,52 @@ private final class FakeNightShift: NightShiftControlling {
     @Test func withoutNightShiftTheSettingIsUnavailableAndCannotBeWritten() {
         let defaults = defaultsRegistry.makeDefaults(prefix: "NightShiftTests")
         let nightShift = NightShiftGuard(defaults: defaults)
-        #expect(!nightShift.isAvailable && !nightShift.keepsOff)
-        nightShift.setKeepsOff(true)
-        #expect(!nightShift.keepsOff)
+        #expect(!nightShift.isAvailable && nightShift.keepsOff)
+        nightShift.setKeepsOff(false)
+        #expect(nightShift.keepsOff)
         #expect(defaults.object(forKey: NightShiftGuard.key) == nil)
         nightShift.connect(nil)
         #expect(!nightShift.isAvailable)
     }
 
-    @Test func offByDefaultAndNightShiftIsLeftAlone() {
-        let system = FakeNightShift()
-        system.isOn = true
-        let nightShift = NightShiftGuard(defaults: defaultsRegistry.makeDefaults(prefix: "NightShiftTests"))
-        nightShift.connect(system)
-        #expect(nightShift.isAvailable && !nightShift.keepsOff)
-        system.comeOn()
-        #expect(system.isOn && system.turnOffCount == 0)
-    }
-
-    @Test func switchingItOnTurnsNightShiftOffNowAndWheneverItComesBack() {
+    @Test func onByDefaultSoNightShiftIsTurnedOffAtLaunchAndWheneverItComesBack() {
         let defaults = defaultsRegistry.makeDefaults(prefix: "NightShiftTests")
         let system = FakeNightShift()
         system.isOn = true
         let nightShift = NightShiftGuard(defaults: defaults)
+        #expect(nightShift.keepsOff && system.isOn)        // nothing to act through yet
         nightShift.connect(system)
-        nightShift.setKeepsOff(true)
-        #expect(defaults.bool(forKey: NightShiftGuard.key))
+        #expect(nightShift.isAvailable && nightShift.keepsOff)
         #expect(!system.isOn && system.turnOffCount == 1)
+        #expect(defaults.object(forKey: NightShiftGuard.key) == nil)   // the default is not written
         // Its schedule starts it again.
         system.comeOn()
         #expect(!system.isOn && system.turnOffCount == 2)
         // A change that leaves it off is nothing to act on.
         system.onChange?()
         #expect(system.turnOffCount == 2)
+    }
 
-        // Off again: Night Shift is the user's and the schedule's once more.
+    @Test func switchedOffNightShiftIsLeftAloneUntilItIsSwitchedOnAgain() {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "NightShiftTests")
+        let system = FakeNightShift()
+        let nightShift = NightShiftGuard(defaults: defaults)
+        nightShift.connect(system)
         nightShift.setKeepsOff(false)
-        #expect(!defaults.bool(forKey: NightShiftGuard.key))
+        #expect(defaults.object(forKey: NightShiftGuard.key) as? Bool == false)
         system.comeOn()
-        #expect(system.isOn && system.turnOffCount == 2)
+        #expect(system.isOn && system.turnOffCount == 0)
+
+        // The choice is remembered: a relaunch leaves Night Shift alone too.
+        let relaunched = NightShiftGuard(defaults: defaults)
+        #expect(!relaunched.keepsOff)
+        relaunched.connect(system)
+        #expect(system.isOn && system.turnOffCount == 0)
+
+        // Switched on again, it acts at once.
+        relaunched.setKeepsOff(true)
+        #expect(defaults.object(forKey: NightShiftGuard.key) as? Bool == true)
+        #expect(!system.isOn && system.turnOffCount == 1)
     }
 
     @Test func aSavedSettingIsEnforcedAtLaunch() {

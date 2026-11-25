@@ -165,9 +165,9 @@ noon; one outside that has no effect.
 
 ### Night Shift
 
-Night Shift adds its own tint on top of Redlight's. **Keep Night Shift off** in Settings
-turns Night Shift off whenever it comes on while Redlight is running. Its schedule is not
-changed, so it returns at its next start once the switch is off. The switch is shown on
+Night Shift adds its own tint on top of Redlight's. **Keep Night Shift off** in Settings,
+on by default, turns Night Shift off whenever it comes on while Redlight is running. Its
+schedule is not changed, so it returns at its next start once the switch is off. The switch is shown on
 Macs whose display supports Night Shift. It uses a private macOS interface and disappears
 on a macOS version that changes it.
 

@@ -178,6 +178,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <string>SEcy337jNOT0XmvFnGPciypmt8hO3YKfa/uXUHQXiI4=</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>
 PLIST

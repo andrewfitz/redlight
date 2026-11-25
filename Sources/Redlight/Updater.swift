@@ -17,6 +17,8 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
     private(set) var canCheckForUpdates = false
     /// Sparkle's own setting, kept by Sparkle in the app's defaults: new versions are
     /// downloaded in the background and installed when the app next quits, without asking.
+    /// On until the user switches it off: `SUAutomaticallyUpdate` in the Info.plist that
+    /// `build.sh` writes is its initial value, which Sparkle ignores where it is not allowed.
     private(set) var updatesAutomatically = false
     /// False where that setting cannot be turned on: automatic checks are off.
     private(set) var canUpdateAutomatically = false

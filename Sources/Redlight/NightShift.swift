@@ -9,8 +9,8 @@ protocol NightShiftControlling: AnyObject {
     var onChange: (() -> Void)? { get set }
 }
 
-/// "Keep Night Shift off", in Settings. Night Shift adds its own tint on top of Redlight's,
-/// so with the setting on Redlight turns Night Shift off whenever it comes on: at launch,
+/// "Keep Night Shift off", in Settings, on unless the user switches it off. Night Shift adds
+/// its own tint on top of Redlight's, so Redlight turns Night Shift off whenever it comes on: at launch,
 /// when the setting is switched on, and when Night Shift's schedule or the user starts it.
 /// Night Shift's own schedule is not changed, so it returns at its next start once the
 /// setting is off or Redlight has quit.
@@ -29,7 +29,7 @@ final class NightShiftGuard {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        keepsOff = defaults.bool(forKey: Self.key)
+        keepsOff = defaults.object(forKey: Self.key) as? Bool ?? true
     }
 
     /// Nil where this Mac or this macOS has no Night Shift that Redlight can reach.
