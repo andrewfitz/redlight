@@ -35,9 +35,9 @@ import Testing
         #expect(MenuBarIcon.slits(for: .mid).map(\.minY) == [4, 7])
         #expect(MenuBarIcon.slits(for: .deep).map(\.minY) == [4, 7, 10])
         for slit in MenuBarIcon.slits(for: .deep) {
-            // Whole points, so a slit is one clean pixel row at 1x.
+            // Whole-point bottoms and 1.5 pt height: three clean pixel rows at 2x.
             #expect(slit.minY == slit.minY.rounded())
-            #expect(slit.height == 1)
+            #expect(slit.height == 1.5)
             #expect(slit.minX == 0 && slit.width == MenuBarIcon.size.width)
         }
     }
@@ -60,14 +60,17 @@ import Testing
     func activeLevelsAreASolidDiscCutOnlyByTheirSlits(scale: Int) throws {
         for level in [MenuBarIcon.Level.low, .mid, .deep] {
             let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
-            let slitRows = Set(MenuBarIcon.slits(for: level).map { Int($0.minY) })
-            // Down the middle of the disc, away from its rounded edge.
-            for row in 2..<16 {
-                let value = try alpha(in: bitmap, x: 9 * scale, logicalY: row * scale + scale / 2)
-                if slitRows.contains(row) {
-                    #expect(value < 0.01, "level \(level) row \(row) should be a slit")
-                } else {
-                    #expect(value > 0.99, "level \(level) row \(row) should be solid")
+            let slits = MenuBarIcon.slits(for: level)
+            // Down the middle of the disc, away from its rounded edge, one pixel at a time.
+            // A pixel wholly inside a slit is clear, one wholly outside every slit is solid,
+            // and a pixel a slit's half-point edge crosses at 1x is left out.
+            for pixel in (2 * scale)..<(16 * scale) {
+                let low = CGFloat(pixel) / CGFloat(scale), high = CGFloat(pixel + 1) / CGFloat(scale)
+                let value = try alpha(in: bitmap, x: 9 * scale, logicalY: pixel)
+                if slits.contains(where: { $0.minY <= low && high <= $0.maxY }) {
+                    #expect(value < 0.01, "level \(level) pixel row \(pixel) should be a slit")
+                } else if !slits.contains(where: { $0.minY < high && low < $0.maxY }) {
+                    #expect(value > 0.99, "level \(level) pixel row \(pixel) should be solid")
                 }
             }
         }

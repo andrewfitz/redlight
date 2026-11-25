@@ -50,9 +50,9 @@ enum MenuBarIcon {
     static let radius: CGFloat = 7.5
     /// The off ring's line width, matching a medium-weight system glyph.
     static let ringWidth: CGFloat = 1.25
-    static let slitHeight: CGFloat = 1
-    /// Bottom edge of each slit, lowest first, in points from the bottom of the image. Slits
-    /// sit on whole points so they stay one clean pixel row on a 1x display.
+    static let slitHeight: CGFloat = 1.5
+    /// Bottom edge of each slit, lowest first, in points from the bottom of the image. Each
+    /// slit is 1.5 pt, three clean pixel rows on a Retina display.
     static let slitOrigins: [CGFloat] = [4, 7, 10]
 
     /// The slits a level shows: the lowest one first, one more per level.
