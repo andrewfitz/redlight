@@ -320,20 +320,21 @@ struct SunArcView: View {
     /// between the samples on either side. A sample exactly on the horizon is the crossing
     /// when the sun is on opposite sides before and after it; a curve that only touches the
     /// horizon and turns back does not cross. Polar day and polar night give none.
-    static func horizonCrossings(in samples: [SunCycle.Sample]) -> [HorizonCrossing] {
+    /// `level` is the elevation that counts as the horizon.
+    static func horizonCrossings(in samples: [SunCycle.Sample], at level: Double = 0) -> [HorizonCrossing] {
         var result: [HorizonCrossing] = []
         // The last sample that was clearly above or below the horizon.
         var previous: Int?
         for index in samples.indices {
             let elevation = samples[index].elevation
-            guard elevation.isFinite, elevation != 0 else { continue }
+            guard elevation.isFinite, elevation != level else { continue }
             defer { previous = index }
-            guard let previous, (samples[previous].elevation > 0) != (elevation > 0) else { continue }
+            guard let previous, (samples[previous].elevation > level) != (elevation > level) else { continue }
             let a: SunCycle.Sample, b: SunCycle.Sample, f: Double
             if index == previous + 1 {
                 a = samples[previous]
                 b = samples[index]
-                f = a.elevation / (a.elevation - b.elevation)
+                f = (a.elevation - level) / (a.elevation - b.elevation)
             } else {
                 // One or more samples sat on the horizon: cross in the middle of them.
                 a = samples[previous + 1]
@@ -343,16 +344,17 @@ struct SunArcView: View {
             result.append(HorizonCrossing(
                 t: a.t + (b.t - a.t) * f,
                 date: a.date.addingTimeInterval(b.date.timeIntervalSince(a.date) * f),
-                rising: elevation > 0))
+                rising: elevation > level))
         }
         return result
     }
 
-    /// The first sunrise and the last sunset of the sampled day.
+    /// The first sunrise and the last sunset of the sampled day, as an almanac times them:
+    /// at the apparent horizon, a few minutes outside the geometric crossings.
     static func sunriseAndSunset(
         in samples: [SunCycle.Sample]
     ) -> (sunrise: HorizonCrossing?, sunset: HorizonCrossing?) {
-        let crossings = horizonCrossings(in: samples)
+        let crossings = horizonCrossings(in: samples, at: SolarCurve.apparentHorizonElevation)
         return (crossings.first { $0.rising }, crossings.last { !$0.rising })
     }
 

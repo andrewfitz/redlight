@@ -24,6 +24,7 @@ enum CLIParser {
       preset [save] <day|warm|sunset|night|late>
       adaptive <on|off|toggle>
       adaptive bedtime <HH:MM|off>
+      adaptive wake <HH:MM|off>
       location <latitude> <longitude> | location auto
       limits <color|whitepoint> <min> <max>
       display list
@@ -97,6 +98,13 @@ enum CLIParser {
                 if tail[1] == "off" { command = .bedtime(.off); break }
                 let bedtime = try Bedtime.parse(tail[1])
                 command = .bedtime(.at(hour: bedtime.hour, minute: bedtime.minute))
+                break
+            }
+            if tail.first == "wake" {
+                try count(2, "adaptive wake <HH:MM|off>")
+                if tail[1] == "off" { command = .wake(.off); break }
+                let wake = try Bedtime.parse(tail[1], invalidMessage: Bedtime.invalidWakeMessage)
+                command = .wake(.at(hour: wake.hour, minute: wake.minute))
                 break
             }
             try count(1, "adaptive <on|off|toggle>")
@@ -249,7 +257,7 @@ enum RedlightCLI {
         Color temp: \(status.color.text)
         White point: \(status.whitepoint.text)
         Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
-        Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.fading ? "; fading" : "")
+        Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.wake.map { "; wake \($0)" } ?? "")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")
         \(status.statusLine)

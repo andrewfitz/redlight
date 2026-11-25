@@ -28,9 +28,10 @@ struct SunCycle {
     /// The physical elevation markers shown on the sun arc.
     static let thresholds: [Double] = SolarCurve.elevationMarkers.map(\.elevation)
     /// The named horizon and twilight crossings only. The +12° and +6° curve anchors have
-    /// no everyday name, so a "next event" shown to the user skips them.
+    /// no everyday name, so a "next event" shown to the user skips them. Sunrise and sunset
+    /// are the apparent ones, so the countdown agrees with the times under the sun arc.
     static let twilightThresholds: [Double] = [
-        SolarCurve.sunsetElevation, SolarCurve.civilDuskElevation,
+        SolarCurve.apparentHorizonElevation, SolarCurve.civilDuskElevation,
         SolarCurve.nauticalDuskElevation, SolarCurve.nightElevation,
     ]
 
@@ -91,13 +92,13 @@ struct SunCycle {
         return result
     }
 
-    /// The next upward horizon crossing, or nil in polar day or night. It looks 25 hours
+    /// The next apparent sunrise, or nil in polar day or night. It looks 25 hours
     /// ahead: in autumn tomorrow's sunrise is later than today's, so just after sunrise the
     /// next one is more than 24 hours away.
     /// A horizon-only scan would return the sunset first during the day, so it is rising-only.
     static func nextSunrise(after now: Date, latitude: Double, longitude: Double) -> Date? {
         findNextEvent(now: now, latitude: latitude, longitude: longitude,
-                      thresholds: [SolarCurve.sunsetElevation], rising: true, horizon: 90_000)
+                      thresholds: [SolarCurve.apparentHorizonElevation], rising: true, horizon: 90_000)
             .map { now.addingTimeInterval($0.seconds) }
     }
 
@@ -185,14 +186,14 @@ struct SunCycle {
     /// (civil / nautical / astronomical twilight).
     private static func label(threshold thr: Double, rising: Bool) -> String {
         switch (thr, rising) {
-        case (0, false):   return "sunset"
+        case (0, false), (SolarCurve.apparentHorizonElevation, false): return "sunset"
         case (-6, false):  return "civil dusk"
         case (-12, false): return "nautical dusk"
         case (-18, false): return "fully dark"
         case (-18, true):  return "first light"
         case (-12, true):  return "nautical dawn"
         case (-6, true):   return "civil dawn"
-        case (0, true):    return "sunrise"
+        case (0, true), (SolarCurve.apparentHorizonElevation, true): return "sunrise"
         default:           return "transition"
         }
     }

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The Settings page, pushed inside the popover: Auto's bedtime and the location it follows,
+/// The Settings page, pushed inside the popover: Auto's two times and the location it follows,
 /// the general switches, then updates, About and Quit. Displays stay on the main page.
 struct SettingsPage: View {
     let manager: DisplayManager
@@ -15,6 +15,8 @@ struct SettingsPage: View {
     let locationDraft: LocationDraft
     /// The time in the "Deepest by" field, owned by the popover for the same reason.
     let bedtimeDraft: BedtimeDraft
+    /// The time in the "Clear by" field, likewise.
+    let wakeDraft: BedtimeDraft
     let headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding
     let back: () -> Void
     let showAbout: () -> Void
@@ -24,7 +26,7 @@ struct SettingsPage: View {
             EmberPageHeader(title: "Settings", titleFocus: (headerFocus, .settings), back: back)
             VStack(alignment: .leading, spacing: 6) {
                 EmberGroupLabel("Auto")
-                BedtimeCard(manager: manager, dispatch: dispatch, draft: bedtimeDraft)
+                BedtimeCard(manager: manager, dispatch: dispatch, draft: bedtimeDraft, wakeDraft: wakeDraft)
             }
             VStack(alignment: .leading, spacing: 6) {
                 EmberGroupLabel("Location for Auto")
@@ -32,7 +34,8 @@ struct SettingsPage: View {
             }
             // Only a built app has an updater; a render can stand in for it.
             let hasUpdates = initialState.updatesAutomatically != nil || Updater.shared.isAvailable
-            if launchAtLogin != nil || hasUpdates || apps != nil || openShortcuts != nil {
+            let hasNightShift = initialState.keepsNightShiftOff != nil || NightShiftGuard.shared.isAvailable
+            if launchAtLogin != nil || hasUpdates || hasNightShift || apps != nil || openShortcuts != nil {
                 VStack(alignment: .leading, spacing: 6) {
                     EmberGroupLabel("General")
                     EmberCard {
@@ -43,13 +46,17 @@ struct SettingsPage: View {
                         if hasUpdates {
                             AutomaticUpdatesRow(divider: launchAtLogin != nil, stand: initialState.updatesAutomatically)
                         }
+                        if hasNightShift {
+                            NightShiftRow(divider: launchAtLogin != nil || hasUpdates,
+                                          stand: initialState.keepsNightShiftOff)
+                        }
                         if let apps {
                             PauseForAppsControl(apps: apps, dispatch: dispatch,
-                                                divider: launchAtLogin != nil || hasUpdates,
+                                                divider: launchAtLogin != nil || hasUpdates || hasNightShift,
                                                 startExpanded: initialState.choosingApps)
                         }
                         if let openShortcuts {
-                            ShortcutsRow(divider: launchAtLogin != nil || hasUpdates || apps != nil,
+                            ShortcutsRow(divider: launchAtLogin != nil || hasUpdates || hasNightShift || apps != nil,
                                          open: openShortcuts)
                         }
                     }
@@ -64,16 +71,20 @@ struct SettingsPage: View {
 
 // MARK: - Bedtime
 
-/// "Deepest by", at the top of Settings. Its own view, so that the bedtime is read here and
-/// a change to it evaluates this card and not the page.
+/// "Deepest by" and "Clear by", at the top of Settings. Its own view, so that the two times
+/// are read here and a change to either evaluates this card and not the page.
 private struct BedtimeCard: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
     let draft: BedtimeDraft
+    let wakeDraft: BedtimeDraft
 
     var body: some View {
         EmberCard {
             BedtimeRow(bedtime: manager.bedtime, draft: draft) { dispatch(.bedtime($0)) }
+            BedtimeRow(kind: .wake, divider: true, bedtime: manager.wakeTime, draft: wakeDraft) {
+                dispatch(.wake($0))
+            }
         }
     }
 }
@@ -185,6 +196,31 @@ private struct AutomaticUpdatesRow: View {
             .disabled(stand == nil && !updater.canUpdateAutomatically)
         }
         .help("Download new versions in the background and install them when Redlight next quits")
+    }
+}
+
+/// "Keep Night Shift off". Like the updater's switch it is the system's setting to change,
+/// not the display model's, so it goes to the guard and not through the command layer.
+private struct NightShiftRow: View {
+    static let title = "Keep Night Shift off"
+
+    let divider: Bool
+    /// A render's stand-in for the guard's setting; nil in the app.
+    let stand: Bool?
+
+    var body: some View {
+        let nightShift = NightShiftGuard.shared
+        EmberRow(divider: divider) {
+            // The switch carries the name for VoiceOver, as the display rows do.
+            Text(Self.title)
+                .accessibilityHidden(true)
+            Spacer(minLength: 0)
+            EmberSwitch(Self.title, isOn: Binding(
+                get: { stand ?? nightShift.keepsOff },
+                set: { nightShift.setKeepsOff($0) }
+            ))
+        }
+        .help("Night Shift adds its own tint on top of Redlight's. Redlight turns it off whenever it comes on, without changing its schedule.")
     }
 }
 

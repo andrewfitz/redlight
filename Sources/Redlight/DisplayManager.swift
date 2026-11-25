@@ -370,17 +370,30 @@ final class DisplayManager {
 
     /// "Deepest by": Adaptive reaches the deepest end of its band by this local time. Nil is off.
     private(set) var bedtime: Bedtime?
+    /// "Clear by": Adaptive is back at the Day end of its band by this local time, and a
+    /// bedtime holds through the night until then. Nil is off.
+    private(set) var wakeTime: Bedtime?
 
     /// The bedtime, when it will change the curve on the evening that is running or comes
-    /// next. `BedtimeRamp` ignores one that falls after solar midnight or less than one ramp
-    /// after solar noon, and nothing can follow the sun without a coordinate.
+    /// next. `BedtimeRamp` ignores one that falls less than one ramp after solar noon, or
+    /// after solar midnight unless a wake time holds the night open for it, and nothing can
+    /// follow the sun without a coordinate.
     var effectiveBedtime: Bedtime? {
-        guard let bedtime, let coordinate = location.coordinate else { return nil }
-        let solarMidnight = SolarCalculator.nextSolarMidnight(after: now(), longitude: coordinate.longitude)
-        // A bedtime the ramp accepts has started by the last second of its evening.
-        let last = BedtimeRamp.weights(at: solarMidnight.addingTimeInterval(-1), bedtime: bedtime,
-                                       solarMidnight: solarMidnight, calendar: calendar)
-        return last.progress > 0 ? bedtime : nil
+        nightSchedule?.bedtime != nil ? bedtime : nil
+    }
+
+    /// The wake time, when it will change the curve on the morning that comes next:
+    /// `BedtimeRamp` ignores one that is not between solar midnight and solar noon.
+    var effectiveWakeTime: Bedtime? {
+        nightSchedule?.wake != nil ? wakeTime : nil
+    }
+
+    private var nightSchedule: BedtimeRamp.Schedule? {
+        guard bedtime != nil || wakeTime != nil, let coordinate = location.coordinate else { return nil }
+        return BedtimeRamp.schedule(
+            bedtime: bedtime, wake: wakeTime,
+            solarMidnight: SolarCalculator.nextSolarMidnight(after: now(), longitude: coordinate.longitude),
+            calendar: calendar)
     }
 
     /// Set or clear the bedtime. An active curve fades to the new target over the usual
@@ -395,28 +408,43 @@ final class DisplayManager {
         save()
     }
 
+    /// Set or clear the wake time, as `setBedtime` does the bedtime.
+    func setWakeTime(_ wakeTime: Bedtime?) {
+        guard !isTerminating, wakeTime != self.wakeTime else { return }
+        self.wakeTime = wakeTime
+        if adaptiveEnabled {
+            animateNextAdaptiveTarget = true
+            applyAdaptive()
+        }
+        save()
+    }
+
     /// The applied value for a sun elevation: the curve with the offset and the hard-band
     /// clamp, exactly as the display gets it. Pass the sample's
-    /// time to include the bedtime floor.
+    /// time to include the bedtime floor and the wake-time lift.
     func adaptiveIntensity(
-        at elevation: Double, minElevation: Double, rising: Bool = false,
+        at elevation: Double, minElevation: Double, maxElevation: Double, rising: Bool = false,
         time: (date: Date, longitude: Double)? = nil
     ) -> Double {
         let curve = adaptiveCurve(
-            elevation: elevation, minElevation: minElevation, rising: rising, time: time)
+            elevation: elevation, minElevation: minElevation, maxElevation: maxElevation,
+            rising: rising, time: time)
         return clamp(curve.intensity + adaptiveIntensityOffset, to: intensityBand)
     }
 
-    /// The one banded curve, bedtime floor included, behind the live target, the sun arc and
-    /// the Save to Preset rebase.
+    /// The one banded curve, bedtime floor and wake-time lift included, behind the live
+    /// target, the sun arc and the Save to Preset rebase.
     private func adaptiveCurve(
-        elevation: Double, minElevation: Double, rising: Bool, time: (date: Date, longitude: Double)?
+        elevation: Double, minElevation: Double, maxElevation: Double, rising: Bool,
+        time: (date: Date, longitude: Double)?
     ) -> AdaptiveMapping.Target {
         let weights = time.map {
-            BedtimeRamp.weights(at: $0.date, bedtime: bedtime, longitude: $0.longitude, calendar: calendar)
+            BedtimeRamp.weights(at: $0.date, bedtime: bedtime, wake: wakeTime,
+                                longitude: $0.longitude, calendar: calendar)
         } ?? .inactive
         return AdaptiveMapping.target(
-            elevation: elevation, minElevation: minElevation, rising: rising, presets: presets,
+            elevation: elevation, minElevation: minElevation, maxElevation: maxElevation,
+            rising: rising, presets: presets,
             intensityMin: adaptiveMin, intensityMax: adaptiveMax,
             whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax, bedtime: weights
         )
@@ -480,12 +508,14 @@ final class DisplayManager {
         let (elev, rising) = SolarCalculator.position(
             at: date, latitude: coord.latitude, longitude: coord.longitude)
         let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
-        // Morning and evening curves differ above the horizon. Where the sun stays below the
-        // Day anchor at noon (high-latitude winter) the switch is a step, so fade across it.
+        let maxElev = SolarCalculator.elevationAtSolarNoon(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        // Morning and evening curves differ above the horizon. They meet at solar noon and
+        // midnight everywhere but within a few degrees of the poles; fade across the switch
+        // so that what is left of a step there is never a jump.
         if let lastAdaptiveRising, lastAdaptiveRising != rising { animateNextAdaptiveTarget = true }
         lastAdaptiveRising = rising
         let banded = adaptiveCurve(
-            elevation: elev, minElevation: minElev, rising: rising,
+            elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising,
             time: (date: date, longitude: coord.longitude))
 
         // If the user moved a slider while Core Location was still resolving, preserve the
@@ -513,7 +543,7 @@ final class DisplayManager {
 
         let elevationText = Self.formatElevation(elev)
         // The floor, not the sun, set the curve (before the manual offset).
-        let floored = banded.bedtime ? " · bedtime" : ""
+        let floored = banded.wake ? " · wake time" : banded.bedtime ? " · bedtime" : ""
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0)
             ? " · adjusted" : ""
         let source = location.manualCoordinate != nil ? " · manual"
@@ -848,6 +878,8 @@ final class DisplayManager {
         if adaptiveWpMin > adaptiveWpMax { swap(&adaptiveWpMin, &adaptiveWpMax) }
         // Minutes after midnight; anything else (wrong type, out of range) reads as off.
         self.bedtime = (defaults.object(forKey: "redlight.adaptiveBedtime") as? Int)
+            .flatMap { Bedtime(minuteOfDay: $0) }
+        self.wakeTime = (defaults.object(forKey: "redlight.adaptiveWakeTime") as? Int)
             .flatMap { Bedtime(minuteOfDay: $0) }
         loadPresets()
         if adaptiveEnabled { activePresetIndex = nil }
@@ -1276,8 +1308,10 @@ final class DisplayManager {
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let minElev = SolarCalculator.elevationAtSolarMidnight(
                     at: date, latitude: coord.latitude, longitude: coord.longitude)
+                let maxElev = SolarCalculator.elevationAtSolarNoon(
+                    at: date, latitude: coord.latitude, longitude: coord.longitude)
                 let curve = adaptiveCurve(
-                    elevation: elev, minElevation: minElev, rising: rising,
+                    elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising,
                     time: (date: date, longitude: coord.longitude))
                 adaptiveIntensityOffset = desiredIntensity - curve.intensity
                 adaptiveWhitepointOffset = desiredWhitepoint - curve.whitepoint
@@ -2134,6 +2168,7 @@ final class DisplayManager {
         persist(adaptiveWpMin, "redlight.adaptiveWpMin")
         persist(adaptiveWpMax, "redlight.adaptiveWpMax")
         persist(bedtime?.minuteOfDay, "redlight.adaptiveBedtime")
+        persist(wakeTime?.minuteOfDay, "redlight.adaptiveWakeTime")
         publishMasterState()
     }
 

@@ -263,23 +263,22 @@ private func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: te
         #expect(!bothPinned.bedtime)
     }
 
-    @Test func midnightSunReleasesTowardTheSunsOwnMidnightValue() {
-        // About 70°N in late June: the sun's lowest point is +3.4°, so the sun curve never
-        // reaches Late. Snapping from the floor to it at solar midnight would jump.
+    @Test func theMidnightSunStillReachesTheDeepestEndSoNothingIsReleased() {
+        // About 70°N in late June the sun's lowest point is +3.4°. The curve slides up so
+        // solar midnight is still Late, and the floor meets it there without a release.
         let atMidnight = sun(3.4, minElevation: 3.4)
-        #expect(atMidnight.intensity > 0.3)
-        #expect(target(3.5, minElevation: 3.4, progress: 1).intensity == 0.2)
-        let half = target(3.5, minElevation: 3.4, progress: 1, release: 0.5)
-        #expect(abs(half.intensity - (0.2 + (atMidnight.intensity - 0.2) / 2)) < 1e-12)
-        #expect(abs(half.whitepoint - (0.3 + (atMidnight.whitepoint - 0.3) / 2)) < 1e-12)
-        let released = target(3.4, minElevation: 3.4, progress: 1, release: 1)
-        #expect(abs(released.intensity - atMidnight.intensity) < 1e-12)
-        #expect(abs(released.whitepoint - atMidnight.whitepoint) < 1e-12)
+        #expect(abs(atMidnight.intensity - 0.2) < 1e-12)
+        #expect(abs(atMidnight.whitepoint - 0.3) < 1e-12)
+        for release in [0.0, 0.5, 1] {
+            let t = target(3.5, minElevation: 3.4, progress: 1, release: release)
+            #expect(abs(t.intensity - 0.2) < 1e-12)
+            #expect(abs(t.whitepoint - 0.3) < 1e-12)
+        }
     }
 
     @Test func releaseIsANoOpOnNightsThatReachLate() {
-        // Nights below the horizon are stretched so solar midnight is already Late.
-        for minElevation in [-6.6, -30, -70] {
+        // Every night is stretched or slid so solar midnight is already Late.
+        for minElevation in [11.4, -2.6, -6.6, -30, -70] {
             for release in [0.0, 0.5, 1] {
                 let t = target(minElevation + 0.5, minElevation: minElevation, progress: 1, release: release)
                 #expect(abs(t.intensity - 0.2) < 1e-12)
@@ -468,12 +467,15 @@ final class BedtimeTestClock {
         let now = clock.date
         let elevation = SolarCalculator.elevation(at: now, latitude: 60, longitude: 0)
         let minimum = SolarCalculator.elevationAtSolarMidnight(at: now, latitude: 60, longitude: 0)
+        let maximum = SolarCalculator.elevationAtSolarNoon(at: now, latitude: 60, longitude: 0)
         let rising = SolarCalculator.isRising(at: now, longitude: 0)
 
         let sample = manager.adaptiveIntensity(
-            at: elevation, minElevation: minimum, rising: rising, time: (date: now, longitude: 0))
+            at: elevation, minElevation: minimum, maxElevation: maximum, rising: rising,
+            time: (date: now, longitude: 0))
         #expect(abs(sample - manager.intensity) < 1e-12)
-        #expect(manager.adaptiveIntensity(at: elevation, minElevation: minimum, rising: rising) > sample)
+        #expect(manager.adaptiveIntensity(
+            at: elevation, minElevation: minimum, maxElevation: maximum, rising: rising) > sample)
 
         let cycle = SunCycle(now: now, latitude: 60, longitude: 0, calendar: calendar())
         let start = calendar().startOfDay(for: now)
@@ -481,7 +483,7 @@ final class BedtimeTestClock {
         #expect(cycle.samples.last?.date == start.addingTimeInterval(86_400))
         let late = try #require(cycle.samples.first { $0.date >= date("2025-06-21T22:40:00Z") })
         #expect(manager.adaptiveIntensity(
-            at: late.elevation, minElevation: minimum, rising: late.rising,
+            at: late.elevation, minElevation: minimum, maxElevation: maximum, rising: late.rising,
             time: (date: late.date, longitude: 0)) < 1e-9)
     }
 
@@ -545,5 +547,215 @@ final class BedtimeTestClock {
         }
         #expect(crossedMidnight)
         #expect(largestEveningStep < 0.004)
+    }
+
+    // MARK: - Wake time
+
+    @Test func aWakeTimeHoldsTheBedtimeThroughTheNightThenClearsBeforeSunriseWouldHave() {
+        // About 60°N at midsummer. Without a wake time the tint lifts from solar midnight.
+        let clock = BedtimeTestClock(date("2025-06-21T20:00:00Z"))
+        let scheduled = makeManager(clock: clock)
+        let plain = makeManager(clock: clock)
+        for manager in [scheduled, plain] {
+            manager.adaptiveEnabled = true
+            manager.setBedtime(bedtime)
+        }
+        scheduled.setWakeTime(Bedtime(hour: 6, minute: 0))
+        #expect(scheduled.effectiveWakeTime == Bedtime(hour: 6, minute: 0))
+        var previous = scheduled.intensity
+        var largestStep = 0.0
+        var sawPlainLighten = false, sawWakeStatus = false
+        while clock.date < date("2025-06-22T14:00:00Z") {
+            clock.date.addTimeInterval(60)
+            scheduled.applyAdaptive()
+            plain.applyAdaptive()
+            largestStep = max(largestStep, abs(scheduled.intensity - previous))
+            previous = scheduled.intensity
+            if clock.date >= date("2025-06-21T22:30:00Z"), clock.date <= date("2025-06-22T05:00:00Z") {
+                #expect(scheduled.intensity < 1e-9)                 // held, past solar midnight
+                if plain.intensity > 0.2 { sawPlainLighten = true }
+            }
+            if clock.date > date("2025-06-22T05:00:00Z"), clock.date < date("2025-06-22T06:00:00Z") {
+                #expect(scheduled.intensity > 0 && scheduled.intensity < 1)
+                if scheduled.adaptiveStatusText.contains("wake time") { sawWakeStatus = true }
+            }
+            if clock.date >= date("2025-06-22T06:00:00Z"), clock.date <= date("2025-06-22T11:30:00Z") {
+                #expect(scheduled.intensity == 1)
+            }
+            if clock.date >= date("2025-06-22T12:30:00Z") {
+                // From solar noon the evening is the sun (and the bedtime) alone again.
+                #expect(scheduled.intensity == plain.intensity)
+            }
+        }
+        #expect(sawPlainLighten && sawWakeStatus)
+        #expect(largestStep < 0.04)
+    }
+
+    @Test func aWakeTimeClearsADarkWinterMorningAndHandsBackToTheSunAtNoonWithoutAStep() {
+        for latitude in [60.0, 70] {   // a late sunrise, and no sunrise at all
+            let clock = BedtimeTestClock(date("2025-12-21T03:00:00Z"))
+            let woken = makeManager(latitude: latitude, clock: clock)
+            let plain = makeManager(latitude: latitude, clock: clock)
+            woken.adaptiveEnabled = true
+            plain.adaptiveEnabled = true
+            woken.setWakeTime(Bedtime(hour: 7, minute: 0))
+            var previous = woken.intensity
+            var largestStep = 0.0
+            while clock.date < date("2025-12-21T15:00:00Z") {
+                clock.date.addTimeInterval(30)
+                woken.applyAdaptive()
+                plain.applyAdaptive()
+                largestStep = max(largestStep, abs(woken.intensity - previous))
+                previous = woken.intensity
+                #expect(woken.intensity >= plain.intensity)             // never redder
+                if clock.date < date("2025-12-21T06:00:00Z") || !SolarCalculator.isRising(at: clock.date, longitude: 0) {
+                    #expect(woken.intensity == plain.intensity)
+                } else if clock.date >= date("2025-12-21T07:00:00Z") {
+                    // The lift ends within seconds of solar noon, where the sun is at Day too.
+                    #expect(woken.intensity > 0.999)
+                }
+                if clock.date == date("2025-12-21T08:00:00Z") { #expect(plain.intensity < 0.6) }
+            }
+            #expect(largestStep < 0.02, "\(latitude)°")
+        }
+    }
+
+    @Test func aWakeTimeLetsABedtimeAfterSolarMidnightCount() {
+        let clock = BedtimeTestClock(date("2025-06-21T18:00:00Z"))
+        let manager = makeManager(clock: clock)
+        manager.adaptiveEnabled = true
+        let late = Bedtime(hour: 1, minute: 30)!
+        manager.setBedtime(late)
+        #expect(manager.effectiveBedtime == nil)                        // after solar midnight
+        manager.setWakeTime(Bedtime(hour: 7, minute: 0))
+        #expect(manager.effectiveBedtime == late)
+        clock.date = date("2025-06-22T02:30:00Z")
+        manager.applyAdaptive()
+        #expect(manager.intensity < 1e-9)
+        #expect(manager.adaptiveStatusText.contains("bedtime"))
+        // A wake time the night has no room for changes nothing.
+        manager.setWakeTime(Bedtime(hour: 15, minute: 0))
+        #expect(manager.effectiveWakeTime == nil && manager.effectiveBedtime == nil)
+    }
+
+    @Test func wakeTimePersistsAndIsSanitizedOnLoad() {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "WakeTimeTests")
+        let clock = BedtimeTestClock(date("2025-06-21T12:00:00Z"))
+        let manager = makeManager(clock: clock, defaults: defaults)
+        #expect(manager.wakeTime == nil)
+        manager.setWakeTime(Bedtime(hour: 6, minute: 45))
+        #expect(defaults.integer(forKey: "redlight.adaptiveWakeTime") == 405)
+        #expect(makeManager(clock: clock, defaults: defaults).wakeTime == Bedtime(hour: 6, minute: 45))
+        defaults.set(5_000, forKey: "redlight.adaptiveWakeTime")
+        #expect(makeManager(clock: clock, defaults: defaults).wakeTime == nil)
+        manager.setWakeTime(nil)
+        #expect(defaults.object(forKey: "redlight.adaptiveWakeTime") == nil)
+    }
+}
+
+@Suite struct WakeTimeTests {
+    let presets = Preset.defaults
+    let midnight = date("2025-06-21T01:00:00Z")   // solar noons at 13:00 on the 20th and the 21st
+
+    func weights(_ text: String, bedtime: Bedtime? = nil, wake: Bedtime?) -> BedtimeRamp.Weights {
+        BedtimeRamp.weights(at: date(text), bedtime: bedtime, wake: wake, solarMidnight: midnight, calendar: calendar())
+    }
+
+    @Test func liftsOverTheHourBeforeTheWakeTimeThenHoldsUntilSolarNoon() {
+        let wake = Bedtime(hour: 7, minute: 0)!
+        #expect(weights("2025-06-20T22:00:00Z", wake: wake) == .inactive)
+        #expect(weights("2025-06-21T01:00:00Z", wake: wake) == .inactive)
+        #expect(weights("2025-06-21T06:00:00Z", wake: wake).lift == 0)
+        #expect(abs(weights("2025-06-21T06:15:00Z", wake: wake).lift - 0.15625) < 1e-12)   // smoothstep(¼)
+        #expect(abs(weights("2025-06-21T06:30:00Z", wake: wake).lift - 0.5) < 1e-12)
+        #expect(weights("2025-06-21T07:00:00Z", wake: wake) == BedtimeRamp.Weights(progress: 0, release: 0, lift: 1))
+        #expect(weights("2025-06-21T12:59:00Z", wake: wake).lift == 1)
+        // From solar noon it is the next night's evening.
+        #expect(weights("2025-06-21T13:00:00Z", wake: wake) == .inactive)
+    }
+
+    @Test func aBedtimeHoldsUntilTheWakeTimeWithNoRelease() {
+        let bedtime = Bedtime(hour: 22, minute: 30)!, wake = Bedtime(hour: 7, minute: 0)!
+        #expect(abs(weights("2025-06-20T21:30:00Z", bedtime: bedtime, wake: wake).progress - 0.5) < 1e-12)
+        for text in ["2025-06-20T22:30:00Z", "2025-06-21T00:30:00Z", "2025-06-21T01:00:00Z", "2025-06-21T05:59:00Z"] {
+            #expect(weights(text, bedtime: bedtime, wake: wake) == BedtimeRamp.Weights(progress: 1, release: 0))
+        }
+        #expect(weights("2025-06-21T06:30:00Z", bedtime: bedtime, wake: wake)
+                == BedtimeRamp.Weights(progress: 1, release: 0, lift: 0.5))
+        #expect(weights("2025-06-21T07:00:00Z", bedtime: bedtime, wake: wake)
+                == BedtimeRamp.Weights(progress: 0, release: 0, lift: 1))
+        // Without the wake time: the release before solar midnight, and nothing after it.
+        #expect(weights("2025-06-21T00:30:00Z", bedtime: bedtime, wake: nil).release == 0.5)
+        #expect(weights("2025-06-21T03:00:00Z", bedtime: bedtime, wake: nil) == .inactive)
+    }
+
+    @Test func theScheduleSaysWhichTimesTheNightHasRoomFor() {
+        func schedule(_ bedtime: Bedtime?, _ wake: Bedtime?) -> BedtimeRamp.Schedule {
+            BedtimeRamp.schedule(bedtime: bedtime, wake: wake, solarMidnight: midnight, calendar: calendar())
+        }
+        func time(_ hour: Int, _ minute: Int = 0) -> Bedtime { Bedtime(hour: hour, minute: minute)! }
+        #expect(schedule(time(22, 30), time(7)) == BedtimeRamp.Schedule(
+            bedtime: date("2025-06-20T22:30:00Z"), wake: date("2025-06-21T07:00:00Z")))
+        // A bedtime after solar midnight counts only when a wake time holds the night open.
+        #expect(schedule(time(1, 30), nil).bedtime == nil)
+        #expect(schedule(time(1, 30), time(7)).bedtime == date("2025-06-21T01:30:00Z"))
+        // It must leave room for the lift: 06:00 is the latest for a 07:00 wake time.
+        #expect(schedule(time(6), time(7)).bedtime == date("2025-06-21T06:00:00Z"))
+        #expect(schedule(time(6, 1), time(7)) == BedtimeRamp.Schedule(bedtime: nil, wake: date("2025-06-21T07:00:00Z")))
+        // A lift never starts before solar midnight, and a wake time after solar noon is none.
+        #expect(schedule(nil, time(2)).wake == date("2025-06-21T02:00:00Z"))
+        #expect(schedule(nil, time(1, 59)).wake == nil)
+        #expect(schedule(nil, time(13)).wake == date("2025-06-21T13:00:00Z"))
+        #expect(schedule(nil, time(13, 1)).wake == nil)
+        #expect(schedule(time(22, 30), time(13, 1)) == BedtimeRamp.Schedule(bedtime: date("2025-06-20T22:30:00Z"), wake: nil))
+        #expect(schedule(nil, nil) == BedtimeRamp.Schedule())
+    }
+
+    @Test func theMorningBelongsToTheNightThatBeganIt() {
+        // Solar midnight at 0° is a little after 00:00 UTC; 06:30 is on its morning side.
+        let wake = Bedtime(hour: 7, minute: 0)!
+        let morning = BedtimeRamp.weights(at: date("2025-06-21T06:30:00Z"), bedtime: nil, wake: wake,
+                                          longitude: 0, calendar: calendar())
+        #expect(abs(morning.lift - 0.5) < 1e-12)
+        #expect(BedtimeRamp.weights(at: date("2025-06-21T06:30:00Z"), bedtime: Bedtime(hour: 22, minute: 30),
+                                    longitude: 0, calendar: calendar()) == .inactive)
+        #expect(BedtimeRamp.weights(at: date("2025-06-21T06:30:00Z"), bedtime: nil, wake: nil,
+                                    longitude: 0, calendar: calendar()) == .inactive)
+        let evening = BedtimeRamp.weights(at: date("2025-06-21T20:00:00Z"), bedtime: nil, wake: wake,
+                                          longitude: 0, calendar: calendar())
+        #expect(evening == .inactive)
+    }
+
+    func target(_ elevation: Double, rising: Bool = true, iMin: Double = 0.2, iMax: Double = 0.8,
+                progress: Double = 0, lift: Double) -> AdaptiveMapping.Target {
+        AdaptiveMapping.target(
+            elevation: elevation, minElevation: -70, rising: rising, presets: presets,
+            intensityMin: iMin, intensityMax: iMax, whitepointMin: 0.3, whitepointMax: 1,
+            bedtime: BedtimeRamp.Weights(progress: progress, release: 0, lift: lift))
+    }
+
+    @Test func theLiftEasesFromTheDeepestEndToTheDayEndAndNeverMakesTheCurveRedder() {
+        // Deep night, held at the deepest end by the bedtime.
+        #expect(target(-40, progress: 1, lift: 0) == AdaptiveMapping.Target(intensity: 0.2, whitepoint: 0.3, bedtime: true))
+        let half = target(-40, progress: 1, lift: 0.5)
+        #expect(abs(half.intensity - 0.5) < 1e-12 && abs(half.whitepoint - 0.65) < 1e-12)
+        #expect(half.wake && !half.bedtime)
+        #expect(target(-40, progress: 1, lift: 1) == AdaptiveMapping.Target(intensity: 0.8, whitepoint: 1, bedtime: false, wake: true))
+        #expect(target(-40, lift: 1) == AdaptiveMapping.Target(intensity: 0.8, whitepoint: 1, bedtime: false, wake: true))
+        for lift in [0.1, 0.5, 1] {
+            for elevation in stride(from: 20.0, through: -70, by: -2.5) {
+                let sun = target(elevation, lift: 0), lifted = target(elevation, lift: lift)
+                #expect(lifted.intensity >= sun.intensity && lifted.whitepoint >= sun.whitepoint)
+                #expect(lifted.wake == (lifted.intensity > sun.intensity || lifted.whitepoint > sun.whitepoint))
+                #expect(!lifted.bedtime)
+            }
+        }
+        // The sun already at Day: the lift is not the one in effect.
+        #expect(target(30, lift: 0.4) == AdaptiveMapping.Target(intensity: 0.8, whitepoint: 1, bedtime: false))
+    }
+
+    @Test func pinnedChannelsIgnoreTheLift() {
+        let pinned = target(-40, iMin: 0.6, iMax: 0.6, lift: 1)
+        #expect(pinned.intensity == 0.6 && pinned.whitepoint == 1 && pinned.wake)
     }
 }

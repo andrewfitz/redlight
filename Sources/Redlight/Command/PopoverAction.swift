@@ -17,6 +17,7 @@ enum PopoverAction: Equatable {
     case login(Bool)
     case location(CommandLocation)
     case bedtime(CommandBedtime)
+    case wake(CommandBedtime)
     case apps(CommandApps)
     case update
     case quit
@@ -36,6 +37,7 @@ enum PopoverAction: Equatable {
         case .login(let enabled): .login(enabled)
         case .location(let location): .location(location)
         case .bedtime(let bedtime): .bedtime(bedtime)
+        case .wake(let wake): .wake(wake)
         case .apps(let change): .apps(change)
         case .update: .update
         case .quit: .quit
@@ -57,6 +59,7 @@ enum PopoverAction: Equatable {
         case .login: .login
         case .location: .location
         case .bedtime: .bedtime
+        case .wake: .wake
         case .apps: .apps
         case .update: .update
         case .quit: .quit
@@ -68,5 +71,5 @@ enum PopoverAction: Equatable {
 /// payloads are enumerable. Parity tests use real representative actions for every kind.
 enum PopoverActionDescriptor: CaseIterable {
     case master, pause, pauseFor, reset, preset, savePreset, adaptive, display, invert, appearance, login,
-         location, bedtime, apps, update, quit
+         location, bedtime, wake, apps, update, quit
 }

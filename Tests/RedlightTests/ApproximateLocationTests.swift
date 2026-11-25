@@ -45,17 +45,42 @@ import Testing
         #expect(coord.latitude > -90 && coord.latitude < 90)
     }
 
-    @Test func offsetFallbackIgnoresDaylightSaving() {
-        // Nuuk observes DST. During summer its offset is UTC-1 but the city sits at
-        // UTC-2 standard time (≈ -30° … -51° W). The fallback must not drift 15° east
-        // every summer because it read the daylight offset.
+    @Test func aZoneWithDaylightSavingMapsToTheSameCityAllYear() {
+        // Nuuk observes DST. Neither its city nor its standard offset may move with it.
         let tz = TimeZone(identifier: "America/Nuuk")!
         let summer = ISO8601DateFormatter().date(from: "2025-07-01T12:00:00Z")!
         let winter = ISO8601DateFormatter().date(from: "2025-01-01T12:00:00Z")!
         let a = ApproximateLocation.from(tz, at: summer)
         let b = ApproximateLocation.from(tz, at: winter)
-        #expect(abs(a.longitude - b.longitude) < 0.01)
-        #expect(abs(a.longitude - (-30)) < 0.01)
+        #expect(a == b)
+        #expect(abs(a.latitude - 64.18) < 0.1 && abs(a.longitude - (-51.73)) < 0.1)
+        #expect(ApproximateLocation.standardOffset(of: tz, at: summer)
+                == ApproximateLocation.standardOffset(of: tz, at: winter))
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        #expect(ApproximateLocation.standardOffset(of: chicago, at: summer) == -6 * 3_600)
+        #expect(ApproximateLocation.standardOffset(of: chicago, at: winter) == -6 * 3_600)
+    }
+
+    @Test func everyZoneTheSystemKnowsHasACity() throws {
+        #expect(ZoneCoordinates.table.count == ZoneCoordinates.zoneCount)
+        #expect(ZoneCoordinates.aliases.count == ZoneCoordinates.aliasCount)
+        #expect(ZoneCoordinates.table.values.allSatisfy { abs($0.latitude) <= 90 && abs($0.longitude) <= 180 })
+        #expect(ZoneCoordinates.aliases.values.allSatisfy { ZoneCoordinates.table[$0] != nil })
+        // "GMT" is the one zone Foundation lists that is no place at all.
+        let missing = TimeZone.knownTimeZoneIdentifiers.filter {
+            ZoneCoordinates.table[ZoneCoordinates.aliases[$0] ?? $0] == nil
+        }
+        #expect(missing.allSatisfy { $0 == "GMT" }, "\(missing)")
+    }
+
+    @Test func zonesTheOldHeuristicPutInTheWrongHemisphereAreRight() throws {
+        for (id, latitude, longitude) in [("America/Coyhaique", -45.57, -72.07), ("Atlantic/Stanley", -51.7, -57.85),
+                                          ("Pacific/Pago_Pago", -14.27, -170.7), ("Atlantic/St_Helena", -15.92, -5.7),
+                                          ("Asia/Srednekolymsk", 67.47, 153.72), ("America/Thule", 76.57, -68.78)] {
+            guard let zone = TimeZone(identifier: id) else { continue }   // newer than this macOS
+            let coord = ApproximateLocation.from(zone)
+            #expect(abs(coord.latitude - latitude) < 0.1 && abs(coord.longitude - longitude) < 0.1, "\(id)")
+        }
     }
 
     @Test func southernHemisphereZonesGetANegativeLatitude() {

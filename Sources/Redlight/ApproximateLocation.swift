@@ -3,153 +3,33 @@ import Foundation
 /// City-level coordinate inferred from the Mac's time zone. Used when Core Location cannot
 /// get a fix (common on desktop Macs that are ethernet-only, with no Wi-Fi scan for
 /// triangulation) so Adaptive and the sun-arc graphic still have a solar position to follow.
+/// The cities come from the tz database, in `ZoneCoordinates`.
 enum ApproximateLocation {
     static func from(_ timeZone: TimeZone, at date: Date = Date()) -> (latitude: Double, longitude: Double) {
-        let identifier = aliases[timeZone.identifier] ?? timeZone.identifier
-        if let known = coordinates[identifier] { return known }
-        // Standard offset only: the daylight-saving hour would otherwise shift the
-        // estimate 15° east for half the year. 240 s per degree of longitude.
-        let standardOffset = Double(timeZone.secondsFromGMT(for: date))
-            - timeZone.daylightSavingTimeOffset(for: date)
-        // UTC+13/+14 zones (Apia, Kiritimati) sit west of the antimeridian: wrap, don't clamp.
-        var longitude = standardOffset / 240.0
-        if longitude > 180 { longitude -= 360 } else if longitude < -180 { longitude += 360 }
-        return (inferredLatitude(identifier), longitude)
+        // Foundation preserves older IANA identifiers when they are used as the system zone.
+        let identifier = ZoneCoordinates.aliases[timeZone.identifier] ?? timeZone.identifier
+        if let known = ZoneCoordinates.table[identifier] { return known }
+        // Zones with no city: Etc/GMT±N, and any zone newer than the generated table.
+        return (inferredLatitude(identifier), standardMeridian(of: timeZone, at: date))
     }
 
-    // Foundation preserves older IANA identifiers when they are used as the system zone.
-    private static let aliases = [
-        "US/Eastern": "America/New_York",
-        "US/Central": "America/Chicago",
-        "US/Mountain": "America/Denver",
-        "US/Pacific": "America/Los_Angeles",
-        "US/Alaska": "America/Anchorage",
-        "US/Aleutian": "America/Adak",
-        "US/Arizona": "America/Phoenix",
-        "US/East-Indiana": "America/Indiana/Indianapolis",
-        "US/Hawaii": "Pacific/Honolulu",
-        "Canada/Atlantic": "America/Halifax",
-        "Canada/Central": "America/Winnipeg",
-        "Canada/Eastern": "America/Toronto",
-        "Canada/Mountain": "America/Edmonton",
-        "Canada/Pacific": "America/Vancouver",
-        "Canada/Newfoundland": "America/St_Johns",
-        "Asia/Calcutta": "Asia/Kolkata",
-        "Australia/NSW": "Australia/Sydney",
-        "NZ": "Pacific/Auckland",
-        "NZ-CHAT": "Pacific/Chatham",
-        "Brazil/East": "America/Sao_Paulo",
-        "Chile/Continental": "America/Santiago",
-    ]
+    /// The zone's UTC offset without daylight saving, in seconds. A location fix is tied
+    /// to it: a different one means the Mac has moved a time zone since the fix was taken.
+    static func standardOffset(of timeZone: TimeZone, at date: Date = Date()) -> Int {
+        timeZone.secondsFromGMT(for: date) - Int(timeZone.daylightSavingTimeOffset(for: date).rounded())
+    }
 
-    /// Representative coordinates of the IANA zone's named city. Close enough for solar
-    /// elevation; Core Location replaces this whenever a real fix arrives.
-    private static let coordinates: [String: (latitude: Double, longitude: Double)] = [
-        "America/New_York": (40.71, -74.01),
-        "America/Chicago": (41.85, -87.65),
-        "America/Denver": (39.74, -104.98),
-        "America/Los_Angeles": (34.05, -118.24),
-        "America/Anchorage": (61.22, -149.90),
-        "America/Adak": (51.88, -176.66),
-        "America/Phoenix": (33.45, -112.07),
-        "America/Boise": (43.62, -116.20),
-        "America/Detroit": (42.33, -83.05),
-        "America/Indiana/Indianapolis": (39.77, -86.16),
-        "America/Kentucky/Louisville": (38.25, -85.76),
-        "America/Toronto": (43.65, -79.38),
-        "America/Vancouver": (49.28, -123.12),
-        "America/Edmonton": (53.55, -113.49),
-        "America/Winnipeg": (49.90, -97.14),
-        "America/Halifax": (44.65, -63.57),
-        "America/St_Johns": (47.56, -52.71),
-        "America/Mexico_City": (19.43, -99.13),
-        "America/Tijuana": (32.51, -117.04),
-        "America/Sao_Paulo": (-23.55, -46.63),
-        "America/Argentina/Buenos_Aires": (-34.60, -58.38),
-        "America/Santiago": (-33.45, -70.67),
-        "America/Bogota": (4.71, -74.07),
-        "America/Lima": (-12.05, -77.04),
-        "America/Caracas": (10.48, -66.90),
-        "America/La_Paz": (-16.50, -68.15),
-        "America/Asuncion": (-25.28, -57.63),
-        "America/Montevideo": (-34.90, -56.16),
-        "America/Guayaquil": (-2.17, -79.92),
-        "America/Manaus": (-3.12, -60.02),
-        "America/Recife": (-8.05, -34.90),
-        "America/Fortaleza": (-3.72, -38.54),
-        "America/Bahia": (-12.97, -38.51),
-        "America/Punta_Arenas": (-53.16, -70.91),
-        "Europe/London": (51.51, -0.13),
-        "Europe/Dublin": (53.35, -6.26),
-        "Europe/Lisbon": (38.72, -9.14),
-        "Europe/Paris": (48.86, 2.35),
-        "Europe/Berlin": (52.52, 13.40),
-        "Europe/Amsterdam": (52.37, 4.89),
-        "Europe/Brussels": (50.85, 4.35),
-        "Europe/Madrid": (40.42, -3.70),
-        "Europe/Rome": (41.90, 12.50),
-        "Europe/Zurich": (47.38, 8.54),
-        "Europe/Vienna": (48.21, 16.37),
-        "Europe/Prague": (50.08, 14.44),
-        "Europe/Warsaw": (52.23, 21.01),
-        "Europe/Stockholm": (59.33, 18.07),
-        "Europe/Oslo": (59.91, 10.75),
-        "Europe/Copenhagen": (55.68, 12.57),
-        "Europe/Helsinki": (60.17, 24.94),
-        "Europe/Athens": (37.98, 23.73),
-        "Europe/Bucharest": (44.43, 26.10),
-        "Europe/Moscow": (55.76, 37.62),
-        "Europe/Istanbul": (41.01, 28.98),
-        "Africa/Cairo": (30.04, 31.24),
-        "Africa/Johannesburg": (-26.20, 28.04),
-        "Africa/Lagos": (6.52, 3.38),
-        "Africa/Nairobi": (-1.29, 36.82),
-        "Africa/Maputo": (-25.97, 32.57),
-        "Africa/Lusaka": (-15.39, 28.32),
-        "Africa/Harare": (-17.83, 31.05),
-        "Africa/Windhoek": (-22.56, 17.08),
-        "Africa/Luanda": (-8.84, 13.23),
-        "Africa/Kinshasa": (-4.32, 15.31),
-        "Africa/Dar_es_Salaam": (-6.79, 39.28),
-        "Indian/Antananarivo": (-18.88, 47.51),
-        "Indian/Mauritius": (-20.16, 57.50),
-        "Asia/Tokyo": (35.68, 139.69),
-        "Asia/Seoul": (37.57, 126.98),
-        "Asia/Shanghai": (31.23, 121.47),
-        "Asia/Hong_Kong": (22.32, 114.17),
-        "Asia/Taipei": (25.03, 121.57),
-        "Asia/Singapore": (1.35, 103.82),
-        "Asia/Bangkok": (13.76, 100.50),
-        "Asia/Jakarta": (-6.21, 106.85),
-        "Asia/Manila": (14.60, 120.98),
-        "Asia/Kolkata": (22.57, 88.36),
-        "Asia/Dubai": (25.20, 55.27),
-        "Asia/Tehran": (35.69, 51.39),
-        "Asia/Jerusalem": (31.77, 35.22),
-        "Asia/Makassar": (-5.15, 119.43),
-        "Asia/Jayapura": (-2.53, 140.72),
-        "Asia/Dili": (-8.56, 125.58),
-        "Australia/Darwin": (-12.46, 130.84),
-        "Pacific/Port_Moresby": (-9.44, 147.18),
-        "Pacific/Guadalcanal": (-9.43, 159.95),
-        "Pacific/Noumea": (-22.28, 166.46),
-        "Pacific/Tongatapu": (-21.14, -175.20),
-        "Pacific/Apia": (-13.83, -171.76),
-        "Pacific/Tahiti": (-17.53, -149.57),
-        "Pacific/Kiritimati": (1.87, -157.40),
-        "Australia/Sydney": (-33.87, 151.21),
-        "Australia/Melbourne": (-37.81, 144.96),
-        "Australia/Brisbane": (-27.47, 153.03),
-        "Australia/Perth": (-31.95, 115.86),
-        "Australia/Adelaide": (-34.93, 138.60),
-        "Australia/Hobart": (-42.88, 147.33),
-        "Pacific/Auckland": (-36.85, 174.76),
-        "Pacific/Chatham": (-43.95, -176.55),
-        "Pacific/Honolulu": (21.31, -157.86),
-        "Pacific/Fiji": (-18.14, 178.44),
-        "Atlantic/Reykjavik": (64.15, -21.94),
-    ]
+    /// The longitude where the zone's standard time is the mean solar time.
+    private static func standardMeridian(of timeZone: TimeZone, at date: Date) -> Double {
+        // Standard offset only: the daylight-saving hour would otherwise shift the
+        // estimate 15° east for half the year. 240 s per degree of longitude.
+        // UTC+13/+14 zones (Apia, Kiritimati) sit west of the antimeridian: wrap, don't clamp.
+        var longitude = Double(standardOffset(of: timeZone, at: date)) / 240.0
+        if longitude > 180 { longitude -= 360 } else if longitude < -180 { longitude += 360 }
+        return longitude
+    }
 
+    /// A latitude for a zone the table does not have, from its region alone.
     private static func inferredLatitude(_ identifier: String) -> Double {
         let id = identifier.lowercased()
         if id.hasPrefix("antarctica/") { return -75 }

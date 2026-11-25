@@ -27,6 +27,7 @@ import Testing
         commands += [.pauseFor(.minutes(1)), .pauseFor(.minutes(90)), .pauseFor(.untilSunrise),
                      .location(.automatic), .location(.manual(latitude: -33.87, longitude: 151.21)),
                      .bedtime(.at(hour: 22, minute: 30)), .bedtime(.at(hour: 0, minute: 0)), .bedtime(.off),
+                     .wake(.at(hour: 7, minute: 0)), .wake(.at(hour: 23, minute: 59)), .wake(.off),
                      .appsList, .apps(.add("com.adobe.Photoshop")), .apps(.remove("com.apple.Photos")), .apps(.clear)]
         for command in commands {
             let request = CommandRequest(command: command)
@@ -62,7 +63,7 @@ import Testing
     }
 
     @Test func versionMismatchRequiresUpdateAndSystemExitCode() {
-        for version in [0, 1, 2, 4, -1] {
+        for version in [0, 1, 2, 3, 5, -1] {
             do {
                 try CommandRequest(v: version, command: .status).validateVersion()
                 Issue.record("Accepted protocol version \(version)")
@@ -110,8 +111,8 @@ import Testing
         #expect(CommandLocationSource.allCases.map(\.rawValue) == ["auto", "manual", "timeZone"])
     }
 
-    @Test func protocolThreeKeepsTheVersionTwoPauseEncoding() throws {
-        #expect(CommandRequest.currentVersion == 3)
+    @Test func theProtocolKeepsTheVersionTwoPauseEncoding() throws {
+        #expect(CommandRequest.currentVersion == 4)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         for (command, json) in [(RedlightCommand.pause(.on), #"{"pause":{"_0":"on"}}"#),
@@ -121,8 +122,29 @@ import Testing
         }
     }
 
+    @Test func wakeIsAnAdditiveProtocolFourCommandAndStatusField() throws {
+        #expect(CommandRequest.currentVersion == 4)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        for (command, json) in [(RedlightCommand.wake(.at(hour: 7, minute: 5)), #"{"wake":{"_0":{"at":{"hour":7,"minute":5}}}}"#),
+                                (.wake(.off), #"{"wake":{"_0":{"off":{}}}}"#)] {
+            #expect(String(decoding: try encoder.encode(command), as: UTF8.self) == json)
+            #expect(try JSONDecoder().decode(RedlightCommand.self, from: Data(json.utf8)) == command)
+            #expect(!command.isReadOnly)
+        }
+
+        let status = Status(on: true, adaptive: true, bedtime: "22:30", wake: "07:05")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
+        #expect(object["wake"] as? String == "07:05")
+        #expect(try JSONDecoder().decode(Status.self, from: JSONEncoder().encode(status)) == status)
+        object.removeValue(forKey: "wake")
+        let older = try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(older.bedtime == "22:30" && older.wake == nil)
+        let unset = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Status(on: true))) as? [String: Any])
+        #expect(unset["wake"] == nil)
+    }
+
     @Test func bedtimeIsAnAdditiveProtocolThreeCommandAndStatusField() throws {
-        #expect(CommandRequest.currentVersion == 3)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         for (command, json) in [(RedlightCommand.bedtime(.at(hour: 22, minute: 30)), #"{"bedtime":{"_0":{"at":{"hour":22,"minute":30}}}}"#),
@@ -144,7 +166,6 @@ import Testing
     }
 
     @Test func appsAreAdditiveProtocolThreeCommandsAndStatusFields() throws {
-        #expect(CommandRequest.currentVersion == 3)
         #expect(RedlightCommand.appsList.isReadOnly)
         #expect(!RedlightCommand.apps(.clear).isReadOnly)
         let encoder = JSONEncoder()
@@ -201,8 +222,8 @@ import Testing
         func json(_ command: RedlightCommand) throws -> String {
             String(decoding: try encoder.encode(CommandRequest(command: command)), as: UTF8.self)
         }
-        let apply = #"{"command":{"preset":{"_0":"deep-red"}},"v":3}"#
-        let save = #"{"command":{"savePreset":{"_0":"deep-red"}},"v":3}"#
+        let apply = #"{"command":{"preset":{"_0":"deep-red"}},"v":\#(CommandRequest.currentVersion)}"#
+        let save = #"{"command":{"savePreset":{"_0":"deep-red"}},"v":\#(CommandRequest.currentVersion)}"#
         #expect(try json(.preset(.late)) == apply)
         #expect(try json(.savePreset(.late)) == save)
         #expect(try JSONDecoder().decode(CommandRequest.self, from: Data(apply.utf8)).command == .preset(.late))
@@ -215,7 +236,7 @@ import Testing
 
         // A reply as an app from before the rename writes it.
         let older = Data(#"""
-        {"v":3,"ok":true,"status":{"running":true,"on":true,"displays":[],"color":{"set":0,"target":0},\#
+        {"v":\#(CommandRequest.currentVersion),"ok":true,"status":{"running":true,"on":true,"displays":[],"color":{"set":0,"target":0},\#
         "whitepoint":{"set":30,"target":30},"activePreset":"deep-red","adaptive":false,"statusLine":"",\#
         "limits":{"color":{"min":0,"max":100},"whitepoint":{"min":30,"max":100}},"appearance":"dark",\#
         "login":{"enabled":false,"requiresApproval":false},"version":"1.5.1","fading":false}}
@@ -237,6 +258,7 @@ import Testing
             (.location(.manual(latitude: 51.5, longitude: -0.13)), .location(.manual(latitude: 51.5, longitude: -0.13))),
             (.location(.automatic), .location(.automatic)),
             (.bedtime(.at(hour: 22, minute: 30)), .bedtime(.at(hour: 22, minute: 30))), (.bedtime(.off), .bedtime(.off)),
+            (.wake(.at(hour: 7, minute: 0)), .wake(.at(hour: 7, minute: 0))), (.wake(.off), .wake(.off)),
             (.apps(.add("com.adobe.Photoshop")), .apps(.add("com.adobe.Photoshop"))),
             (.apps(.remove("com.adobe.Photoshop")), .apps(.remove("com.adobe.Photoshop"))), (.apps(.clear), .apps(.clear)),
         ]

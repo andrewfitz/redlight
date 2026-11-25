@@ -5,6 +5,10 @@ import Foundation
 /// Warm during golden hour, Sunset at the horizon, Night at astronomical dusk, then eases
 /// toward Late until solar midnight. Dawn mirrors dusk below the horizon; after sunrise
 /// the screen clears quickly, reaching Day once the sun is a few degrees up.
+///
+/// Every day reaches Day at solar noon and Late at solar midnight, and the curve has no
+/// step at either. Where the sun's own range does not cover the anchors (high-latitude
+/// summer and winter) the anchors move to meet it; see `target`.
 enum SolarCurve {
     struct ElevationMarker: Identifiable, Sendable {
         let label: String
@@ -21,6 +25,12 @@ enum SolarCurve {
     static let nauticalDuskElevation = -12.0
     static let nightElevation = -18.0
 
+    /// Where the sun's centre is at the sunrise and sunset an almanac gives: 34′ of
+    /// refraction at the horizon plus the sun's 16′ radius. The clock times under the sun
+    /// arc, the countdown and "Until sunrise" use it. The curve's Sunset anchor and the
+    /// horizon drawn on the arc stay at the geometric 0°.
+    static let apparentHorizonElevation = -0.833
+
     // Morning above-horizon anchors: Day by +4°, roughly 20–35 minutes after sunrise at
     // mid-latitudes, instead of mirroring the slow evening ramp from +12°.
     static let morningDayElevation = 4.0
@@ -30,6 +40,16 @@ enum SolarCurve {
     /// (high-latitude summer) are stretched so solar midnight still reaches Late; at
     /// −24° the stretch is 1, so the curve is continuous as nights lengthen.
     static let shortNightFloor = -24.0
+
+    /// The shallowest night that is stretched. Where the sun stays above this at solar
+    /// midnight (white nights and the midnight sun) the whole curve slides up instead, so
+    /// the lowest point reads as this and the stretch never exceeds 4. Sliding is
+    /// continuous from one night to the next; stretching alone was not, at the horizon.
+    static let shallowNightElevation = -6.0
+
+    /// The sun's elevation at a noon high enough for the fixed anchors: the default for
+    /// callers that have no real day, such as the preset anchors' own tests.
+    static let highNoon = 90.0
 
     static let elevationMarkers: [ElevationMarker] = [
         ElevationMarker(label: "Day", elevation: dayElevation),
@@ -41,12 +61,25 @@ enum SolarCurve {
     ]
 
     /// `rising` selects the morning side of the cycle (solar midnight → solar noon).
-    static func target(elevation: Double, minElevation: Double, rising: Bool = false,
-                       presets: [Preset])
+    /// `minElevation` and `maxElevation` are the sun's elevation at solar midnight and at
+    /// solar noon that day. They move the anchors in three cases:
+    ///
+    /// - A noon below +12° brings the evening's Day anchor down to it (never below the
+    ///   morning's +4°), so morning and evening agree at solar noon.
+    /// - A noon below +4° (polar winter) slides the curve down, so noon still reaches Day.
+    /// - A midnight above −6° slides the curve up, so midnight still reaches Late.
+    static func target(elevation: Double, minElevation: Double, maxElevation: Double = highNoon,
+                       rising: Bool = false, presets: [Preset])
         -> (intensity: Double, whitepoint: Double)
     {
         guard presets.count >= 5 else { return (1.0, 1.0) }
-        var elevation = elevation, minElevation = minElevation
+        // Within a few degrees of the poles both slides apply and the sun's whole range is
+        // narrower than the curve: the result stays continuous but covers only part of it.
+        let slide = max(0, morningDayElevation - maxElevation)
+            - max(0, minElevation - shallowNightElevation)
+        var elevation = elevation + slide
+        var minElevation = minElevation + slide
+        let maxElevation = maxElevation + slide
         if elevation < 0, minElevation < 0, minElevation > shortNightFloor {
             elevation *= shortNightFloor / minElevation
             minElevation = shortNightFloor
@@ -67,12 +100,15 @@ enum SolarCurve {
             return lerp(warm, sunset, segment(elevation, from: morningWarmElevation, to: sunsetElevation))
         }
 
-        if elevation >= dayElevation {
+        // At +12° and +4° these are the fixed evening and morning anchors.
+        let eveningDay = min(dayElevation, max(morningDayElevation, maxElevation))
+        let eveningWarm = eveningDay / 2
+        if elevation >= eveningDay {
             return day
-        } else if elevation >= warmElevation {
-            return lerp(day, warm, segment(elevation, from: dayElevation, to: warmElevation))
+        } else if elevation >= eveningWarm {
+            return lerp(day, warm, segment(elevation, from: eveningDay, to: eveningWarm))
         } else if elevation >= sunsetElevation {
-            return lerp(warm, sunset, segment(elevation, from: warmElevation, to: sunsetElevation))
+            return lerp(warm, sunset, segment(elevation, from: eveningWarm, to: sunsetElevation))
         } else if elevation >= civilDuskElevation {
             return lerp(sunset, civil, segment(elevation, from: sunsetElevation, to: civilDuskElevation))
         } else if elevation >= nauticalDuskElevation {

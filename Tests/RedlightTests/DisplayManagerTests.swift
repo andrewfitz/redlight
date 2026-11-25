@@ -1901,7 +1901,9 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let minimum = SolarCalculator.elevationAtSolarMidnight(
             at: noon, latitude: 0, longitude: 0)
 
-        let sample = manager.adaptiveIntensity(at: elevation, minElevation: minimum)
+        let maximum = SolarCalculator.elevationAtSolarNoon(at: noon, latitude: 0, longitude: 0)
+
+        let sample = manager.adaptiveIntensity(at: elevation, minElevation: minimum, maxElevation: maximum)
 
         #expect(abs(sample - manager.intensity) < 1e-9)
     }
@@ -2304,29 +2306,29 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(abs(first.intensity - 0.5) < 0.001)
     }
 
-    @Test func solarNoonSwitchFadesWhereTheSunStaysLow() {
-        // 64°N in December: the sun peaks near +2.6°, below the evening Day anchor, so the
-        // morning and evening curves disagree at noon. Crossing it must fade, not step.
+    @Test func solarNoonHasNoStepWhereTheSunStaysLow() {
+        // 64°N in December: the sun peaks near +2.6°, below both Day anchors. The curve
+        // slides so noon is still Day, and morning and evening agree there.
         let iso = ISO8601DateFormatter()
-        var clock = iso.date(from: "2025-12-21T11:30:00Z")!   // ~30 min before solar noon at 0°
-        var uptime: TimeInterval = 100
+        var clock = iso.date(from: "2025-12-21T11:40:00Z")!   // ~20 min before solar noon at 0°
         let loc = FakeLocationProvider(); loc.coordinate = (64, 0)
-        let manager = makeManager(location: loc, now: { clock }, transitionDuration: 2,
-                                  transitionUptime: { uptime })
+        let manager = makeManager(location: loc, now: { clock })
         manager.toggle(1)
         manager.adaptiveEnabled = true
-        uptime += 3; manager.tickTransitions()
-        let morning = manager.intensity
-
-        clock = iso.date(from: "2025-12-21T12:30:00Z")!
-        mock.applyCalls.removeAll()
-        manager.applyAdaptive()
-        let evening = manager.intensity
-        #expect(evening < morning - 0.05)
-        #expect(mock.applyCalls.allSatisfy { abs(Double($0.intensity) - morning) < 0.001 })
-
-        uptime += 3; manager.tickTransitions()
-        #expect(abs(Double(try! #require(mock.applyCalls.last).intensity) - evening) < 0.001)
+        var previous = manager.intensity
+        var largestStep = 0.0, peak = 0.0
+        var sawEvening = false
+        while clock < iso.date(from: "2025-12-21T12:20:00Z")! {
+            clock.addTimeInterval(5)
+            manager.applyAdaptive()
+            largestStep = max(largestStep, abs(manager.intensity - previous))
+            peak = max(peak, manager.intensity)
+            previous = manager.intensity
+            if !SolarCalculator.isRising(at: clock, longitude: 0) { sawEvening = true }
+        }
+        #expect(sawEvening)
+        #expect(peak > 0.99)   // Day at the instant of solar noon, between two ticks
+        #expect(largestStep < 0.005)
     }
 
     @Test func wakeRefreshesLocationAndAppliesAdaptiveOnce() {

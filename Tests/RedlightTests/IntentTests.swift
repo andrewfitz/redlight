@@ -71,6 +71,12 @@ import Testing
         #expect(bedtimeStatus.value?.contains("Bedtime: 22:30") == true)
         _ = try await TurnOffRedlightBedtimeIntent().perform()
         #expect(manager.bedtime == nil)
+        _ = try await SetRedlightWakeTimeIntent(hour: 7, minute: 0).perform()
+        #expect(manager.wakeTime == Bedtime(hour: 7, minute: 0))
+        let wakeStatus = try await GetRedlightStatusIntent().perform()
+        #expect(wakeStatus.value?.contains("Wake time: 07:00") == true)
+        _ = try await TurnOffRedlightWakeTimeIntent().perform()
+        #expect(manager.wakeTime == nil)
         _ = try await PauseRedlightForAppIntent(bundleID: "com.adobe.Photoshop").perform()
         #expect(manager.suspendedForApp == "Photoshop")
         let suspendedStatus = try await GetRedlightStatusIntent().perform()
@@ -99,6 +105,7 @@ import Testing
         let statusResult = try await GetRedlightStatusIntent().perform()
         #expect(statusResult.value?.contains("test-version") == true)
         #expect(statusResult.value?.contains("Bedtime") == false)
+        #expect(statusResult.value?.contains("Wake time") == false)
         let displayResult = try await ListRedlightDisplaysIntent().perform()
         #expect(displayResult.value?.map(\.id) == ["stable-1", "stable-2"])
         if #available(macOS 15.0, *) { _ = try await SetRedlightIntent(false).perform() }
@@ -110,6 +117,7 @@ import Testing
             .pauseFor(.minutes(90)), .status, .pauseFor(.untilSunrise), .pause(.off),
             .location(.manual(latitude: 51.5, longitude: -0.13)), .location(.automatic),
             .bedtime(.at(hour: 22, minute: 30)), .status, .bedtime(.off),
+            .wake(.at(hour: 7, minute: 0)), .status, .wake(.off),
             .apps(.add("com.adobe.Photoshop")), .status, .appsList, .apps(.remove("com.adobe.Photoshop")),
             .apps(.add("com.apple.Photos")), .apps(.clear),
             .color(55), .whitepoint(65),

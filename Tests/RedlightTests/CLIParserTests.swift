@@ -42,6 +42,9 @@ import Testing
             (["adaptive", "bedtime", "23:59"], .bedtime(.at(hour: 23, minute: 59))),
             (["adaptive", "bedtime", "07:05"], .bedtime(.at(hour: 7, minute: 5))),
             (["adaptive", "bedtime", "off"], .bedtime(.off)),
+            (["adaptive", "wake", "7:00"], .wake(.at(hour: 7, minute: 0))),
+            (["adaptive", "wake", "06:45"], .wake(.at(hour: 6, minute: 45))),
+            (["adaptive", "wake", "off"], .wake(.off)),
             (["apps", "list"], .appsList), (["apps", "clear"], .apps(.clear)),
             (["apps", "add", "com.adobe.Photoshop"], .apps(.add("com.adobe.Photoshop"))),
             (["apps", "remove", "com.apple.Photos"], .apps(.remove("com.apple.Photos"))),
@@ -122,6 +125,8 @@ import Testing
             ["adaptive", "bedtime", "-1:00"], ["adaptive", "bedtime", "+5:00"], ["adaptive", "bedtime", "on"],
             ["adaptive", "bedtime", "10:30pm"], ["adaptive", "bedtime", "22:30", "extra"],
             ["adaptive", "bedtime", "off", "extra"],
+            ["adaptive", "wake"], ["adaptive", "wake", "24:00"], ["adaptive", "wake", "7"],
+            ["adaptive", "wake", "on"], ["adaptive", "wake", "7am"], ["adaptive", "wake", "07:00", "extra"],
             ["apps"], ["apps", "show"], ["apps", "list", "extra"], ["apps", "clear", "all"], ["apps", "add"],
             ["apps", "remove"], ["apps", "add", ""], ["apps", "add", "com.adobe Photoshop"],
             ["apps", "add", String(repeating: "a", count: 256)], ["apps", "add", "a.b", "c.d"],
@@ -160,6 +165,9 @@ import Testing
         #expect(message(["adaptive", "bedtime", "24:00"]).contains("23:59"))
         #expect(message(["adaptive", "bedtime"]).contains("adaptive bedtime <HH:MM|off>"))
         #expect(CLIParser.help.contains("adaptive bedtime <HH:MM|off>"))
+        #expect(message(["adaptive", "wake", "24:00"]) == Bedtime.invalidWakeMessage)
+        #expect(message(["adaptive", "wake"]).contains("adaptive wake <HH:MM|off>"))
+        #expect(CLIParser.help.contains("adaptive wake <HH:MM|off>"))
     }
 
     @Test func appsUsageAndHelpNameTheForms() {

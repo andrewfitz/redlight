@@ -33,6 +33,9 @@ struct MenuBarInitialState {
     var updatesAutomatically: Bool? = nil
     /// True shows the Settings dot and the "Approval needed" row. Nil asks the login item.
     var loginRequiresApproval: Bool? = nil
+    /// A value shows the "Keep Night Shift off" switch in that state. Nil asks the guard,
+    /// which has the switch only in the app, on a Mac with Night Shift.
+    var keepsNightShiftOff: Bool? = nil
 }
 
 /// The coordinates being typed on the Settings page. Held above the pages, so a visit to
@@ -65,6 +68,7 @@ final class LocationDraft {
 /// The time in the "Deepest by" field. It is kept in the defaults, so that with the bedtime
 /// switched off, leaving the page or closing the popover does not lose it. While a bedtime
 /// is on, the field shows that bedtime again each time the row appears.
+/// The "Clear by" field has a draft of its own, kept the same way.
 ///
 /// It is read from the defaults once and written when it changes. `@AppStorage` would
 /// evaluate the row again on every change to the defaults, and the manager saves to them
@@ -73,20 +77,23 @@ final class LocationDraft {
 @Observable
 final class BedtimeDraft {
     static let key = "redlight.adaptiveBedtimeDraft"
+    static let wakeKey = "redlight.adaptiveWakeTimeDraft"
 
     private(set) var bedtime: Bedtime
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let key: String
 
-    init(defaults: UserDefaults) {
+    init(defaults: UserDefaults, kind: BedtimeRow.Kind = .bedtime) {
         self.defaults = defaults
-        bedtime = (defaults.object(forKey: Self.key) as? Int).flatMap { Bedtime(minuteOfDay: $0) }
-            ?? BedtimeRow.suggested
+        key = kind == .bedtime ? Self.key : Self.wakeKey
+        bedtime = (defaults.object(forKey: key) as? Int).flatMap { Bedtime(minuteOfDay: $0) }
+            ?? kind.suggested
     }
 
     func set(_ new: Bedtime) {
         guard new != bedtime else { return }
         bedtime = new
-        defaults.set(new.minuteOfDay, forKey: Self.key)
+        defaults.set(new.minuteOfDay, forKey: key)
     }
 }
 
@@ -129,6 +136,7 @@ struct MenuBarView: View {
     @State private var session: PopoverSession
     @State private var locationDraft: LocationDraft
     @State private var bedtimeDraft: BedtimeDraft
+    @State private var wakeDraft: BedtimeDraft
     /// The header VoiceOver is sent to when one page replaces another.
     @AccessibilityFocusState private var focusedHeader: MenuBarPage?
 
@@ -153,6 +161,7 @@ struct MenuBarView: View {
             longitudeText: initialState.longitudeText ?? "",
             error: initialState.locationError))
         _bedtimeDraft = State(initialValue: BedtimeDraft(defaults: defaults))
+        _wakeDraft = State(initialValue: BedtimeDraft(defaults: defaults, kind: .wake))
     }
 
     var body: some View {
@@ -178,6 +187,7 @@ struct MenuBarView: View {
                                      openShortcuts: openShortcuts, apps: apps, dispatch: dispatch,
                                      session: session, initialState: initialState,
                                      locationDraft: locationDraft, bedtimeDraft: bedtimeDraft,
+                                     wakeDraft: wakeDraft,
                                      headerFocus: $focusedHeader,
                                      back: { page = .controls }, showAbout: { page = .about })
                     case .about:
@@ -1167,11 +1177,29 @@ struct PauseLengthRow: View {
 
 // MARK: - Bedtime Row
 
-/// "Deepest by" for Auto, on the Settings page: a time field that remembers its draft, and
-/// a switch.
+/// "Deepest by" and "Clear by" for Auto, on the Settings page: a time field that remembers
+/// its draft, and a switch.
 struct BedtimeRow: View {
+    /// Which of Auto's two times the row sets.
+    enum Kind {
+        case bedtime, wake
+
+        var title: String { self == .bedtime ? BedtimeRow.title : "Clear by" }
+        var explanation: String {
+            self == .bedtime ? BedtimeRow.explanation
+                : "Be back at the clear end of both bands by this time, even before sunrise. "
+                    + "A Deepest by time holds through the night until then."
+        }
+        /// The time field's name, and the words in "Set bedtime to 23:00".
+        var fieldLabel: String { self == .bedtime ? "Bedtime" : "Wake time" }
+        var suggested: Bedtime { self == .bedtime ? BedtimeRow.suggested : Bedtime(hour: 7, minute: 0)! }
+    }
+
     static let suggested = Bedtime(hour: 22, minute: 30)!
 
+    var kind = Kind.bedtime
+    /// True on every row but a card's first.
+    var divider = false
     let bedtime: Bedtime?
     /// The time in the field, kept across menu openings so switching off does not lose it.
     let draft: BedtimeDraft
@@ -1181,15 +1209,15 @@ struct BedtimeRow: View {
 
     static let title = "Deepest by"
     static let explanation = "Reach the deepest end of both bands by this time, even if the sun is still up. "
-        + "Mornings still follow the sun."
+        + "Mornings still follow the sun unless Clear by is on."
 
     var body: some View {
-        EmberRow {
+        EmberRow(divider: divider) {
             // The switch carries the name for VoiceOver, as the display rows do.
-            Text(Self.title)
+            Text(kind.title)
                 .lineLimit(1)
                 .fixedSize()
-                .help(Self.explanation)
+                .help(kind.explanation)
                 .accessibilityHidden(true)
             Spacer(minLength: 0)
             // Editing only moves the draft: the field reports every digit and arrow key,
@@ -1197,7 +1225,7 @@ struct BedtimeRow: View {
             EmberTimeField(date: Binding(
                 get: { Self.date(for: draft.bedtime) },
                 set: { draft.set(Self.bedtime(from: $0)) }
-            ), label: "Bedtime")
+            ), label: kind.fieldLabel)
             .fixedSize()
             .padding(.horizontal, 4)
             .frame(height: 22)
@@ -1207,15 +1235,15 @@ struct BedtimeRow: View {
                 EmberChipButton(title: "Set", isProminent: true) {
                     choose(.at(hour: draft.bedtime.hour, minute: draft.bedtime.minute))
                 }
-                .accessibilityLabel("Set bedtime to \(draft.bedtime.text)")
+                .accessibilityLabel("Set \(kind.fieldLabel.lowercased()) to \(draft.bedtime.text)")
             }
-            EmberSwitch(Self.title, isOn: Binding(
+            EmberSwitch(kind.title, isOn: Binding(
                 get: { bedtime != nil },
                 set: { on in
                     choose(on ? .at(hour: draft.bedtime.hour, minute: draft.bedtime.minute) : .off)
                 }
             ))
-            .help(Self.explanation)
+            .help(kind.explanation)
         }
         .onAppear { if let bedtime { draft.set(bedtime) } }
         .onChange(of: bedtime) { _, new in if let new { draft.set(new) } }

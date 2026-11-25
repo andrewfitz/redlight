@@ -242,6 +242,29 @@ private struct CommandFixture {
         #expect(f.defaults.object(forKey: "redlight.adaptiveBedtime") == nil)
     }
 
+    @Test func wakeCommandsSetAndClearTheAdaptiveWakeTime() throws {
+        let f = makeFixture()
+        #expect(f.handler.snapshot().wake == nil)
+        var status = try f.handler.execute(.wake(.at(hour: 7, minute: 5)))
+        #expect(status.wake == "07:05")
+        #expect(status.bedtime == nil)
+        #expect(f.manager.wakeTime == Bedtime(hour: 7, minute: 5))
+        #expect(f.defaults.integer(forKey: "redlight.adaptiveWakeTime") == 425)
+        #expect(!status.adaptive)                               // saved for when Adaptive is on
+        do {
+            _ = try f.handler.execute(.wake(.at(hour: 24, minute: 0)))
+            Issue.record("Accepted wake time 24:00")
+        } catch let error as CommandError {
+            #expect(error.code == .invalidInput)
+            #expect(error.message == Bedtime.invalidWakeMessage)
+        }
+        #expect(f.manager.wakeTime == Bedtime(hour: 7, minute: 5))
+        status = try f.handler.execute(.wake(.off))
+        #expect(status.wake == nil)
+        #expect(f.manager.wakeTime == nil)
+        #expect(f.defaults.object(forKey: "redlight.adaptiveWakeTime") == nil)
+    }
+
     @Test func invalidBedtimesAreRejectedBeforeInterrupting() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.bedtime(.at(hour: 21, minute: 0)))

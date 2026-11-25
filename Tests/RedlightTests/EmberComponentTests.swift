@@ -80,8 +80,13 @@ import Testing
         let chicago = calendar("America/Chicago")
         let now = date(2026, 3, 20, in: chicago)
         let cycle = SunCycle(now: now, latitude: 41.88, longitude: -87.63, calendar: chicago)
-        let crossings = SunArcView.horizonCrossings(in: cycle.samples)
+        // Sunrise and sunset are the apparent ones, as an almanac gives them.
+        let horizon = SolarCurve.apparentHorizonElevation
+        let crossings = SunArcView.horizonCrossings(in: cycle.samples, at: horizon)
         #expect(crossings.map(\.rising) == [true, false])
+        let geometric = SunArcView.horizonCrossings(in: cycle.samples)
+        #expect(crossings[0].date < geometric[0].date && crossings[1].date > geometric[1].date)
+        #expect(geometric[0].date.timeIntervalSince(crossings[0].date) < 600)
         let (sunrise, sunset) = SunArcView.sunriseAndSunset(in: cycle.samples)
         let rise = try #require(sunrise), set = try #require(sunset)
         #expect(rise == crossings[0] && set == crossings[1])
@@ -89,13 +94,13 @@ import Testing
         #expect((6.5...7.25).contains(rise.t * 24))
         #expect((18.75...19.5).contains(set.t * 24))
         // The same fractions the cycle's own interpolation finds.
-        let fractions = cycle.crossingFractions(at: 0)
+        let fractions = cycle.crossingFractions(at: horizon)
         #expect(fractions.count == 2)
         #expect(abs(fractions[0] - rise.t) < 1e-12 && abs(fractions[1] - set.t) < 1e-12)
         // The interpolated instant really is on the horizon, and matches its fraction.
         for crossing in [rise, set] {
             let elevation = SolarCalculator.elevation(at: crossing.date, latitude: 41.88, longitude: -87.63)
-            #expect(abs(elevation) < 0.05)
+            #expect(abs(elevation - horizon) < 0.05)
             let dayStart = try #require(cycle.samples.first?.date)
             #expect(abs(crossing.date.timeIntervalSince(dayStart) - crossing.t * 86_400) < 1e-6)
         }
@@ -162,7 +167,8 @@ import Testing
         let labels = SunArcView.clockLabels(for: day, calendar: calendar("GMT"),
                                             locale: Locale(identifier: "en_GB"))
         #expect(labels.map(\.t) == [sunset!.t, sunrise!.t])
-        #expect(labels.map { minutes($0.text) } == [40, 90])
+        // Where the samples pass the apparent horizon, −0.833°: 2 → −1 at 00:57, −1 → 1 at 01:05.
+        #expect(labels.map { minutes($0.text) } == [57, 65])
     }
 
     @Test func clockTextUsesTheCalendarTheCycleWasBuiltWith() {
@@ -266,8 +272,8 @@ import Testing
         // A sunset before the sunrise on the chart is still named a sunset.
         let dip = samples([2, -1, 1, 6, 12, 9, 5, 3])
         let dipTimes = SunArcView.sunTimes(for: dip, calendar: calendar("GMT"), locale: british)
-        #expect(dipTimes.sunset.flatMap(minutes) == 40)
-        #expect(dipTimes.sunrise.flatMap(minutes) == 90)
+        #expect(dipTimes.sunset.flatMap(minutes) == 57)
+        #expect(dipTimes.sunrise.flatMap(minutes) == 65)
 
         let oslo = calendar("Europe/Oslo")
         let polar = SunCycle(now: date(2026, 6, 21, in: oslo), latitude: 78.22, longitude: 15.65, calendar: oslo)

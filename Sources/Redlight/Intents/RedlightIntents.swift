@@ -339,7 +339,7 @@ struct UseAutomaticRedlightLocationIntent: AppIntent {
 struct SetRedlightBedtimeIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Redlight Bedtime"
     static let description = IntentDescription(
-        "Adaptive reaches its deepest setting by this time (24-hour, local), even while the sun is still up. Mornings still follow the sun.")
+        "Adaptive reaches its deepest setting by this time (24-hour, local), even while the sun is still up. Mornings still follow the sun unless a wake time is set.")
     static let openAppWhenRun = false
     @Parameter(title: "Hour", inclusiveRange: (0, 23)) var hour: Int
     @Parameter(title: "Minute", default: 0, inclusiveRange: (0, 59)) var minute: Int
@@ -361,6 +361,35 @@ struct TurnOffRedlightBedtimeIntent: AppIntent {
     init() {}
     @MainActor func perform() async throws -> some IntentResult {
         _ = try IntentBridge.execute(.bedtime(.off))
+        return .result()
+    }
+}
+
+struct SetRedlightWakeTimeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Wake Time"
+    static let description = IntentDescription(
+        "Adaptive is back at its clearest setting by this time (24-hour, local), even before sunrise. A bedtime holds through the night until then.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Hour", inclusiveRange: (0, 23)) var hour: Int
+    @Parameter(title: "Minute", default: 0, inclusiveRange: (0, 59)) var minute: Int
+    static var parameterSummary: some ParameterSummary {
+        Summary("Set Redlight wake time to \(\.$hour):\(\.$minute)")
+    }
+    init() {}
+    init(hour: Int, minute: Int) { self.hour = hour; self.minute = minute }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.wake(.at(hour: hour, minute: minute)))
+        return .result()
+    }
+}
+
+struct TurnOffRedlightWakeTimeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Turn Off Redlight Wake Time"
+    static let description = IntentDescription("Adaptive mornings follow the sun alone again.")
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.wake(.off))
         return .result()
     }
 }
@@ -508,6 +537,7 @@ func redlightStatusText(_ status: Status) -> String {
     if let app = status.suspendedFor { text += " (suspended for \(app))" }
     text += "\nColor Temp: \(status.color.text)\nWhite Point: \(status.whitepoint.text)\nAdaptive: \(status.adaptive ? "on" : "off")"
     if let bedtime = status.bedtime { text += "\nBedtime: \(bedtime)" }
+    if let wake = status.wake { text += "\nWake time: \(wake)" }
     text += "\nPreset: \(status.activePreset?.cliName ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }

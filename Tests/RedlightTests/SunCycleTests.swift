@@ -90,7 +90,9 @@ import Foundation
         let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: 0, longitude: 0))
         #expect(sunrise.timeIntervalSince(now) > 12 * 3_600)
         #expect(sunrise.timeIntervalSince(now) < 24 * 3_600)
-        #expect(abs(SolarCalculator.elevation(at: sunrise, latitude: 0, longitude: 0)) < 0.5)
+        // The apparent sunrise: the sun's centre is still 0.833° below the geometric horizon.
+        #expect(abs(SolarCalculator.elevation(at: sunrise, latitude: 0, longitude: 0)
+                    - SolarCurve.apparentHorizonElevation) < 0.01)
         #expect(SolarCalculator.elevation(at: sunrise.addingTimeInterval(-600), latitude: 0, longitude: 0) < 0)
         #expect(SolarCalculator.elevation(at: sunrise.addingTimeInterval(600), latitude: 0, longitude: 0) > 0)
     }
@@ -112,10 +114,14 @@ import Foundation
         #expect(elevation(0) > 0 && elevation(60) < 0 && elevation(120) > 0)
         let sunset = try #require(SunCycle.findNextEvent(now: now, latitude: latitude, longitude: 0,
                                                          thresholds: [0], horizon: 120))
-        let sunrise = try #require(SunCycle.nextSunrise(after: now, latitude: latitude, longitude: 0))
+        let sunrise = try #require(SunCycle.findNextEvent(now: now, latitude: latitude, longitude: 0,
+                                                          thresholds: [0], rising: true, horizon: 300))
         #expect(sunset.label == "sunset")
         #expect((50...57).contains(sunset.seconds))
-        #expect((63...70).contains(sunrise.timeIntervalSince(now)))
+        #expect(sunrise.label == "sunrise")
+        #expect((63...70).contains(sunrise.seconds))
+        // The sun never reaches the apparent horizon that night, so no sunrise is announced.
+        #expect(SunCycle.nextSunrise(after: now, latitude: latitude, longitude: 0) == nil)
     }
 
     @Test func resumingAtAnEventDoesNotRepeatTheCrossing() throws {

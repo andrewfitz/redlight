@@ -78,6 +78,15 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
     /// coordinate so returning to automatic needs no new fix.
     private var automaticCoordinate: (latitude: Double, longitude: Double)?
     private var automaticIsApproximate = false
+    /// The last Core Location fix and the zone's standard UTC offset when it was taken.
+    /// The fix is followed only while the Mac is still on that offset: after a move to
+    /// another time zone the new zone's city is nearer the truth than a fix from the old
+    /// one, which may never be replaced (Location Services off, or no Wi-Fi to scan).
+    /// The fix is kept, so setting the zone back brings it back.
+    private var lastFix: (latitude: Double, longitude: Double)?
+    private var lastFixZoneOffset: Int?
+    /// The zone the Mac is in, as last reported.
+    private var timeZone: TimeZone
     var coordinate: (latitude: Double, longitude: Double)? { manualCoordinate ?? automaticCoordinate }
     var isApproximate: Bool { manualCoordinate == nil && automaticIsApproximate }
 
@@ -85,32 +94,52 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
          manager: CLLocationManager = CLLocationManager()) {
         self.manager = manager
         self.defaults = defaults
+        self.timeZone = timeZone
         super.init()
         // Desktop Macs (Studio on ethernet, Wi-Fi off) often cannot satisfy kilometer
         // accuracy. Three-kilometer / city-level is enough for solar elevation and is
         // the accuracy Core Location can actually produce without a Wi-Fi scan.
         manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        if let cached = loadCoordinate(latitudeKey: "redlight.location.lat", longitudeKey: "redlight.location.lon") {
-            automaticCoordinate = cached
-        } else {
-            automaticCoordinate = ApproximateLocation.from(timeZone)
-            automaticIsApproximate = true
+        lastFix = loadCoordinate(latitudeKey: "redlight.location.lat", longitudeKey: "redlight.location.lon")
+        lastFixZoneOffset = (defaults.object(forKey: Self.zoneOffsetKey) as? NSNumber)?.intValue
+        if lastFix != nil, lastFixZoneOffset == nil {
+            // A fix saved before the offset was: take it as belonging to this zone.
+            lastFixZoneOffset = ApproximateLocation.standardOffset(of: timeZone)
+            defaults.set(lastFixZoneOffset, forKey: Self.zoneOffsetKey)
         }
+        resolveAutomaticCoordinate()
         // Hand-edited or corrupt values are ignored, leaving automatic location in charge.
         manualCoordinate = loadCoordinate(latitudeKey: "redlight.location.manualLat",
                                           longitudeKey: "redlight.location.manualLon")
-        // A laptop that was denied location but flies to another time zone should still
-        // move its fallback city. Only matters while the coordinate is the fallback.
+        // A laptop that flies to another time zone should move to that zone's city until a
+        // fix from there arrives, whether it was following a fix or the fallback.
         timeZoneObserver = NotificationCenter.default.addObserver(
             forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.systemTimeZoneChanged() }
+            MainActor.assumeIsolated {
+                // Foundation caches the system zone; drop it so `.current` is the new one.
+                NSTimeZone.resetSystemTimeZone()
+                self?.systemTimeZoneChanged(to: .current)
+            }
         }
         manager.delegate = self
     }
 
     deinit {
         if let timeZoneObserver { NotificationCenter.default.removeObserver(timeZoneObserver) }
+    }
+
+    private static let zoneOffsetKey = "redlight.location.zoneOffset"
+
+    /// The fix while it belongs to the current zone, otherwise that zone's city.
+    private func resolveAutomaticCoordinate() {
+        if let lastFix, lastFixZoneOffset == ApproximateLocation.standardOffset(of: timeZone) {
+            automaticCoordinate = lastFix
+            automaticIsApproximate = false
+        } else {
+            automaticCoordinate = ApproximateLocation.from(timeZone)
+            automaticIsApproximate = true
+        }
     }
 
     var authorization: LocationAuthorization {
@@ -228,10 +257,13 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
            abs(current.latitude - lat) < 0.01, abs(current.longitude - lon) < 0.01 {
             return
         }
-        automaticCoordinate = (lat, lon)
+        lastFix = (lat, lon)
+        lastFixZoneOffset = ApproximateLocation.standardOffset(of: timeZone)
+        automaticCoordinate = lastFix
         automaticIsApproximate = false
         defaults.set(lat, forKey: "redlight.location.lat")
         defaults.set(lon, forKey: "redlight.location.lon")
+        defaults.set(lastFixZoneOffset, forKey: Self.zoneOffsetKey)
         onChange?()
     }
 
@@ -248,13 +280,12 @@ final class LocationProvider: NSObject, LocationProviding, CLLocationManagerDele
         return (lat, lon)
     }
 
-    private func systemTimeZoneChanged() {
-        // Foundation caches the system zone; drop it so `.current` reflects the new one.
-        NSTimeZone.resetSystemTimeZone()
-        guard automaticIsApproximate else { return }
-        let fresh = ApproximateLocation.from(.current)
-        if let current = automaticCoordinate, current == fresh { return }
-        automaticCoordinate = fresh
+    /// Internal so the move to another zone is testable without changing the system's.
+    func systemTimeZoneChanged(to zone: TimeZone) {
+        timeZone = zone
+        let previous = automaticCoordinate
+        resolveAutomaticCoordinate()
+        if let previous, let current = automaticCoordinate, previous == current { return }
         if manualCoordinate == nil { onChange?() }
     }
 }

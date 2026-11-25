@@ -223,6 +223,90 @@ import Testing
         #expect(provider.wantsFix)
     }
 
+    // MARK: - A fix belongs to the zone it was taken in
+
+    @Test func aFixFromAnotherTimeZoneGivesWayToTheZonesCityAndComesBack() throws {
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let london = TimeZone(identifier: "Europe/London")!
+        let defaults = freshDefaults()
+        defaults.set(41.88, forKey: "redlight.location.lat")
+        defaults.set(-87.63, forKey: "redlight.location.lon")
+        defaults.set(-6 * 3_600, forKey: "redlight.location.zoneOffset")
+
+        // Launched after a flight, with no fix to be had: London's sun, not Chicago's.
+        let abroad = LocationProvider(defaults: defaults, timeZone: london)
+        let city = try #require(abroad.coordinate)
+        #expect(abroad.isApproximate)
+        #expect(abs(city.latitude - 51.51) < 0.1 && abs(city.longitude - (-0.13)) < 0.1)
+        // The fix is kept: the same Mac back in its zone follows it again.
+        #expect(defaults.double(forKey: "redlight.location.lat") == 41.88)
+        let home = LocationProvider(defaults: defaults, timeZone: chicago)
+        #expect(!home.isApproximate)
+        #expect(home.coordinate?.latitude == 41.88)
+        // Daylight saving is the same zone.
+        #expect(ApproximateLocation.standardOffset(of: chicago, at: Date(timeIntervalSince1970: 1_782_000_000))
+                == -6 * 3_600)
+    }
+
+    @Test func aFixSavedBeforeTheOffsetWasIsTakenAsThisZones() {
+        let defaults = freshDefaults()
+        defaults.set(37.77, forKey: "redlight.location.lat")
+        defaults.set(-122.42, forKey: "redlight.location.lon")
+        let provider = LocationProvider(defaults: defaults, timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+        #expect(!provider.isApproximate)
+        #expect(provider.coordinate?.latitude == 37.77)
+        #expect(defaults.integer(forKey: "redlight.location.zoneOffset") == 9 * 3_600)
+    }
+
+    @Test func movingZoneWhileRunningSwitchesToTheCityUntilAFixArrivesThere() throws {
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let london = TimeZone(identifier: "Europe/London")!
+        let manager = TestManager()
+        manager.status = .authorizedAlways
+        let defaults = freshDefaults()
+        let provider = LocationProvider(defaults: defaults, timeZone: chicago, manager: manager)
+        var changes = 0
+        provider.onChange = { changes += 1 }
+        func deliver(_ latitude: Double, _ longitude: Double) {
+            provider.requestWhenInUse()
+            provider.locationManager(manager, didUpdateLocations: [CLLocation(
+                coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                altitude: 0, horizontalAccuracy: 1_000, verticalAccuracy: -1, timestamp: Date())])
+        }
+        deliver(41.88, -87.63)
+        #expect(!provider.isApproximate && provider.coordinate?.latitude == 41.88)
+        #expect(defaults.integer(forKey: "redlight.location.zoneOffset") == -6 * 3_600)
+
+        changes = 0
+        provider.systemTimeZoneChanged(to: london)
+        #expect(provider.isApproximate)
+        #expect(abs(try #require(provider.coordinate).latitude - 51.51) < 0.1)
+        #expect(changes == 1)
+        // A neighbouring zone with the same offset is no move, and no change to report.
+        provider.systemTimeZoneChanged(to: TimeZone(identifier: "Europe/Lisbon")!)
+        #expect(provider.isApproximate)
+        provider.systemTimeZoneChanged(to: chicago)
+        #expect(!provider.isApproximate && provider.coordinate?.latitude == 41.88)
+
+        // The same fix again in the new zone means the Mac did not move: follow it there.
+        provider.systemTimeZoneChanged(to: london)
+        changes = 0
+        deliver(41.88, -87.63)
+        #expect(!provider.isApproximate && provider.coordinate?.latitude == 41.88)
+        #expect(changes == 1)
+        #expect(defaults.integer(forKey: "redlight.location.zoneOffset") == 0)
+    }
+
+    @Test func aManualCoordinateIsNotMovedByAZoneChange() {
+        let provider = LocationProvider(defaults: freshDefaults(), timeZone: TimeZone(identifier: "America/Chicago")!)
+        provider.setManualCoordinate((latitude: 10, longitude: 20))
+        var changes = 0
+        provider.onChange = { changes += 1 }
+        provider.systemTimeZoneChanged(to: TimeZone(identifier: "Asia/Tokyo")!)
+        #expect(provider.coordinate?.latitude == 10 && !provider.isApproximate)
+        #expect(changes == 0)
+    }
+
     @Test func manualLocationTextValidationNamesTheRange() throws {
         let parsed = try ManualLocation.parse(latitude: " 51.5 ", longitude: "-0.13")
         #expect(parsed.latitude == 51.5 && parsed.longitude == -0.13)

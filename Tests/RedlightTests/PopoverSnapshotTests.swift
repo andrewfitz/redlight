@@ -224,6 +224,15 @@ struct PopoverState {
             .showing {
                 $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false, updatesAutomatically: true))
             },
+        // The longest Settings page: both of Auto's times set, and every General switch,
+        // as the built app shows them on a Mac with Night Shift.
+        PopoverState("settings-wake-night-shift", defaults: adaptive([
+            "redlight.adaptiveBedtime": 22 * 60 + 30, "redlight.adaptiveWakeTime": 7 * 60,
+        ]))
+            .showing {
+                $0.menuBarView(page: .settings, MenuBarInitialState(
+                    updateAvailable: false, updatesAutomatically: true, keepsNightShiftOff: true))
+            },
         PopoverState("settings-coordinates-error", defaults: adaptive(), location: .none(.denied))
             .showing {
                 $0.menuBarView(page: .settings, MenuBarInitialState(

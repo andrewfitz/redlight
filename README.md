@@ -41,6 +41,8 @@ Free open source blue light filter mac app that:
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
 - The **sun arc** graphs today's solar elevation and the sun's position, with sunrise and sunset times and your bedtime
 - **Deepest by**, in Settings, sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
+- **Clear by**, in Settings, sets a wake time: the filter is back at its clearest by then, however late the sun rises, and a bedtime holds through the night until it
+- Works at any latitude: under the midnight sun and through the polar night the curve still reaches Day at solar noon and Late at solar midnight
 - **Manual location**: enter a latitude and longitude in Settings instead of granting Location access
 - **Limits**: in Auto, each slider shows its minimum and maximum as labelled flags under the track. Drag a flag to set a hard limit; the screen previews it while you drag. Moving a slider shifts the curve without leaving Auto, and dragging past a flag moves the flag with you, so 0% and 100% are always reachable
 - **Fixed values**: drag one flag onto the other and they merge into a single “Fixed” flag, which keeps that slider fixed while the other follows the sun. The flags otherwise keep the limits at least 5% apart. Drag the merged flag to either side to open the range again. From the CLI, `redlight limits whitepoint 80 80` does the same
@@ -147,11 +149,31 @@ the normal morning curve takes over. Bedtime can only make the evening redder, n
 lighter. While a bedtime applies, the sun arc marks it with a moon.
 
 A bedtime later than solar midnight (around 01:00 during summer time in many places) has no
-effect that night, and the popover does not show it as active. Under the midnight sun the tint lifts again after solar midnight.
+effect that night unless a wake time is set, and the popover does not show it as active.
+
+### Wake time
+
+Under Deepest by, set a time and turn on **Clear by**. Over the hour before it the filter
+eases back to the clear end of your limits and stays there until solar noon, when the
+normal evening curve takes over. It can only make the morning clearer, never redder, so a
+dark winter morning no longer starts red.
+
+With Clear by on, Deepest by holds through the night until the wake time instead of
+lifting from solar midnight, and a bedtime after solar midnight counts, as long as it is at
+least an hour before the wake time. A wake time must fall between solar midnight and solar
+noon; one outside that has no effect.
+
+### Night Shift
+
+Night Shift adds its own tint on top of Redlight's. **Keep Night Shift off** in Settings
+turns Night Shift off whenever it comes on while Redlight is running. Its schedule is not
+changed, so it returns at its next start once the switch is off. The switch is shown on
+Macs whose display supports Night Shift. It uses a private macOS interface and disappears
+on a macOS version that changes it.
 
 ### Location
 
-Adaptive normally uses Location Services, falling back to a city in your time zone. **Location for Auto** in Settings names the source: Automatic, Time zone, Last known or Manual. To set
+Adaptive normally uses Location Services, falling back to the principal city of your time zone. A location fix is followed while the Mac stays on the UTC offset it was taken in; after a move to another time zone Redlight follows that zone's city until a new fix arrives. **Location for Auto** in Settings names the source: Automatic, Time zone, Last known or Manual. To set
 it yourself, choose **Coordinates** under Location for Auto in Settings and enter a latitude
 and longitude, or run `redlight location`.
 With a manual location Redlight makes no Location requests and does not ask for permission.
@@ -210,6 +232,7 @@ redlight preset night
 redlight preset save night
 redlight adaptive on
 redlight adaptive bedtime 22:30  # or: off
+redlight adaptive wake 07:00     # or: off
 redlight location 51.5 -0.12     # or: auto
 redlight limits color 10 80
 redlight limits whitepoint 30 90
@@ -251,7 +274,7 @@ needed in System Settings → Login Items.
 
 Redlight provides Shortcuts app actions for its commands, including Pause (with an optional
 length, or until sunrise) and Resume, Adjust (warmer, cooler, dimmer or brighter by any
-amount), display selection, preset editing, limits, bedtime, location, pause for apps,
+amount), display selection, preset editing, limits, bedtime, wake time, location, pause for apps,
 system appearance and status. These Siri phrases work out of the box:
 
 - “Turn on Redlight” / “Turn off Redlight”
@@ -315,7 +338,18 @@ NOAA solar algorithm. The filter starts easing at +12°, reaches Warm at +6° an
 0°, follows the civil, nautical and astronomical twilight boundaries at −6°, −12° and −18°,
 and reaches Late at solar midnight. Mornings mirror the night up to sunrise, then reach
 Day by +4°. Where the sun never sinks to −24° (high-latitude summer), the night is stretched
-so its lowest point still reaches Late.
+so its lowest point still reaches Late; the stretch stops at 4×, and where the sun stays
+above −6° at solar midnight (white nights, the midnight sun) the whole curve slides up
+instead. A noon below +12° brings the evening's Day anchor down to it, and a noon below +4°
+(polar winter) slides the curve down, so every day reaches Day at solar noon and morning
+and evening meet there without a step. Only within about 5° of the poles is the sun's
+daily range too narrow for the whole curve.
+
+Sunrise and sunset times, the countdown to them and **Until sunrise** use the apparent
+horizon (the sun's centre 0.833° below the geometric one), as almanacs do. The time-zone
+fallback's cities are generated from the tz database by `Tools/generate-zone-coordinates.py`.
+`Tools/sensor-probe.m` is a read-only probe that reports what a Mac's ambient light sensor,
+True Tone and Night Shift say; nothing in Redlight reads the sensor.
 
 ## Testing
 

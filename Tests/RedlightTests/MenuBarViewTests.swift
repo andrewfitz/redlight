@@ -659,6 +659,61 @@ struct AccessibilityTree {
         #expect(tree.named(BedtimeRow.title).isEmpty)
     }
 
+    @Test func clearByIsTheSecondRowOfAutoAndSetsTheWakeTime() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location,
+                                  now: { Self.evening }, calendar: Self.chicagoCalendar)
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                               initialPage: .settings)
+        let hosted = try await host(view)
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+
+        let title = BedtimeRow.Kind.wake.title
+        let clear = tree.named(title)
+        #expect(clear.count == 1)
+        #expect(clear.first?.role == NSAccessibility.Role.checkBox.rawValue)
+        #expect(clear.first?.value == "0")
+        #expect(clear.first?.help == BedtimeRow.Kind.wake.explanation)
+        let deepestIndex = try #require(tree.index(BedtimeRow.title))
+        let clearIndex = try #require(tree.index(title))
+        let locationIndex = try #require(tree.index("Location"))
+        #expect(deepestIndex < clearIndex && clearIndex < locationIndex)
+        #expect(tree.named("Wake time").count == 1)                    // its own time field
+
+        // The switch applies the field's time, 07:00 until one is typed, and remembers it.
+        tree = try await press(title, in: hosted.document)
+        #expect(manager.wakeTime == Bedtime(hour: 7, minute: 0))
+        #expect(manager.bedtime == nil)
+        #expect(tree.first(title)?.value == "1")
+        tree = try await press(title, in: hosted.document)
+        #expect(manager.wakeTime == nil)
+        #expect(BedtimeDraft(defaults: defaults, kind: .wake).bedtime == Bedtime(hour: 7, minute: 0))
+        #expect(BedtimeDraft.wakeKey == "redlight.adaptiveWakeTimeDraft")
+    }
+
+    @Test func keepNightShiftOffIsShownOnlyWhereThereIsANightShift() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        // The tests never connect the system's Night Shift, so the guard has no switch.
+        #expect(!NightShiftGuard.shared.isAvailable)
+        for (stand, value) in [(Bool?.none, String?.none), (true, "1"), (false, "0")] {
+            let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                                   initialState: MenuBarInitialState(keepsNightShiftOff: stand),
+                                   initialPage: .settings)
+            let hosted = try await host(view)
+            defer { hosted.window.close() }
+            let tree = await accessibility(of: hosted.document)
+            #expect(tree.named("Keep Night Shift off").count == (stand == nil ? 0 : 1))
+            #expect(tree.first("Keep Night Shift off")?.value == value)
+        }
+    }
+
     @Test func deepestByIsAtTheTopOfSettingsAndNamedOnce() async throws {
         let registry = TestDefaultsRegistry()
         let defaults = registry.makeDefaults()

@@ -151,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
         statusItem = Self.makeStatusItem?()
         _ = Updater.shared  // starts Sparkle's scheduled background checks
+        NightShiftGuard.shared.connect(SystemNightShift())
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

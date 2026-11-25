@@ -70,6 +70,11 @@ final class CommandHandler {
                 throw CommandError.invalidInput(Bedtime.invalidMessage)
             }
             addressed = []
+        case .wake(.at(let hour, let minute)):
+            guard Bedtime(hour: hour, minute: minute) != nil else {
+                throw CommandError.invalidInput(Bedtime.invalidWakeMessage)
+            }
+            addressed = []
         case .apps(.add(let bundleID)):
             _ = try AppBundleID.validate(bundleID)
             addressed = []
@@ -133,6 +138,10 @@ final class CommandHandler {
                 manager.setBedtime(nil)
             case .bedtime(.at(let hour, let minute)):
                 manager.setBedtime(Bedtime(hour: hour, minute: minute))
+            case .wake(.off):
+                manager.setWakeTime(nil)
+            case .wake(.at(let hour, let minute)):
+                manager.setWakeTime(Bedtime(hour: hour, minute: minute))
             case .reset(.color):
                 manager.resetIntensity()
             case .reset(.whitepoint):
@@ -224,6 +233,7 @@ final class CommandHandler {
             locationSource: manager.manualLocation != nil ? .manual
                 : manager.isLocationApproximate ? .timeZone : .auto,
             bedtime: manager.bedtime?.text,
+            wake: manager.wakeTime?.text,
             // Off shows no tint, so there is nothing to suspend.
             suspendedFor: manager.isOn ? manager.suspendedForApp : nil,
             apps: services.apps()

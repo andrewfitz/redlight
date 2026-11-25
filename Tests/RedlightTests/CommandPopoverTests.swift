@@ -132,6 +132,17 @@ private final class PopoverServicesState {
         #expect(manager.bedtime == nil)
     }
 
+    @Test func wakeActionsReachTheModel() {
+        let manager = makeManager()
+        let dispatch = PopoverCommandDispatch(handler: CommandHandler(manager: manager, services: PopoverServicesState().services))
+        #expect(dispatch.execute(.wake(.at(hour: 7, minute: 0))) == nil)
+        #expect(manager.wakeTime == Bedtime(hour: 7, minute: 0))
+        #expect(dispatch.execute(.wake(.at(hour: 7, minute: 60)))?.contains("Wake time") == true)
+        #expect(manager.wakeTime == Bedtime(hour: 7, minute: 0))
+        #expect(dispatch.execute(.wake(.off)) == nil)
+        #expect(manager.wakeTime == nil)
+    }
+
     @Test func previewsWithoutAHandlerShowAnActionableError() {
         let dispatch = PopoverCommandDispatch(handler: nil)
         #expect(dispatch.execute(.master(.on))?.contains("Reopen the app") == true)
