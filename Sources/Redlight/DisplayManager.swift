@@ -688,6 +688,8 @@ final class DisplayManager {
     private let gamma: GammaControlling
     private let getDisplayIDs: () -> [CGDirectDisplayID]?
     private let getDisplayName: (CGDirectDisplayID) -> String
+    /// True for a display that agents' tools create to run apps out of sight.
+    private let isAgentDisplay: (CGDirectDisplayID) -> Bool
     private let getDisplayPersistenceKey: (CGDirectDisplayID) -> String
     private let getMainDisplayID: () -> CGDirectDisplayID
     private let defaults: UserDefaults
@@ -765,6 +767,7 @@ final class DisplayManager {
         gamma: GammaControlling = DisplayFilterController(),
         getDisplayIDs: @escaping () -> [CGDirectDisplayID]? = { DisplayManager.systemDisplayIDs() },
         getDisplayName: @escaping (CGDirectDisplayID) -> String = { DisplayManager.systemDisplayName(for: $0) },
+        isAgentDisplay: @escaping (CGDirectDisplayID) -> Bool = { DisplayManager.hasAgentDisplayIdentity($0) },
         getDisplayPersistenceKey: @escaping (CGDirectDisplayID) -> String = {
             DisplayManager.systemDisplayPersistenceKey(for: $0)
         },
@@ -789,6 +792,7 @@ final class DisplayManager {
         self.gamma = gamma
         self.getDisplayIDs = getDisplayIDs
         self.getDisplayName = getDisplayName
+        self.isAgentDisplay = isAgentDisplay
         self.getDisplayPersistenceKey = getDisplayPersistenceKey
         self.getMainDisplayID = getMainDisplayID
         self.defaults = defaults
@@ -963,7 +967,7 @@ final class DisplayManager {
             guard names[id] == nil else { return false }
             let name = getDisplayName(id)
             names[id] = name
-            guard !Self.isIgnoredDisplayName(name) else {
+            guard !isIgnored(id, name: name) else {
                 ignoredDisplayIDs.insert(id)
                 return false
             }
@@ -1356,10 +1360,20 @@ final class DisplayManager {
         name.localizedCaseInsensitiveContains("backstage")
     }
 
+    /// Backstage's documented identity for its hidden displays: vendor 0xB57A, model 0x0001.
+    /// Sturdier than the name, which is kept as a fallback.
+    nonisolated static func hasAgentDisplayIdentity(_ id: CGDirectDisplayID) -> Bool {
+        CGDisplayVendorNumber(id) == 0xB57A && CGDisplayModelNumber(id) == 0x0001
+    }
+
+    private func isIgnored(_ id: CGDirectDisplayID, name: String) -> Bool {
+        isAgentDisplay(id) || Self.isIgnoredDisplayName(name)
+    }
+
     private func isIgnoredDisplay(_ id: CGDirectDisplayID) -> Bool {
         if ignoredDisplayIDs.contains(id) { return true }
         guard !displays.contains(where: { $0.id == id }) else { return false }
-        guard Self.isIgnoredDisplayName(getDisplayName(id)) else { return false }
+        guard isIgnored(id, name: getDisplayName(id)) else { return false }
         ignoredDisplayIDs.insert(id)
         return true
     }

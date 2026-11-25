@@ -184,6 +184,23 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.restoreAllCount == 1)
     }
 
+    @Test func anAgentDisplayIsRecognisedByItsIdentityWhateverItsName() {
+        var ids: [CGDirectDisplayID] = [1, 7]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { "Display \($0)" },
+            isAgentDisplay: { $0 == 7 },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        #expect(manager.displays.map(\.id) == [1])
+        ids = [1]
+        manager.handleDisplayReconfiguration(.removeFlag, display: 7)
+        ids = [1, 8]
+        manager.handleDisplayReconfiguration(.addFlag, display: 8)
+        manager.completeDisplayRecovery()
+        // 8 is a real display: it is added, and the recovery runs for it.
+        #expect(mock.restoreAllCount == 1)
+        #expect(manager.displays.map(\.id) == [1, 8])
+    }
+
     @Test func sameIDHardwareModeChangesCoalesceIntoOneRecovery() {
         let manager = makeManager()
         manager.handleDisplayReconfiguration(.setModeFlag)
