@@ -1,6 +1,7 @@
 import AppKit
 import ColorSync
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -1348,9 +1349,15 @@ final class DisplayManager {
         // A display Redlight never tints, such as an agent's hidden virtual display, comes
         // and goes without touching the real ones. Recovering would reset every display's
         // ColorSync table and flash the screens unfiltered for a moment.
-        if let display, isIgnoredDisplay(display) { return }
+        if let display, isIgnoredDisplay(display) {
+            Self.displayLog.notice("Ignored change 0x\(flags.rawValue, format: .hex, privacy: .public) on agent display \(display, privacy: .public)")
+            return
+        }
+        Self.displayLog.notice("Display \(display.map(String.init) ?? "?", privacy: .public) changed (0x\(flags.rawValue, format: .hex, privacy: .public)); recovering in 2 s")
         scheduleDisplayRecovery()
     }
+
+    private static let displayLog = Logger(subsystem: "com.redlight.app", category: "displays")
 
     /// Displays left out of the list by name. Remembered by ID, because a display that has
     /// just been removed no longer has a name to check.
@@ -1399,6 +1406,7 @@ final class DisplayManager {
         displayRecoveryTimer?.invalidate()
         displayRecoveryTimer = nil
         guard !isTerminating else { return }
+        Self.displayLog.notice("Display recovery: resetting ColorSync tables and reapplying")
         refreshDisplays(apply: true, resetCalibration: true)
     }
 
