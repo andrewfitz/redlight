@@ -2,14 +2,22 @@
 
 ## Unreleased
 
-- Redesigned the menu bar popover. Displays are at the top, each with its Invert control. **Auto** follows the sun and shows the next solar event, and the sun arc; **Manual** shows the presets and holds a setting. Sliders show their value as a percentage.
-- Pause and the light/dark switch sit in the header beside the main switch. Launch at Login, Pause for apps, Keyboard Shortcuts, location, Updates, About and Quit moved to a Settings page inside the popover, opened from the bottom of it.
-- New menu bar icon: a setting sun. It is an outlined ring when no filter is showing, and a solid disc with one, two or three lines across it as the filter deepens.
+- Redesigned the menu bar popover. Displays are at the top, each with its Invert control. **Auto** follows the sun and shows the sun arc; **Manual** shows the presets and holds a setting. Sliders show their value as a percentage.
+- Pause and the light/dark switch sit in the header beside the main switch. While paused, the Pause button shows the time left, counting down. Deepest by, Launch at Login, Pause for apps, Keyboard Shortcuts, location, Updates, About and Quit moved to a Settings page inside the popover, opened from the bottom of it.
+- New menu bar icon: a setting sun. It is an outlined ring when no filter is showing, and a solid disc with one, two or three lines across it as the filter deepens. The part of the disc under each line is drawn at half strength. With only Invert showing it is the solid disc with no line.
 - New app icon: a red sun setting behind a beige CRT monitor with a red screen, under a starry sky.
-- Renamed the Deep Red preset to **Late**. A saved preset still named Deep Red is renamed on launch. `redlight preset late` is the new spelling; `deep-red` keeps working, and `status --json` still reports `deep-red`. Existing Shortcuts and keyboard shortcuts are unaffected.
+- Renamed the Deep Red preset to **Late**. A saved preset still named Deep Red is renamed on launch. `redlight preset late` is the new spelling; `deep-red` keeps working. `status --json` still reports `deep-red`; plain `status` and the Shortcuts status text now say `late`. Existing Shortcuts and keyboard shortcuts are unaffected.
 - The Location row names where Auto's location comes from: Automatic, Time zone, Last known or Manual. A bedtime that is too early or too late to take effect is no longer shown as active.
 - Sliders are easier to use: press anywhere on one to set it there, and drag to either end for exactly 0% or 100%. Arrow keys step 1%, Shift steps 10%, Home and End go to the ends.
-- In Auto, each slider's minimum and maximum are labelled flags under the track. Drag a flag to change a limit and preview it; drag the value past a flag and the flag moves with it.
+- In Auto, each slider's minimum and maximum are labelled flags under the track. Drag a flag to change a limit and preview it; drag the value past a flag and the flag moves with it. Drag one flag onto the other and they merge into one “Fixed” flag that holds the slider at that value, including at 0% or 100%; drag it to either side to open the range again.
+- Slider colors show the setting. In dark appearance the Color temp slider runs from white at 100% to red at 0%, and the White point slider is the same color at 100% and dimmer and less vivid as it goes down: a grey under white, a duller red under red. In light appearance the scale stays deep, because white does not show on the pale panel; the White point slider fades there instead.
+- While an Auto limit flag is dragged, the popover's colors follow the limit, as the screen does, instead of waiting for the drag to pause. Pressing a flag without moving it previews its limit too.
+- When an update is waiting, the Settings row at the bottom of the popover says **Update available**. A new **Update automatically** switch in Settings downloads new versions in the background and installs them when Redlight next quits.
+- Switching between Auto and Manual slides the pane under the control sideways with the selected segment, and the popover changes height in step. The controls above no longer jump while it resizes. Settings and About slide in from the right the same way, and Back slides them away.
+- **White point now runs from 0 to 100%** in the popover, the CLI, `status` and Shortcuts, like Color temp. Nothing changes on screen: 0% is the same strongest reduction that used to be called 25%, and saved settings and presets look as they did. Scripts and Shortcuts that set a white point or its limits need new numbers: new = (old − 25) ÷ 0.75, so 25 becomes 0, 50 becomes 33 and 100 stays 100. The default presets now read 100, 80, 53, 27 and 7%. The Dimmer and Brighter shortcuts step 5% of the new scale.
+- Auto's default White point minimum is now 50%, so a night in Auto dims the screen to half the scale and no further unless you lower the flag. A minimum you already have is kept; Reset beside White point takes it to the new default.
+- Reset beside a slider's value is a circular-arrow button.
+- The popover is more compact: about a quarter shorter in Auto.
 - The popover redraws about twice as fast while a slider is dragged.
 - Slider handles, switches and buttons stay readable with the Late preset on, in light and dark appearance. Text and marks are stronger with Increase Contrast on.
 

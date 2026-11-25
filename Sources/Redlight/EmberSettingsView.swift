@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The Settings page, pushed inside the popover: the location Auto follows, the general
-/// switches, then updates, About and Quit. Displays stay on the main page.
+/// The Settings page, pushed inside the popover: Auto's bedtime and the location it follows,
+/// the general switches, then updates, About and Quit. Displays stay on the main page.
 struct SettingsPage: View {
     let manager: DisplayManager
     let launchAtLogin: LaunchAtLogin?
@@ -13,6 +13,8 @@ struct SettingsPage: View {
     let initialState: MenuBarInitialState
     /// The coordinate entry, owned by the popover so it outlasts a visit to About.
     let locationDraft: LocationDraft
+    /// The time in the "Deepest by" field, owned by the popover for the same reason.
+    let bedtimeDraft: BedtimeDraft
     let headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding
     let back: () -> Void
     let showAbout: () -> Void
@@ -21,10 +23,16 @@ struct SettingsPage: View {
         VStack(alignment: .leading, spacing: EmberMetrics.spacing) {
             EmberPageHeader(title: "Settings", titleFocus: (headerFocus, .settings), back: back)
             VStack(alignment: .leading, spacing: 6) {
+                EmberGroupLabel("Auto")
+                BedtimeCard(manager: manager, dispatch: dispatch, draft: bedtimeDraft)
+            }
+            VStack(alignment: .leading, spacing: 6) {
                 EmberGroupLabel("Location for Auto")
                 LocationSettingsCard(manager: manager, dispatch: dispatch, draft: locationDraft)
             }
-            if launchAtLogin != nil || apps != nil || openShortcuts != nil {
+            // Only a built app has an updater; a render can stand in for it.
+            let hasUpdates = initialState.updatesAutomatically != nil || Updater.shared.isAvailable
+            if launchAtLogin != nil || hasUpdates || apps != nil || openShortcuts != nil {
                 VStack(alignment: .leading, spacing: 6) {
                     EmberGroupLabel("General")
                     EmberCard {
@@ -32,12 +40,17 @@ struct SettingsPage: View {
                             LaunchAtLoginRows(launchAtLogin: launchAtLogin, dispatch: dispatch,
                                               requiresApproval: initialState.loginRequiresApproval)
                         }
+                        if hasUpdates {
+                            AutomaticUpdatesRow(divider: launchAtLogin != nil, stand: initialState.updatesAutomatically)
+                        }
                         if let apps {
-                            PauseForAppsControl(apps: apps, dispatch: dispatch, divider: launchAtLogin != nil,
+                            PauseForAppsControl(apps: apps, dispatch: dispatch,
+                                                divider: launchAtLogin != nil || hasUpdates,
                                                 startExpanded: initialState.choosingApps)
                         }
                         if let openShortcuts {
-                            ShortcutsRow(divider: launchAtLogin != nil || apps != nil, open: openShortcuts)
+                            ShortcutsRow(divider: launchAtLogin != nil || hasUpdates || apps != nil,
+                                         open: openShortcuts)
                         }
                     }
                 }
@@ -45,6 +58,22 @@ struct SettingsPage: View {
             CommandErrorLine(session: session)
             SettingsBar(manager: manager, dispatch: dispatch, updateAvailable: initialState.updateAvailable,
                         showAbout: showAbout)
+        }
+    }
+}
+
+// MARK: - Bedtime
+
+/// "Deepest by", at the top of Settings. Its own view, so that the bedtime is read here and
+/// a change to it evaluates this card and not the page.
+private struct BedtimeCard: View {
+    let manager: DisplayManager
+    let dispatch: PopoverDispatch
+    let draft: BedtimeDraft
+
+    var body: some View {
+        EmberCard {
+            BedtimeRow(bedtime: manager.bedtime, draft: draft) { dispatch(.bedtime($0)) }
         }
     }
 }
@@ -132,6 +161,33 @@ private struct LocationSettingsCard: View {
 
 // MARK: - General
 
+/// Sparkle's "automatically download and install updates", as a switch. With it on, a new
+/// version is fetched in the background and installed when Redlight next quits; with it off,
+/// Redlight says an update is available and waits to be told.
+private struct AutomaticUpdatesRow: View {
+    static let title = "Update automatically"
+
+    let divider: Bool
+    /// A render's stand-in for the updater's setting; nil in the app.
+    let stand: Bool?
+
+    var body: some View {
+        let updater = Updater.shared
+        EmberRow(divider: divider) {
+            // The switch carries the name for VoiceOver, as the display rows do.
+            Text(Self.title)
+                .accessibilityHidden(true)
+            Spacer(minLength: 0)
+            EmberSwitch(Self.title, isOn: Binding(
+                get: { stand ?? updater.updatesAutomatically },
+                set: { updater.setUpdatesAutomatically($0) }
+            ))
+            .disabled(stand == nil && !updater.canUpdateAutomatically)
+        }
+        .help("Download new versions in the background and install them when Redlight next quits")
+    }
+}
+
 private struct LaunchAtLoginRows: View {
     let launchAtLogin: LaunchAtLogin
     let dispatch: PopoverDispatch
@@ -200,7 +256,7 @@ private struct ShortcutsRow: View {
 }
 
 /// "Pause for apps": the row names the chosen apps and unfolds the list in place.
-private struct PauseForAppsControl: View {
+struct PauseForAppsControl: View {
     let apps: AppSuspensionController
     let dispatch: PopoverDispatch
     let divider: Bool
@@ -240,7 +296,7 @@ private struct PauseForAppsControl: View {
             }
             .help("Suspend the tint while one of these apps is in front. Invert stays on.")
             .accessibilityLabel("Pause for apps")
-            .accessibilityValue(choosingApps ? "Expanded" : "Collapsed")
+            .accessibilityValue(Self.accessibilityValue(chosen: chosen.map(\.name), isExpanded: choosingApps))
 
             if choosingApps {
                 PauseForAppsRow(chosen: chosen, running: runningApps, recent: apps.recentBundleID) {
@@ -252,6 +308,12 @@ private struct PauseForAppsControl: View {
         .onAppear {
             if choosingApps, runningApps.isEmpty { runningApps = apps.runningApps() }
         }
+    }
+
+    /// What VoiceOver adds after "Pause for apps": the apps the row shows, then whether the
+    /// list is open. "Safari, Preview, collapsed".
+    static func accessibilityValue(chosen: [String], isExpanded: Bool) -> String {
+        "\(chosen.isEmpty ? "None" : chosen.joined(separator: ", ")), \(isExpanded ? "expanded" : "collapsed")"
     }
 }
 

@@ -107,11 +107,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             .onExitCommand { close() }
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: CGSize.self, of: { $0.size }) { [weak popover, weak scroll] size in
-                DispatchQueue.main.async { [weak popover, weak scroll] in
+                // On the next pass of the run loop, not inside SwiftUI's own update.
+                MainRunLoop.perform {
                     guard let popover, let scroll else { return }
                     resize(popover, scroll: scroll, contentSize: size, maximumHeight: maximumHeight)
                 }
-            })
+            }
+            // Until the popover has followed a new height the content keeps its top edge:
+            // centred, as a hosting view places it, everything would jump by half the
+            // difference and back. The minimum makes the frame take the height it is given
+            // when the content has outgrown it, so that is top-aligned too.
+            .frame(minHeight: 0, maxHeight: .infinity, alignment: .top))
         let size = host.view.fittingSize
         let container = NSViewController()
         container.view = scroll
@@ -132,7 +138,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if document.frame.size != contentSize { document.setFrameSize(contentSize) }
         let needsScroller = contentSize.height > viewport.height
         if scroll.hasVerticalScroller != needsScroller { scroll.hasVerticalScroller = needsScroller }
-        if popover.contentSize != viewport { popover.contentSize = viewport }
+        if popover.contentSize != viewport {
+            // At once: where the content animates its own height (a mode change, in
+            // `ModeContent`) the popover follows it frame by frame, and the popover's own
+            // animation would trail behind. Anything else that unfolds is simply there.
+            let animates = popover.animates
+            popover.animates = false
+            popover.contentSize = viewport
+            popover.animates = animates
+        }
         if wasAtTop, needsScroller, !document.isFlipped {
             clip.scroll(to: CGPoint(x: 0, y: contentSize.height - viewport.height))
             scroll.reflectScrolledClipView(clip)
@@ -155,6 +169,23 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.button?.setAccessibilityHelp("Open Redlight controls")
         // The next presentation owns a fresh controller and SwiftUI state.
         self.popover = nil
+    }
+}
+
+/// Work for a later pass of the main run loop. Unlike a block on the main queue or a task
+/// on the main actor, it also runs while an event loop is nested inside one of those, as
+/// the live tests' is.
+@MainActor
+enum MainRunLoop {
+    static func perform(after delay: TimeInterval = 0, _ work: @escaping @MainActor () -> Void) {
+        guard delay > 0 else {
+            RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated(work) }
+            // A block does not wake a run loop that is about to sleep.
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+            return
+        }
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in MainActor.assumeIsolated(work) }
+        RunLoop.main.add(timer, forMode: .common)
     }
 }
 

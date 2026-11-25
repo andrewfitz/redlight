@@ -2,10 +2,12 @@ import AppKit
 
 /// A plain sun disc that sets as the filter deepens. Off is the sun fully up: an outlined
 /// ring. On, the disc is solid and horizontal slits cut its lower part; the first slit sits
-/// higher for each deeper level, so the icon doubles as a gauge.
+/// higher for each deeper level, so the icon doubles as a gauge. What is left of the disc
+/// under a slit, each rung of it, is drawn at half strength: the part of the sun that has
+/// gone down. An inversion with no tint is the solid disc with no slit.
 ///
-/// Every image is a template, so macOS recolors it for either menu-bar appearance. All
-/// fills are opaque: state is told by shape, never by partial alpha.
+/// Every image is a template, so macOS recolors it for either menu-bar appearance. The
+/// level is still told by shape, the number of slits; the half strength only adds to it.
 enum MenuBarIcon {
     /// How far the sun has set.
     enum Level: Int, CaseIterable, Sendable {
@@ -17,11 +19,18 @@ enum MenuBarIcon {
         case mid
         /// Late.
         case deep
+        /// Only an inversion is showing: the tint is off, paused, or suspended for an app.
+        case inverted
 
         /// The level for a color-temp value, 1 (unfiltered) through 0 (Late). The steps fall
         /// halfway between the default presets on either side.
-        init(isActive: Bool, intensity: Double) {
+        ///
+        /// `showsTint` is false when only an inversion is showing: the tint is off, paused or
+        /// suspended. The sun is then solid with no line across it, whatever the colour temp
+        /// is set to: the lines count a tint's depth, and there is no tint on screen.
+        init(isActive: Bool, showsTint: Bool = true, intensity: Double) {
             guard isActive else { self = .off; return }
+            guard showsTint else { self = .inverted; return }
             let value = intensity.isFinite ? intensity : 1
             switch value {
             case ...Self.deepCeiling: self = .deep
@@ -41,6 +50,17 @@ enum MenuBarIcon {
             case .low: "Active, light filter"
             case .mid: "Active, medium filter"
             case .deep: "Active, deepest filter"
+            case .inverted: "Active, colors inverted"
+            }
+        }
+
+        /// How many lines cross the sun.
+        var slitCount: Int {
+            switch self {
+            case .off, .inverted: 0
+            case .low: 1
+            case .mid: 2
+            case .deep: 3
             }
         }
     }
@@ -55,9 +75,23 @@ enum MenuBarIcon {
     /// slit is 1.5 pt, three clean pixel rows on a Retina display.
     static let slitOrigins: [CGFloat] = [4, 7, 10]
 
+    /// How strongly the disc is drawn under a slit.
+    static let rungAlpha: CGFloat = 0.5
+
+    /// The bands of the disc under a level's slits, lowest first: the cap under the first
+    /// slit, then what lies between each slit and the next. The disc above the last slit is
+    /// not one of them.
+    static func rungs(for level: Level) -> [CGRect] {
+        var bottom: CGFloat = 0
+        return slits(for: level).map { slit in
+            defer { bottom = slit.maxY }
+            return CGRect(x: 0, y: bottom, width: size.width, height: slit.minY - bottom)
+        }
+    }
+
     /// The slits a level shows: the lowest one first, one more per level.
     static func slits(for level: Level) -> [CGRect] {
-        slitOrigins.prefix(level.rawValue).map {
+        slitOrigins.prefix(level.slitCount).map {
             CGRect(x: 0, y: $0, width: size.width, height: slitHeight)
         }
     }
@@ -73,7 +107,7 @@ enum MenuBarIcon {
             if level == .off {
                 drawRing(in: ctx)
             } else {
-                drawSun(in: ctx, slits: slits(for: level))
+                drawSun(in: ctx, level: level)
             }
             return true
         }
@@ -91,18 +125,17 @@ enum MenuBarIcon {
         ctx.drawPath(using: .eoFill)
     }
 
-    private static func drawSun(in ctx: CGContext, slits: [CGRect]) {
+    private static func drawSun(in ctx: CGContext, level: Level) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
         ctx.addEllipse(in: disc(radius: radius))
         ctx.clip()
-        // Fill the bands between the slits rather than erasing, so the image stays opaque
-        // where it is drawn and clear everywhere else.
-        var bottom: CGFloat = 0
-        for slit in slits {
-            ctx.fill(CGRect(x: 0, y: bottom, width: size.width, height: slit.minY - bottom))
-            bottom = slit.maxY
-        }
-        ctx.fill(CGRect(x: 0, y: bottom, width: size.width, height: size.height - bottom))
+        // Fill the bands around the slits rather than erasing, so the image is clear
+        // wherever nothing is drawn.
+        ctx.setFillColor(NSColor.black.withAlphaComponent(rungAlpha).cgColor)
+        for rung in rungs(for: level) { ctx.fill(rung) }
+        let top = slits(for: level).last?.maxY ?? 0
+        ctx.setFillColor(NSColor.black.cgColor)
+        ctx.fill(CGRect(x: 0, y: top, width: size.width, height: size.height - top))
     }
 }

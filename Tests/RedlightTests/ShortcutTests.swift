@@ -281,17 +281,18 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         send(.warmer, pressed: true, to: controller)
         send(.dimmer, pressed: true, to: controller)   // pressed before Warmer is released
         #expect(abs(manager.intensity - 0.95) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.95) < 1e-9)
+        // Five percent of the white point's own scale: 95 % of the way from 0.25 to 1.
+        #expect(abs(manager.whitepoint - 0.9625) < 1e-9)
         // A repeat event from the older held key must leave Dimmer in control.
         send(.warmer, pressed: true, to: controller)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
         send(.warmer, pressed: false, to: controller)
         // Dimmer is still held and repeating, so a resent press must not step again.
         send(.dimmer, pressed: true, to: controller)
-        #expect(abs(manager.whitepoint - 0.95) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.9625) < 1e-9)
         send(.dimmer, pressed: false, to: controller)
         send(.dimmer, pressed: true, to: controller)
-        #expect(abs(manager.whitepoint - 0.90) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.925) < 1e-9)
         send(.dimmer, pressed: false, to: controller)
     }
 

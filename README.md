@@ -32,7 +32,7 @@ Free open source blue light filter mac app that:
 **Filter**
 
 - **Color Temp** goes from a normal screen (100%) to pure red (0%), passing through warm orange. Blue drops faster than green, so it never turns purple
-- **White Point** dims bright areas while leaving darks mostly unchanged, like iOS Reduce White Point but adjustable
+- **White Point** dims bright areas while leaving darks mostly unchanged, like iOS Reduce White Point but adjustable. It runs from 100% (no reduction) to 0%, the strongest reduction Redlight allows, which still leaves a quarter of the white point so the screen stays readable
 - **Presets**: one-click Day, Warm, Sunset, Night and Late, each fading in over two seconds. In Manual, **Save to a preset…** overwrites a preset with the current sliders
 - **Invert** per display flips light and dark beneath the red filter
 
@@ -40,11 +40,10 @@ Free open source blue light filter mac app that:
 
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
 - The **sun arc** graphs today's solar elevation and the sun's position, with sunrise and sunset times and your bedtime
-- The headline names the next solar event, such as “Sunset in 1 h 12 m”
-- **Deepest by** sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
+- **Deepest by**, in Settings, sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
 - **Manual location**: enter a latitude and longitude in Settings instead of granting Location access
 - **Limits**: in Auto, each slider shows its minimum and maximum as labelled flags under the track. Drag a flag to set a hard limit; the screen previews it while you drag. Moving a slider shifts the curve without leaving Auto, and dragging past a flag moves the flag with you, so 0% and 100% are always reachable
-- **Fixed values**: set equal limits with the CLI to keep one slider fixed while the other follows the sun. For example, `redlight limits whitepoint 80 80` holds White Point at 80%
+- **Fixed values**: drag one flag onto the other and they merge into a single “Fixed” flag, which keeps that slider fixed while the other follows the sun. The flags otherwise keep the limits at least 5% apart. Drag the merged flag to either side to open the range again. From the CLI, `redlight limits whitepoint 80 80` does the same
 - Changes ease in over two seconds. Turning Adaptive off keeps exactly what is on screen as your manual setting
 
 **Displays**
@@ -55,7 +54,7 @@ Free open source blue light filter mac app that:
 
 **Controls**
 
-- **Pause** suspends the tint for 30 minutes, with a countdown in the header. Invert stays on. Other lengths, up to 24 hours or until sunrise, are one click away
+- **Pause** suspends the tint for 30 minutes, with the time left counting down in the Pause button. Invert stays on. Other lengths, up to 24 hours or until sunrise, are one click away
 - **Pause for apps** suspends the tint while an app you choose, such as a photo or video editor, is in front
 - **Keyboard shortcuts** that work in any app, with no Accessibility or Input Monitoring permission
 - **Light/dark switch** for the system appearance
@@ -100,17 +99,19 @@ Free open source blue light filter mac app that:
 
 Click the menu bar icon (a setting sun) to open the popover. The sun is an outlined ring
 when no filter or inversion is showing. While one is, it is solid, with one line across it
-for Day and Warm, two for Sunset and Night, and three for Late.
+for Day and Warm, two for Sunset and Night, and three for Late. The part of the sun under
+each line is drawn at half strength. With only Invert showing it is solid with no line.
 
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
 - Your displays are listed at the top: switch each one on or off, and click **Invert** to flip its colors
 - Choose **Auto** to let the sun drive the filter, or **Manual** to hold a setting
-- In **Auto**, the headline names the next solar event and the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness. Press anywhere on a slider to set it there; drag to either end for exactly 0% or 100%. The flags under each slider are Auto's minimum and maximum: drag one to change it. **Deepest by** sits beneath the sliders
+- In **Auto**, the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness. Press anywhere on a slider to set it there; drag to either end for exactly 0% or 100%. The flags under each slider are Auto's minimum and maximum: drag one to change it, or onto the other to fix the slider at one value
+- The sliders are filled with the color they set: Color Temp from white at 100% to red at 0% (in dark appearance), and White Point in the same color, dimmer and less vivid the lower it goes
 - In **Manual**, click a preset to jump to it, or drag the sliders. **Save to a preset…** turns the presets into overwrite targets
-- **Reset** appears beside a slider's value when it differs from the default; it restores the value and clears its limits
+- A reset button (a circular arrow) appears beside a slider's value when it differs from the default; it restores the value and clears its limits
 - The **pause** button beside the header switch suspends the tint for 30 minutes and turns into a play button that resumes it. Its chevron offers 1 hour, 2 hours and Until sunrise
 - The moon or sun button beside it switches the system appearance
-- **Settings** at the bottom opens location for Auto, Launch at login, Pause for apps, Keyboard shortcuts, updates, About and Quit. A dot on it means an update or a login item is waiting
+- **Settings** at the bottom opens location for Auto, Launch at login, Update automatically, Pause for apps, Keyboard shortcuts, updates, About and Quit. It says **Update available** when an update is waiting, and shows a dot when a login item needs approval
 - Press Tab to move between controls, the arrow keys to adjust a focused slider (Shift for 10% steps, Home and End for the ends), and Esc to close the popover
 
 ### Pause
@@ -129,7 +130,8 @@ Slider and preset changes made while paused are saved and appear on resume. Paus
 
 Open **Pause for apps** in Settings and add any running app. While a chosen app is in
 front, the tint fades out and the header shows “Off for” and its name; it fades back
-when you switch to another app. Invert stays on, and the menu bar icon becomes an outlined ring.
+when you switch to another app. Invert stays on. The menu bar icon becomes an outlined ring
+unless a display uses Invert.
 
 Unlike Pause, this does not count as off: Control Center and `redlight status` still show
 on, and turning Redlight off and on again while the app is in front leaves the tint
@@ -138,12 +140,11 @@ appear when the suspension ends.
 
 ### Bedtime
 
-In Auto, set a time and turn on **Deepest by**; to change it later, edit the time and
-click **Set**. Starting two hours before it, the
+At the top of Settings, set a time and turn on **Deepest by**; to change it later, edit the
+time and click **Set**. Starting two hours before it, the
 filter eases to the deepest end of your limits and holds there until solar midnight, when
 the normal morning curve takes over. Bedtime can only make the evening redder, never
-lighter. While a bedtime applies, the line under the headline reads “Deepest red by” and the
-time, and the sun arc marks it.
+lighter. While a bedtime applies, the sun arc marks it with a moon.
 
 A bedtime later than solar midnight (around 01:00 during summer time in many places) has no
 effect that night, and the popover does not show it as active. Under the midnight sun the tint lifts again after solar midnight.
@@ -198,7 +199,7 @@ points to the app executable and stops working if you delete the app.
 ```bash
 redlight on
 redlight color 30                # Color Temp, 0–100
-redlight whitepoint 50           # 25–100
+redlight whitepoint 50           # 0–100; 0 is the strongest reduction Redlight allows
 redlight color down 5            # warmer; steps default to 5
 redlight whitepoint up 10
 redlight pause                   # 30 minutes

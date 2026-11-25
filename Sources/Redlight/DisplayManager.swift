@@ -61,15 +61,16 @@ final class DisplayManager {
     ///
     /// Default means *no filter at all*, not "a bit of filter": `intensity` 1.0 is an
     /// untouched display (0.0 is pure red), and `whitepoint` 1.0 is no white-point reduction.
-    /// Intensity defaults to its full range. White Point starts at the Late preset's
-    /// 0.30 anchor so factory adaptive values are not silently stretched down to 0.25;
-    /// users can still take that limit to the slider's 0.25 floor.
+    /// Intensity defaults to its full range. Auto's white point stops halfway down its
+    /// scale, 50 % as the slider shows it (`WhitepointScale`): a night at the old minimum, the
+    /// Late preset's 0.30, was darker than most people want without having asked for it.
+    /// The flag can still be taken to the floor.
     enum Defaults {
         static let intensity = 1.0
         static let intensityMin = 0.0
         static let intensityMax = 1.0
         static let whitepoint = 1.0
-        static let whitepointMin = 0.3
+        static let whitepointMin = 0.625
         static let whitepointMax = 1.0
         static let adaptiveFadeDuration: TimeInterval = 2.0
         static let displayFadeDuration: TimeInterval = 0.7
@@ -148,9 +149,16 @@ final class DisplayManager {
         }
     }
 
-    var isAnyActive: Bool {
+    /// True while a tint reaches a display: one is switched on and the tint is neither paused
+    /// nor suspended for an app, or a fade is still running.
+    var isTintShowing: Bool {
         !fadingDisplayIDs.isEmpty || isPauseFading
-            || displays.contains { ($0.isEnabled && !isPaused && suspendedForApp == nil) || $0.isInverted }
+            || (!isPaused && suspendedForApp == nil && displays.contains { $0.isEnabled })
+    }
+
+    /// A tint or an inversion is showing.
+    var isAnyActive: Bool {
+        isTintShowing || displays.contains { $0.isInverted }
     }
 
     /// Logical master state follows connected filter checkboxes, independently of inversion.
@@ -249,8 +257,8 @@ final class DisplayManager {
             scheduleBandRefresh(.intensity)
         }
     }
-    /// White Point band. Defaults 0.3…1.0 = the unbanded preset curve (non-breaking).
-    var adaptiveWpMin: Double = 0.3 {
+    /// White Point band. See `Defaults.whitepointMin`.
+    var adaptiveWpMin: Double = Defaults.whitepointMin {
         didSet {
             guard isInitialized, !internalUpdate else { return }
             let v = clamp(adaptiveWpMin, to: 0.25...1)
@@ -387,8 +395,8 @@ final class DisplayManager {
         save()
     }
 
-    /// Applied sample used by the sun arc. Keeping the offset and hard-band clamp here makes
-    /// the graphic follow the exact same adjusted curve as the real display. Pass the sample's
+    /// The applied value for a sun elevation: the curve with the offset and the hard-band
+    /// clamp, exactly as the display gets it. Pass the sample's
     /// time to include the bedtime floor.
     func adaptiveIntensity(
         at elevation: Double, minElevation: Double, rising: Bool = false,
@@ -734,9 +742,10 @@ final class DisplayManager {
     // desired value until the curve resolves, then convert it to the usual persistent offset.
     @ObservationIgnored private var pendingAdaptiveIntensity: Double?
     @ObservationIgnored private var pendingAdaptiveWhitepoint: Double?
-    // Transient live-preview overrides while an Auto range limit is being dragged.
-    @ObservationIgnored private var previewIntensityValue: Double?
-    @ObservationIgnored private var previewWhitepointValue: Double?
+    // Transient live-preview overrides while an Auto range limit is being dragged. Observed,
+    // through `shownIntensity` and `shownWhitepoint`, so they are written only on a change.
+    private var previewIntensityValue: Double?
+    private var previewWhitepointValue: Double?
     // Transient rendered-output overrides used by the Adaptive and preset crossfades.
     @ObservationIgnored private var transitionIntensityValue: Double?
     @ObservationIgnored private var transitionWhitepointValue: Double?
@@ -972,6 +981,8 @@ final class DisplayManager {
                 ignoredDisplayIDs.insert(id)
                 return false
             }
+            // An ID can come back as another display: this one is real, whatever it was.
+            ignoredDisplayIDs.remove(id)
             return true
         }
         let currentIDs = Set(ids)
@@ -1155,8 +1166,7 @@ final class DisplayManager {
         })
 
         stopRuntimeUpdates()
-        previewIntensityValue = nil
-        previewWhitepointValue = nil
+        clearPreview()
         cancelOutputTransition()
         cancelAllDisplayTransitions()
         // Freeze a pause fade where it is; the saved pause still applies at next launch.
@@ -1359,8 +1369,9 @@ final class DisplayManager {
 
     private static let displayLog = Logger(subsystem: "com.redlight.app", category: "displays")
 
-    /// Displays left out of the list by name. Remembered by ID, because a display that has
-    /// just been removed no longer has a name to check.
+    /// Displays left out of the list. Remembered by ID, because a display that has just been
+    /// removed can no longer be asked what it is. An ID stops being remembered once a display
+    /// with it is listed: that one is real, and its changes recover like any other's.
     @ObservationIgnored private var ignoredDisplayIDs = Set<CGDirectDisplayID>()
 
     static func isIgnoredDisplayName(_ name: String) -> Bool {
@@ -1378,8 +1389,12 @@ final class DisplayManager {
     }
 
     private func isIgnoredDisplay(_ id: CGDirectDisplayID) -> Bool {
+        // A listed display is a real one, whatever its ID belonged to before.
+        guard !displays.contains(where: { $0.id == id }) else {
+            ignoredDisplayIDs.remove(id)
+            return false
+        }
         if ignoredDisplayIDs.contains(id) { return true }
-        guard !displays.contains(where: { $0.id == id }) else { return false }
         guard isIgnored(id, name: getDisplayName(id)) else { return false }
         ignoredDisplayIDs.insert(id)
         return true
@@ -2000,14 +2015,16 @@ final class DisplayManager {
     func previewIntensity(_ v: Double) {
         guard !isTerminating else { return }
         cancelOutputTransition(.intensity)
-        previewIntensityValue = min(1, max(0, v))
+        let value = min(1, max(0, v))
+        if previewIntensityValue != value { previewIntensityValue = value }
         applyToActiveDisplays()
     }
 
     func previewWhitepoint(_ v: Double) {
         guard !isTerminating else { return }
         cancelOutputTransition(.whitepoint)
-        previewWhitepointValue = min(1, max(0.25, v))
+        let value = min(1, max(0.25, v))
+        if previewWhitepointValue != value { previewWhitepointValue = value }
         applyToActiveDisplays()
     }
 
@@ -2018,17 +2035,32 @@ final class DisplayManager {
         // Every command and every popover close ends up here. With no preview showing the
         // rendered output is unchanged, so skip the gamma write; a pending band change
         // still applies itself in the flush.
-        let wasPreviewing = previewIntensityValue != nil || previewWhitepointValue != nil
-        previewIntensityValue = nil
-        previewWhitepointValue = nil
+        let wasPreviewing = clearPreview()
         flushBandRefresh()
         if wasPreviewing { applyToActiveDisplays() }
     }
 
+    /// Drops the preview values; true when there was one. With none it writes nothing, so
+    /// the views that follow `shownIntensity` are not told of a change that did not happen.
+    @discardableResult
+    private func clearPreview() -> Bool {
+        let wasPreviewing = previewIntensityValue != nil || previewWhitepointValue != nil
+        if previewIntensityValue != nil { previewIntensityValue = nil }
+        if previewWhitepointValue != nil { previewWhitepointValue = nil }
+        return wasPreviewing
+    }
+
+    /// The colour temp the popover paints with: a limit's value while its flag is dragged,
+    /// as the displays show it, and otherwise the value itself. A crossfade in progress is
+    /// left out: the popover shows where the value is going.
+    var shownIntensity: Double { previewIntensityValue ?? intensity }
+    /// The same for the white point.
+    var shownWhitepoint: Double { previewWhitepointValue ?? whitepoint }
+
     // MARK: - Band change coalescing
 
     /// A limit drag writes `adaptiveMin/Max` dozens of times per second; recomputing the
-    /// solar curve and rewriting UserDefaults on each tick is wasteful, and the marker's
+    /// solar curve and rewriting UserDefaults on each tick is wasteful, and the flag's
     /// `previewIntensity` already drives the visible filter during the drag. Coalesce to
     /// a trailing edge; `endPreview()` (drag release) flushes immediately.
     private func scheduleBandRefresh(_ channel: OutputChannel) {

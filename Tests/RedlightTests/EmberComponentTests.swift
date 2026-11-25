@@ -405,6 +405,8 @@ import Testing
     ]
     private var all: [Case] { standard + increased }
     private let intensities = stride(from: 0.0, through: 1.0, by: 0.01).map { $0 }
+    /// White point fill levels: the bottom of the slider to the top.
+    private let levels = stride(from: 0.0, through: 1.0, by: 0.05).map { $0 }
 
     private func wcag(_ a: EmberRGB, _ b: EmberRGB) -> Double { EmberContrast.wcag(a, b) }
     private func late(_ a: EmberRGB, _ b: EmberRGB) -> Double { EmberContrast.late(a, b) }
@@ -493,7 +495,7 @@ import Testing
         for (name, scheme, palette) in all {
             for intensity in intensities {
                 let accent = EmberTint.rgb(intensity: intensity, scheme: scheme)
-                for tone in [EmberTone.accent, .soft] {
+                for tone in [EmberTone.accent] + levels.map(EmberTone.level) {
                     let fill = palette.sliderFillRGB(tone, accent: accent)
                     let rest = palette.markSpec(.grabber, on: fill).over(fill)
                     let strong = palette.markSpec(.solid, on: fill).over(fill)
@@ -506,25 +508,82 @@ import Testing
         }
     }
 
-    @Test func softFillStandsApartFromItsBandAtTheRedEndAndIsUnchangedAbove() {
+    @Test func whitePointFillIsTheAccentAtTheTopAndAStraightLineDownToItsDimmest() {
+        for (name, scheme, palette) in all {
+            for intensity in intensities {
+                let accent = EmberTint.rgb(intensity: intensity, scheme: scheme)
+                let dimmest = palette.dimmestFill(accent: accent)
+                #expect(palette.sliderFillRGB(.level(1), accent: accent) == accent)
+                #expect(palette.sliderFillRGB(.level(0), accent: accent) == dimmest)
+                // Out of range is an end, and a value that is not a number is the accent.
+                #expect(palette.sliderFillRGB(.level(-1), accent: accent) == dimmest)
+                #expect(palette.sliderFillRGB(.level(2), accent: accent) == accent)
+                #expect(palette.sliderFillRGB(.level(.nan), accent: accent) == accent)
+                // No dead zone: the whole range has colour to move through, and a straight
+                // line through it gives every step the same share.
+                let span = abs(dimmest.r - accent.r) + abs(dimmest.g - accent.g) + abs(dimmest.b - accent.b)
+                #expect(span >= 20, "\(name) at \(intensity): \(span)")
+                let half = palette.sliderFillRGB(.level(0.5), accent: accent)
+                #expect(half == accent.mixed(0.5, over: dimmest))
+            }
+        }
+    }
+
+    @Test func whitePointFillKeepsItsMarkAndItsDistanceFromTheBandAtEveryLevel() {
+        for (name, scheme, palette) in all {
+            let band = palette.sliderBand
+            for intensity in intensities {
+                let accent = EmberTint.rgb(intensity: intensity, scheme: scheme)
+                // One ink the whole way: a grabber that changed colour mid-drag would pop.
+                let ink = palette.markSpec(.grabber, on: accent).ink
+                for level in levels {
+                    let fill = palette.sliderFillRGB(.level(level), accent: accent)
+                    let at = "\(name) at \(intensity), level \(level)"
+                    for kind in [EmberPalette.MarkKind.grabber, .solid] {
+                        #expect(palette.markSpec(kind, on: fill).ink == ink, "\(at)")
+                    }
+                    #expect(wcag(fill, band) >= EmberPalette.bandWCAG - 1e-9, "\(at): \(wcag(fill, band))")
+                    #expect(wcag(fill, palette.card) >= wcag(fill, band) - 1e-9, "\(at)")
+                    if palette.isDark {
+                        #expect(late(fill, band) >= EmberPalette.bandLate - 1e-9, "\(at): \(late(fill, band))")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func darkWhitePointFillGoesFromWhiteToGreyAndFromRedToADullerDimmerRed() {
         let palette = EmberPalette.dark
+        func chroma(_ color: EmberRGB) -> Double { max(color.r, color.g, color.b) - min(color.r, color.g, color.b) }
+        // Unfiltered: white at the top, a mid grey at the bottom.
+        let white = EmberTint.rgb(intensity: 1, scheme: .dark)
+        #expect(white == .white)
+        #expect(palette.sliderFillRGB(.level(1), accent: white) == .white)
+        let grey = palette.dimmestFill(accent: white)
+        #expect(chroma(grey) < 0.5)
+        #expect(grey.r > 120 && grey.r < 160)
+        // Late: still a red, a little less of one and a little dimmer.
+        let red = EmberTint.rgb(intensity: 0, scheme: .dark)
+        let dull = palette.dimmestFill(accent: red)
+        #expect(dull.r > dull.g + 80 && dull.g > dull.b)
+        #expect(chroma(dull) < chroma(red) - 20)
+        #expect(EmberContrast.luminance(dull) < EmberContrast.luminance(red))
+        // Dark only ever dims, at every colour temp.
         for intensity in intensities {
             let accent = EmberTint.rgb(intensity: intensity, scheme: .dark)
-            let soft = palette.sliderFillRGB(.soft, accent: accent)
-            let plain = accent.mixed(palette.softFraction, over: palette.background)
-            // It was 1.01:1 at the red end, a difference of hue alone.
-            #expect(wcag(soft, palette.sliderBand) >= 1.45, "at \(intensity): \(wcag(soft, palette.sliderBand))")
-            #expect(late(soft, palette.sliderBand) >= 1.6)
-            if intensity >= 0.6 { #expect(soft == plain) }
-            // Never brighter than the accent it is a tone of.
-            #expect(EmberContrast.luminance(soft) <= EmberContrast.luminance(accent) + 1e-9)
-            #expect(EmberContrast.luminance(soft) >= EmberContrast.luminance(plain) - 1e-9)
+            let dimmest = palette.dimmestFill(accent: accent)
+            #expect(EmberContrast.luminance(dimmest) < EmberContrast.luminance(accent))
+            #expect(chroma(dimmest) <= chroma(accent) + 1e-9)
         }
-        // Light never needed the lift.
-        for intensity in intensities {
-            let accent = EmberTint.rgb(intensity: intensity, scheme: .light)
-            #expect(EmberPalette.light.sliderFillRGB(.soft, accent: accent)
-                == accent.mixed(EmberPalette.light.softFraction, over: EmberPalette.light.background))
+    }
+
+    @Test func greyMatchingAColourHasItsLuminance() {
+        let colors: [EmberRGB] = [.white, .black, EmberRGB(204, 44, 26), EmberRGB(248, 156, 86)]
+        for color in colors {
+            let grey = EmberContrast.grey(matching: color)
+            #expect(grey.r == grey.g)
+            #expect(grey.g == grey.b)
+            #expect(abs(EmberContrast.luminance(grey) - EmberContrast.luminance(color)) < 1e-9)
         }
     }
 
@@ -676,7 +735,7 @@ import Testing
                     EmberSegmented(label: "Mode", options: [(value: true, title: "Auto"), (value: false, title: "Manual")],
                                    selection: true) { _ in }
                         .overlay(alignment: .trailing) {
-                            Color.clear.frame(width: 132, height: 26).padding(.trailing, 2)
+                            Color.clear.frame(width: 132, height: EmberMetrics.segmentHeight).padding(.trailing, 2)
                                 .emberFocusHalo(RoundedRectangle(cornerRadius: 8, style: .continuous),
                                                 isFocused: true, spread: 0)
                         }
@@ -729,7 +788,7 @@ import Testing
                         ForEach(Preset.defaults.indices, id: \.self) { index in
                             let swatch = EmberTint.rgb(intensity: Preset.defaults[index].intensity, scheme: scheme)
                             let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            shape.fill(swatch.color).frame(height: 38)
+                            shape.fill(swatch.color).frame(height: EmberMetrics.swatchHeight)
                                 .overlay {
                                     Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
                                         .foregroundStyle(palette.check(on: swatch))
@@ -737,7 +796,7 @@ import Testing
                                 .emberFocusHalo(shape, isFocused: index == 2)
                         }
                     }
-                    ForEach([EmberTone.accent, .soft], id: \.self) { tone in
+                    ForEach([EmberTone.accent, .level(0.5), .level(0)], id: \.self) { tone in
                         EmberSlider(value: value, band: lower...upper, tone: tone, onChange: { value = $0 },
                                     onLimitChange: { if $0 == .lower { lower = $1 } else { upper = $1 } })
                         EmberSlider(value: lower, band: lower...upper, tone: tone, onChange: { lower = $0 },
@@ -786,7 +845,7 @@ import Testing
             lines.append("upper notch on band \(pair(upper.over(band), band)) alpha \(String(format: "%.2f", upper.alpha))")
             for intensity in [0.0, 0.1, 0.2, 0.34, 0.5, 0.7, 0.85, 1.0] {
                 let accent = EmberTint.rgb(intensity: intensity, scheme: scheme)
-                let soft = palette.sliderFillRGB(.soft, accent: accent)
+                let soft = palette.dimmestFill(accent: accent)
                 let action = palette.actionRGB(accent: accent)
                 func mark(_ kind: EmberPalette.MarkKind, _ fill: EmberRGB) -> String {
                     let spec = palette.markSpec(kind, on: fill)
@@ -794,9 +853,9 @@ import Testing
                 }
                 lines.append(String(format: "i=%.2f", intensity)
                     + " action \(pair(action.foreground, action.background))"
-                    + " | grab/accent \(mark(.grabber, accent)) grab/soft \(mark(.grabber, soft))"
-                    + " | notch/accent \(mark(.notch, accent)) notch/soft \(mark(.notch, soft))"
-                    + " | soft vs band \(pair(soft, band)) accent vs band \(pair(accent, band))"
+                    + " | grab/accent \(mark(.grabber, accent)) grab/dimmest \(mark(.grabber, soft))"
+                    + " | notch/accent \(mark(.notch, accent)) notch/dimmest \(mark(.notch, soft))"
+                    + " | dimmest vs band \(pair(soft, band)) accent vs band \(pair(accent, band))"
                     + " | check \(mark(.check, accent)) | on knob \(mark(.solid, accent))"
                     + " on track vs card \(pair(accent, card))")
             }

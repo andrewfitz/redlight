@@ -15,6 +15,13 @@ import Testing
         for intensity in [0.0, 0.25, 0.7, 1.0] {
             #expect(MenuBarIcon.Level(isActive: false, intensity: intensity) == .off)
         }
+        // An inversion alone is a level of its own, whatever the slider says: the lines count
+        // a tint's depth, and a tint that is off, paused or suspended is not on screen.
+        for intensity in [0.0, 0.25, 0.7, 1.0] {
+            #expect(MenuBarIcon.Level(isActive: true, showsTint: false, intensity: intensity) == .inverted)
+            #expect(MenuBarIcon.Level(isActive: false, showsTint: false, intensity: intensity) == .off)
+        }
+        #expect(MenuBarIcon.Level.inverted.accessibilityValue == "Active, colors inverted")
         // The default presets land on the level named for them.
         let expected: [MenuBarIcon.Level] = [.low, .low, .mid, .mid, .deep]
         #expect(Preset.defaults.map { MenuBarIcon.Level(isActive: true, intensity: $0.intensity) } == expected)
@@ -31,6 +38,8 @@ import Testing
 
     @Test func eachDeeperLevelAddsOneSlitAboveTheLast() {
         #expect(MenuBarIcon.slits(for: .off).isEmpty)
+        // An inversion with no tint: the solid disc, no line.
+        #expect(MenuBarIcon.slits(for: .inverted).isEmpty)
         #expect(MenuBarIcon.slits(for: .low).map(\.minY) == [4])
         #expect(MenuBarIcon.slits(for: .mid).map(\.minY) == [4, 7])
         #expect(MenuBarIcon.slits(for: .deep).map(\.minY) == [4, 7, 10])
@@ -57,36 +66,52 @@ import Testing
     }
 
     @Test(arguments: [1, 2])
-    func activeLevelsAreASolidDiscCutOnlyByTheirSlits(scale: Int) throws {
-        for level in [MenuBarIcon.Level.low, .mid, .deep] {
+    func activeLevelsAreADiscCutByTheirSlitsAndAtHalfStrengthUnderThem(scale: Int) throws {
+        for level in [MenuBarIcon.Level.low, .mid, .deep, .inverted] {
             let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
             let slits = MenuBarIcon.slits(for: level)
+            let rungs = MenuBarIcon.rungs(for: level)
             // Down the middle of the disc, away from its rounded edge, one pixel at a time.
-            // A pixel wholly inside a slit is clear, one wholly outside every slit is solid,
-            // and a pixel a slit's half-point edge crosses at 1x is left out.
+            // A pixel wholly inside a slit is clear, one wholly inside a rung under a slit is
+            // at half strength, and one wholly above the last slit is solid. A pixel that a
+            // slit's half-point edge crosses at 1x is left out.
             for pixel in (2 * scale)..<(16 * scale) {
                 let low = CGFloat(pixel) / CGFloat(scale), high = CGFloat(pixel + 1) / CGFloat(scale)
                 let value = try alpha(in: bitmap, x: 9 * scale, logicalY: pixel)
                 if slits.contains(where: { $0.minY <= low && high <= $0.maxY }) {
                     #expect(value < 0.01, "level \(level) pixel row \(pixel) should be a slit")
-                } else if !slits.contains(where: { $0.minY < high && low < $0.maxY }) {
+                } else if rungs.contains(where: { $0.minY <= low && high <= $0.maxY }) {
+                    #expect(abs(value - MenuBarIcon.rungAlpha) < 0.02, "level \(level) pixel row \(pixel): \(value)")
+                } else if low >= (slits.last?.maxY ?? 0) {
                     #expect(value > 0.99, "level \(level) pixel row \(pixel) should be solid")
                 }
             }
         }
     }
 
+    @Test func eachSlitHasOneRungUnderItAndTheSunAboveTheLastIsNotOne() {
+        #expect(MenuBarIcon.rungAlpha == 0.5)
+        #expect(MenuBarIcon.rungs(for: .off).isEmpty)
+        #expect(MenuBarIcon.rungs(for: .inverted).isEmpty)
+        #expect(MenuBarIcon.rungs(for: .low).map { [$0.minY, $0.maxY] } == [[0, 4]])
+        #expect(MenuBarIcon.rungs(for: .mid).map { [$0.minY, $0.maxY] } == [[0, 4], [5.5, 7]])
+        #expect(MenuBarIcon.rungs(for: .deep).map { [$0.minY, $0.maxY] } == [[0, 4], [5.5, 7], [8.5, 10]])
+    }
+
     @Test(arguments: MenuBarIcon.Level.allCases)
-    func nothingIsPartlyTransparentAwayFromTheCurvedEdge(level: MenuBarIcon.Level) throws {
-        // State is shape, not alpha: inside the disc every pixel is fully on or fully off.
+    func awayFromTheCurvedEdgeEveryPixelIsClearSolidOrARungAtHalfStrength(level: MenuBarIcon.Level) throws {
+        // Three strengths and nothing between them, and half only ever under a slit.
         let scale = 2
         let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: scale)
         let inner = (MenuBarIcon.radius - MenuBarIcon.ringWidth - 1) * CGFloat(scale)
         let centre = CGFloat(9 * scale) - 0.5
+        let lastSlit = MenuBarIcon.slits(for: level).last?.maxY ?? 0
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide where hypot(CGFloat(x) - centre, CGFloat(y) - centre) < inner {
                 let value = try alpha(in: bitmap, x: x, logicalY: y)
-                #expect(value < 0.01 || value > 0.99)
+                let isHalf = abs(value - MenuBarIcon.rungAlpha) < 0.02
+                #expect(value < 0.01 || value > 0.99 || isHalf)
+                if isHalf { #expect(CGFloat(y) / CGFloat(scale) < lastSlit) }
             }
         }
     }
@@ -118,6 +143,20 @@ import Testing
                 // A whole slit across the disc is at least ten pixels at 1x.
                 #expect(differing >= 10)
             }
+        }
+    }
+
+    /// Writes every level as a picture, to look at:
+    ///   REDLIGHT_ICON_SHEET_DIR=/some/dir swift test --filter MenuBarIcon
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REDLIGHT_ICON_SHEET_DIR"]?.isEmpty == false))
+    func writesEveryLevelAsAPicture() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["REDLIGHT_ICON_SHEET_DIR"])
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for level in MenuBarIcon.Level.allCases {
+            let bitmap = try rasterize(MenuBarIcon.image(for: level), scale: 8)
+            let data = try #require(bitmap.representation(using: .png, properties: [:]))
+            try data.write(to: directory.appendingPathComponent("icon-\(level.rawValue)-\(level).png"))
         }
     }
 

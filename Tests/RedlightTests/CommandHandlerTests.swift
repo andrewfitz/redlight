@@ -85,7 +85,9 @@ private struct CommandFixture {
         status = try f.handler.execute(.step(.color, 100))
         #expect(status.color.set == 100)
         status = try f.handler.execute(.step(.whitepoint, -100))
-        #expect(status.whitepoint.set == 25)
+        // The bottom of the white point's scale: 0 %, which the displays take as 0.25.
+        #expect(status.whitepoint.set == 0)
+        #expect(f.manager.whitepoint == 0.25)
         expectError(.invalidInput) { _ = try f.handler.execute(.step(.color, 0)) }
         expectError(.invalidInput) { _ = try f.handler.execute(.step(.color, .nan)) }
         expectError(.invalidInput) { _ = try f.handler.execute(.pause(.on)) } // nothing to pause
@@ -265,18 +267,115 @@ private struct CommandFixture {
         _ = try f.handler.execute(.color(42))
         _ = try f.handler.execute(.whitepoint(67))
         #expect(f.manager.intensity == 0.42)
-        #expect(f.manager.whitepoint == 0.67)
+        #expect(f.manager.whitepoint == WhitepointScale.output(percent: 67))
+        #expect(abs(f.manager.whitepoint - 0.7525) < 1e-12)
         #expect(f.defaults.double(forKey: "redlight.intensity") == 0.42)
         _ = try f.handler.execute(.limits(.color, min: 20, max: 70))
         _ = try f.handler.execute(.limits(.whitepoint, min: 40, max: 80))
         #expect(f.manager.intensityBand == 0.2...0.7)
-        #expect(f.manager.whitepointBand == 0.4...0.8)
+        #expect(f.manager.whitepointBand == WhitepointScale.output(percent: 40)...WhitepointScale.output(percent: 80))
         #expect(f.defaults.double(forKey: "redlight.adaptiveMin") == 0.2)
-        #expect(f.defaults.double(forKey: "redlight.adaptiveWpMax") == 0.8)
+        #expect(f.defaults.double(forKey: "redlight.adaptiveWpMax") == WhitepointScale.output(percent: 80))
         _ = try f.handler.execute(.reset(.color))
         _ = try f.handler.execute(.reset(.whitepoint))
         #expect(f.manager.intensityIsDefault)
         #expect(f.manager.whitepointIsDefault)
+    }
+
+    @Test func theWhitePointIsSetAndReadInPercentOfItsOwnScale() throws {
+        let f = makeFixture()
+        #expect(WhitepointScale.output == 0.25...1)
+        #expect(WhitepointScale.output(percent: 0) == 0.25 && WhitepointScale.output(percent: 100) == 1)
+        #expect(WhitepointScale.percent(0.25) == 0 && WhitepointScale.percent(1) == 100)
+        #expect(WhitepointScale.percent(.nan) == 100 && WhitepointScale.output(.nan) == 1)
+        #expect(WhitepointScale.percent(0.1) == 0 && WhitepointScale.output(percent: 250) == 1)
+        // Every whole percent that is set reads back as itself, to the last digit, and the
+        // displays take its place between 0.25 and 1.
+        var last = -1.0
+        for percent in 0...100 {
+            let status = try f.handler.execute(.whitepoint(Double(percent)))
+            #expect(status.whitepoint.set == Double(percent), "\(percent) reads \(status.whitepoint.set)")
+            #expect(abs(f.manager.whitepoint - (0.25 + 0.0075 * Double(percent))) < 1e-12)
+            #expect(f.manager.whitepoint > last)
+            last = f.manager.whitepoint
+        }
+        // Limits the same, and equal ones still pin.
+        for (low, high) in [(0.0, 100.0), (7, 93), (33, 34), (50, 50)] {
+            _ = try f.handler.execute(.limits(.whitepoint, min: low, max: high))
+            let limits = f.handler.snapshot().limits.whitepoint
+            #expect(limits == Status.Band(min: low, max: high), "\(low)–\(high) reads \(limits)")
+        }
+        _ = try f.handler.execute(.reset(.whitepoint))
+        // Reset: Auto's white point stops halfway down its scale, and goes to the top.
+        #expect(f.manager.adaptiveWpMin == 0.625 && f.manager.adaptiveWpMax == 1)
+        #expect(f.handler.snapshot().limits == Status.Limits.factory)
+        #expect(Status.Limits.factory.whitepoint.min == 50)
+        // Status text writes one decimal, whatever is behind it.
+        #expect(Status.Limits.factory.whitepoint.text == "50.0–100.0%")
+        #expect(Status.Band(min: 100.0 / 15, max: 100).text == "6.7–100.0%")
+        #expect(Status.Level(set: 80.0 / 3, target: 100.0 / 15).text == "26.7% (target 6.7%)")
+        #expect(Status.Band(min: 50, max: 50).text == "fixed at 50.0%")
+    }
+
+    @Test func whitePointStepsAreSoManyPercentOfTheScaleAndComeBackTheSameWay() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.whitepoint(100))
+        var seen: [Double] = [100]
+        // Down in fives to the floor: each step lands five lower, and the floor holds.
+        for _ in 0..<22 {
+            let status = try f.handler.execute(.step(.whitepoint, -5))
+            seen.append(status.whitepoint.set)
+        }
+        for (index, value) in seen.prefix(21).enumerated() {
+            #expect(abs(value - Double(100 - 5 * index)) < 1e-6, "step \(index): \(value)")
+        }
+        #expect(seen.suffix(3) == [0, 0, 0])
+        #expect(f.manager.whitepoint == 0.25)
+        // And up again through the same values.
+        var back: [Double] = [0]
+        for _ in 0..<20 { back.append(try f.handler.execute(.step(.whitepoint, 5)).whitepoint.set) }
+        for (down, up) in zip(seen.prefix(21).reversed(), back) { #expect(abs(down - up) < 1e-6) }
+        #expect(f.manager.whitepoint == 1)
+        // A fractional step never moves the wrong way.
+        for step in [0.3, 1.5, 7.25] {
+            let before = f.handler.snapshot().whitepoint.set
+            let lower = try f.handler.execute(.step(.whitepoint, -step)).whitepoint.set
+            #expect(lower < before)
+            #expect(try f.handler.execute(.step(.whitepoint, step)).whitepoint.set > lower)
+        }
+    }
+
+    @Test func presetsAndSavedSettingsReachTheDisplaysAsBefore() throws {
+        // The scale is how the white point is shown and set, never what a preset or a saved
+        // value means: each default preset still sends its own white point to the displays.
+        let f = makeFixture()
+        _ = try f.handler.execute(.display(.all, .on))
+        for preset in CommandPreset.allCases {
+            let status = try f.handler.execute(.preset(preset))
+            let wanted = Preset.defaults[preset.index]
+            #expect(f.manager.whitepoint == wanted.whitepoint)
+            #expect(f.manager.intensity == wanted.intensity)
+            #expect(abs(status.whitepoint.set - (wanted.whitepoint - 0.25) / 0.75 * 100) < 1e-8)
+        }
+        #expect(Preset.defaults.map(\.whitepoint) == [1.0, 0.85, 0.65, 0.45, 0.3])
+        // A white point saved by an earlier version loads as the output value it was.
+        let defaults = defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests")
+        defaults.set(0.45, forKey: "redlight.whitepoint")
+        defaults.set(0.4, forKey: "redlight.adaptiveWpMin")
+        let loaded = CommandFixture(defaults: defaults, location: nil, fadeDuration: 0)
+        #expect(loaded.manager.whitepoint == 0.45 && loaded.manager.adaptiveWpMin == 0.4)
+        #expect(abs(loaded.handler.snapshot().whitepoint.set - 80.0 / 3) < 1e-8)
+        #expect(abs(loaded.handler.snapshot().limits.whitepoint.min - 20) < 1e-8)
+        // The minimum an earlier version started with, 0.3, is kept as a limit someone has:
+        // only Reset, which now shows for it, takes it to the new default.
+        let earlier = defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests")
+        earlier.set(0.3, forKey: "redlight.adaptiveWpMin")
+        let kept = CommandFixture(defaults: earlier, location: nil, fadeDuration: 0)
+        #expect(kept.manager.adaptiveWpMin == 0.3)
+        #expect(!kept.manager.whitepointAutoSettingsAreDefault)
+        _ = try kept.handler.execute(.reset(.whitepoint))
+        #expect(kept.manager.adaptiveWpMin == 0.625 && kept.manager.whitepointAutoSettingsAreDefault)
+        #expect(kept.handler.snapshot().limits.whitepoint.min == 50)
     }
 
     @Test func equalLimitsPinAChannelAndStepsMoveThePin() throws {
@@ -286,21 +385,24 @@ private struct CommandFixture {
         #expect(f.manager.isWhitepointPinned)
         #expect(f.handler.snapshot().limits.whitepoint.text == "fixed at 100.0%")
         _ = try f.handler.execute(.step(.whitepoint, -5))
-        #expect(f.manager.whitepointBand == 0.95...0.95)
-        #expect(f.manager.whitepoint == 0.95)
+        let stepped = WhitepointScale.output(percent: 95)
+        #expect(f.manager.whitepointBand == stepped...stepped)
+        #expect(f.manager.whitepoint == stepped)
+        #expect(f.handler.snapshot().limits.whitepoint.text == "fixed at 95.0%")
         _ = try f.handler.execute(.whitepoint(60))
-        #expect(f.manager.whitepointBand == 0.6...0.6)
-        #expect(f.defaults.double(forKey: "redlight.adaptiveWpMax") == 0.6)
+        let set = WhitepointScale.output(percent: 60)
+        #expect(f.manager.whitepointBand == set...set)
+        #expect(f.defaults.double(forKey: "redlight.adaptiveWpMax") == set)
     }
 
     @Test func rejectsAllInvalidRangesBeforeInterruptingOrPersisting() {
         let f = makeFixture()
         let commands: [RedlightCommand] = [
             .color(-1), .color(101), .color(.nan), .color(.infinity),
-            .whitepoint(24.9), .whitepoint(101), .whitepoint(-.infinity),
+            .whitepoint(-0.1), .whitepoint(101), .whitepoint(-.infinity),
             .limits(.color, min: 80, max: 10),
             .limits(.color, min: -.infinity, max: 100),
-            .limits(.whitepoint, min: 24, max: 100), .limits(.whitepoint, min: 25, max: .nan)
+            .limits(.whitepoint, min: -1, max: 100), .limits(.whitepoint, min: 25, max: .nan)
         ]
         let token = f.manager.beginSliderInteraction()
         f.manager.previewIntensity(0.15)
@@ -375,7 +477,7 @@ private struct CommandFixture {
         _ = try f.handler.execute(.color(95))
         _ = try f.handler.execute(.whitepoint(25))
         #expect(f.manager.intensity == 0.7)
-        #expect(f.manager.whitepoint == 0.4)
+        #expect(f.manager.whitepoint == WhitepointScale.output(percent: 40))
         for preset in CommandPreset.allCases {
             _ = try f.handler.execute(.adaptive(.on))
             let status = try f.handler.execute(.preset(preset))
@@ -396,7 +498,7 @@ private struct CommandFixture {
         for preset in CommandPreset.allCases {
             _ = try f.handler.execute(.savePreset(preset))
             #expect(f.manager.presets[preset.index].intensity == 0.36)
-            #expect(f.manager.presets[preset.index].whitepoint == 0.58)
+            #expect(f.manager.presets[preset.index].whitepoint == WhitepointScale.output(percent: 58))
         }
         #expect(f.defaults.data(forKey: "redlight.presets") != nil)
     }
@@ -480,7 +582,8 @@ private struct CommandFixture {
         let status = try f.handler.execute(.preset(.late))
         #expect(status.fading)
         #expect(status.color.target == 0)
-        #expect(status.whitepoint.target == 30)
+        // Late's white point, 0.3 on the displays, is a fifteenth of the way up its scale.
+        #expect(abs(status.whitepoint.target - 100.0 / 15) < 1e-8)
         #expect(status.elevation != nil)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)
@@ -494,7 +597,8 @@ private struct CommandFixture {
         #expect(!status.adaptive)
         #expect(status.activePreset == .night)
         #expect(abs(status.color.target - 25) < 1e-9)
-        #expect(abs(status.whitepoint.target - 45) < 1e-9)
+        // Night's 0.45 on the displays.
+        #expect(abs(status.whitepoint.target - 80.0 / 3) < 1e-8)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)
         // Re-applying the preset already on screen has nothing to fade.

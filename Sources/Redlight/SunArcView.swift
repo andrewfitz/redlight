@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The curve, sun dot, and guide lines share one linear solar-elevation scale.
-/// Guides stay at their true elevations; crowded guides are omitted rather than shifted.
+/// The curve, the sun dot and the horizon share one linear solar-elevation scale.
+/// `guides` places lines at true elevations and omits crowded ones rather than shifting
+/// them; the chart draws only the horizon.
 struct SunArcGeometry {
     struct Guide: Equatable {
         let elevation: Double
@@ -83,7 +84,10 @@ struct SunArcView: View {
         let elevation: Double
     }
 
-    static func marks(for cycle: SunCycle, bedtime: Bedtime?, calendar: Calendar, locale: Locale) -> Marks {
+    /// `nextEvent` is the manager's "Sunset in 1 h 12 m", or nil when no event is coming.
+    static func marks(
+        for cycle: SunCycle, bedtime: Bedtime?, nextEvent: String? = nil, calendar: Calendar, locale: Locale
+    ) -> Marks {
         let samples = cycle.samples
         let bedtimeMark = bedtime.flatMap { mark(for: $0, in: samples, calendar: calendar) }
         let times = sunTimes(for: samples, calendar: calendar, locale: locale)
@@ -91,6 +95,7 @@ struct SunArcView: View {
             labels: clockLabels(for: samples, calendar: calendar, locale: locale),
             bedtime: bedtimeMark.map { BedtimeMark(t: $0.t, elevation: $0.elevation) },
             description: accessibilityDescription(
+                nextEvent: nextEvent.map(spokenDuration),
                 currentElevation: cycle.nowElevation, sunrise: times.sunrise, sunset: times.sunset,
                 bedtime: bedtimeMark == nil ? nil : bedtime.map { bedtimeText($0, locale: locale) }))
     }
@@ -110,7 +115,7 @@ struct SunArcView: View {
         let text: String
     }
 
-    static let chartHeight: CGFloat = 78
+    static let chartHeight: CGFloat = 66
     // The curve's scale runs between these two lines of the chart, which leaves room for
     // the sun's halo above the highest point of the curve.
     private static let plotTop: CGFloat = 8
@@ -237,16 +242,34 @@ struct SunArcView: View {
         "Solar elevation \(degreeLabel(currentElevation))."
     }
 
-    /// The chart in words: the sun's height now, then each time that is drawn on it. A day
-    /// without a sunrise or a sunset, and an arc without a bedtime mark, leave theirs out.
+    /// The chart in words: what comes next, the sun's height now, then each time that is drawn
+    /// on it. A day without a sunrise or a sunset, an arc without a bedtime mark and a sky with
+    /// no event coming leave theirs out.
     static func accessibilityDescription(
-        currentElevation: Double, sunrise: String?, sunset: String?, bedtime: String?
+        nextEvent: String? = nil, currentElevation: Double, sunrise: String?, sunset: String?, bedtime: String?
     ) -> String {
-        var sentences = [accessibilitySummary(currentElevation: currentElevation)]
+        var sentences = nextEvent.map { ["\($0)."] } ?? []
+        sentences.append(accessibilitySummary(currentElevation: currentElevation))
         if let sunrise { sentences.append("Sunrise \(sunrise).") }
         if let sunset { sentences.append("Sunset \(sunset).") }
         if let bedtime { sentences.append("Bedtime \(bedtime).") }
         return sentences.joined(separator: " ")
+    }
+
+    /// A countdown as VoiceOver should say it: "Sunset in 1 h 12 m" becomes "Sunset in 1 hour
+    /// 12 minutes". The letters would otherwise be read as letters. Text without a count and
+    /// a unit comes back as it is.
+    static func spokenDuration(_ text: String) -> String {
+        var words = text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        for index in words.indices.dropFirst() {
+            guard let count = Int(words[index - 1]) else { continue }
+            switch words[index] {
+            case "h": words[index] = count == 1 ? "hour" : "hours"
+            case "m": words[index] = count == 1 ? "minute" : "minutes"
+            default: break
+            }
+        }
+        return words.joined(separator: " ")
     }
 
     /// The clock times of the day's sunrise and sunset, as the labels under the chart show them.

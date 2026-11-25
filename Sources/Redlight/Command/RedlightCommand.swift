@@ -124,16 +124,33 @@ struct Status: Codable, Sendable, Equatable {
     struct Level: Codable, Sendable, Equatable {
         var set: Double
         var target: Double
+        /// "42.0% (target 43.0%)".
+        var text: String { "\(Status.percentText(set))% (target \(Status.percentText(target))%)" }
     }
     struct Band: Codable, Sendable, Equatable {
         var min: Double
         var max: Double
         /// "10.0–80.0%", or "fixed at 60.0%" when equal limits pin the value.
-        var text: String { min == max ? "fixed at \(min)%" : "\(min)–\(max)%" }
+        var text: String {
+            min == max ? "fixed at \(Status.percentText(min))%" : "\(Status.percentText(min))–\(Status.percentText(max))%"
+        }
     }
+
+    /// A percentage as status text writes it: one decimal, "6.7". The values themselves keep
+    /// their precision, in `--json` and everywhere they are compared.
+    static func percentText(_ value: Double) -> String {
+        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
+    }
+
     struct Limits: Codable, Sendable, Equatable {
         var color: Band
         var whitepoint: Band
+
+        /// Auto's limits as the app first has them, in percent of each scale: the white
+        /// point's minimum is halfway down its own (`WhitepointScale`).
+        static let factory = Limits(
+            color: Band(min: 0, max: 100),
+            whitepoint: Band(min: WhitepointScale.percent(DisplayManager.Defaults.whitepointMin), max: 100))
     }
     struct Login: Codable, Sendable, Equatable {
         var enabled: Bool
@@ -149,7 +166,7 @@ struct Status: Codable, Sendable, Equatable {
     var adaptive: Bool = false
     var elevation: Double?
     var statusLine: String = ""
-    var limits: Limits = Limits(color: Band(min: 0, max: 100), whitepoint: Band(min: 30, max: 100))
+    var limits: Limits = Limits.factory
     var appearance: CommandAppearance = .light
     var login: Login = Login(enabled: false, requiresApproval: false)
     var version: String = ""
@@ -177,7 +194,7 @@ struct Status: Codable, Sendable, Equatable {
         color: Level = Level(set: 100, target: 100),
         whitepoint: Level = Level(set: 100, target: 100), activePreset: CommandPreset? = nil,
         adaptive: Bool = false, elevation: Double? = nil, statusLine: String = "",
-        limits: Limits = Limits(color: Band(min: 0, max: 100), whitepoint: Band(min: 30, max: 100)),
+        limits: Limits = Limits.factory,
         appearance: CommandAppearance = .light,
         login: Login = Login(enabled: false, requiresApproval: false), version: String = "", fading: Bool = false,
         pausedUntil: Date? = nil, locationSource: CommandLocationSource? = nil, bedtime: String? = nil,

@@ -25,13 +25,37 @@ private struct EmberAnimationsEnabledKey: EnvironmentKey {
     static let defaultValue = true
 }
 
+private struct EmberIsLeavingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
+    /// True for the controls of a pane that is sliding out (`EmberPager`). They take no
+    /// keyboard focus and do nothing, and they look exactly as they did: a control reads
+    /// this itself and keeps the keyboard off, instead of the pane being disabled, which
+    /// would fade the controls that fade when disabled and could not be told apart from
+    /// one that really is.
+    var emberIsLeaving: Bool {
+        get { self[EmberIsLeavingKey.self] }
+        set { self[EmberIsLeavingKey.self] = newValue }
+    }
+
     /// False stops the switch and segment animations, so an offscreen render never
     /// captures one halfway. Reduce Motion stops them as well.
     var emberAnimationsEnabled: Bool {
         get { self[EmberAnimationsEnabledKey.self] }
         set { self[EmberAnimationsEnabledKey.self] = newValue }
     }
+}
+
+enum EmberMotion {
+    /// The mode switch: the selected segment, the pane sliding under it and the popover's
+    /// height all move on this one curve, so they start and arrive together.
+    ///
+    /// A curve with an end, not a spring: the pane that has slid out is taken away when
+    /// the curve ends, and a spring's last, invisible part runs on after that.
+    static let modeSwitch: Animation = .timingCurve(0.2, 0.9, 0.25, 1, duration: modeSwitchDuration)
+    static let modeSwitchDuration: TimeInterval = 0.32
 }
 
 extension View {
@@ -128,13 +152,18 @@ struct EmberButton<Label: View>: View {
 
     @FocusState private var isFocused: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.emberIsLeaving) private var isLeaving
 
     var body: some View {
         Button(action: action) { EmptyView() }
+            // The look follows the state outside; `disabled` below is only the keyboard.
             .buttonStyle(EmberButtonBody(isFocused: isFocused, isEnabled: isEnabled, label: label))
+            .disabled(isLeaving)
             .focused($isFocused)
             .focusEffectDisabled()
-            .onKeyPress(.return) {
+            // On the press only: a held Return would otherwise repeat the action, flipping a
+            // switch on and off for as long as the key is down.
+            .onKeyPress(.return, phases: .down) { _ in
                 action()
                 return .handled
             }
@@ -222,7 +251,9 @@ private struct EmberSwitchBody: View {
 
 /// The colours of a switch as numbers, so their contrast can be tested.
 enum EmberSwitchFace {
-    /// The track as it shows on a card: the accent when on, `fillStrong` when off.
+    /// The track as it shows on a card: the accent when on, `fillStrong` when off. The
+    /// header's switch sits on the bare panel, where the off track is a shade darker; the
+    /// knob chosen for the card reads there too.
     static func track(isOn: Bool, accent: EmberRGB, palette: EmberPalette) -> EmberRGB {
         isOn ? accent : palette.strong(onCard: true)
     }
@@ -332,6 +363,8 @@ struct EmberSegmented<Value: Hashable>: View {
     var onCard = false
     /// The tooltip, and the help assistive apps give for each option.
     var help: String? = nil
+    /// How the selected segment travels to a new option.
+    var animation: Animation = .easeOut(duration: 0.15)
     let select: (Value) -> Void
 
     @Environment(\.emberPalette) private var palette
@@ -351,7 +384,7 @@ struct EmberSegmented<Value: Hashable>: View {
                         .foregroundStyle(isSelected ? palette.text : palette.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 26)
+                        .frame(height: EmberMetrics.segmentHeight)
                         .contentShape(Rectangle())
                         .emberFocusHalo(RoundedRectangle(cornerRadius: 8, style: .continuous),
                                         isFocused: state.isFocused, spread: 0)
@@ -367,7 +400,7 @@ struct EmberSegmented<Value: Hashable>: View {
                             radius: palette.isDark ? 1 : 1.5, y: 1)
                     .frame(width: width, height: geo.size.height)
                     .offset(x: CGFloat(selected) * width)
-                    .animation(reduceMotion || !animates ? nil : .easeOut(duration: 0.15), value: selected)
+                    .animation(reduceMotion || !animates ? nil : animation, value: selected)
             }
         }
         .padding(2)
@@ -430,7 +463,7 @@ struct EmberCard<Content: View>: View {
     }
 }
 
-/// The hairline between two rows of a card. It takes no height, so every row stays 34 pt.
+/// The hairline between two rows of a card. It takes no height, so every row keeps its own.
 private struct EmberRowDivider: ViewModifier {
     let isShown: Bool
     @Environment(\.emberPalette) private var palette
@@ -442,7 +475,7 @@ private struct EmberRowDivider: ViewModifier {
     }
 }
 
-/// One 34 pt line of a card.
+/// One line of a card, `EmberMetrics.rowHeight` tall.
 struct EmberRow<Content: View>: View {
     /// True on every row but a card's first.
     var divider = false
@@ -501,7 +534,7 @@ struct EmberChevron: View {
 
 // MARK: - Pill and icon buttons
 
-/// The 28 pt pill: Pause, Resume, About, Quit.
+/// The pill, `EmberMetrics.controlHeight` tall: Open Settings, About, Quit.
 struct EmberPillButton: View {
     let title: String
     var systemImage: String? = nil
@@ -534,10 +567,15 @@ struct EmberPillButton: View {
     }
 }
 
-/// The 28 pt round button of the bottom bar, with an optional dot.
+/// The round button of the header, `EmberMetrics.controlHeight` across, with an optional dot.
 struct EmberIconButton: View {
     let systemImage: String
     var showsDot = false
+    /// The circle's diameter. Under 24 pt the hit area is still 24 pt tall.
+    var size: CGFloat = EmberMetrics.controlHeight
+    var symbolSize: CGFloat = 12.5
+    /// A quiet button draws its glyph in the secondary text colour: Reset beside a value.
+    var isQuiet = false
     let action: () -> Void
 
     @Environment(\.emberPalette) private var palette
@@ -548,9 +586,9 @@ struct EmberIconButton: View {
         let dot = showsDot ? palette.arcDot(accent: accent) : nil
         EmberButton(action: action) { state in
             Image(systemName: systemImage)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(palette.text)
-                .frame(width: EmberMetrics.controlHeight, height: EmberMetrics.controlHeight)
+                .font(.system(size: symbolSize, weight: isQuiet ? .semibold : .medium))
+                .foregroundStyle(isQuiet ? palette.secondary : palette.text)
+                .frame(width: size, height: size)
                 .background(Circle().fill(palette.fill))
                 .overlay(alignment: .topTrailing) {
                     if let dot {
@@ -559,6 +597,7 @@ struct EmberIconButton: View {
                 }
                 .contentShape(Circle())
                 .emberFocusHalo(Circle(), isFocused: state.isFocused)
+                .emberMinimumHit(visible: size)
         }
     }
 }
@@ -603,10 +642,12 @@ struct EmberTextField: View {
     @FocusState private var isFocused: Bool
     @Environment(\.emberPalette) private var palette
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.emberIsLeaving) private var isLeaving
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
         TextField(placeholder, text: $text)
+            .disabled(isLeaving)
             .textFieldStyle(.plain)
             .font(.ember(12).monospacedDigit())
             .foregroundStyle(palette.text)
@@ -661,6 +702,8 @@ struct EmberTimeField: NSViewRepresentable {
         }
         let isEnabled = context.environment.isEnabled
         if picker.isEnabled != isEnabled { picker.isEnabled = isEnabled }
+        let isLeaving = context.environment.emberIsLeaving
+        if picker.refusesFirstResponder != isLeaving { picker.refusesFirstResponder = isLeaving }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSDatePicker, context: Context) -> CGSize? {

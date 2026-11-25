@@ -39,10 +39,13 @@ struct EmberRGB: Equatable, Sendable {
     }
 }
 
-/// Which fill a slider takes: the accent itself, or a quieter tone of it.
-enum EmberTone: Sendable {
+/// Which fill a slider takes.
+enum EmberTone: Hashable, Sendable {
+    /// The accent itself: the colour temp slider.
     case accent
-    case soft
+    /// The accent at a brightness, 0…1: the white point slider. 1 is the accent itself; lower
+    /// is dimmer and less vivid, down to `EmberPalette.dimmestFill` at 0.
+    case level(Double)
 }
 
 /// How well one flat colour reads on another, measured the two ways the popover is seen.
@@ -95,6 +98,13 @@ enum EmberContrast {
 
     private static func ratio(_ a: Double, _ b: Double) -> Double {
         (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
+    /// The grey with the same luminance as `color`.
+    static func grey(matching color: EmberRGB) -> EmberRGB {
+        let light = luminance(color)
+        let encoded = light <= 0.0031308 ? light * 12.92 : 1.055 * pow(light, 1 / 2.4) - 0.055
+        return EmberRGB(encoded * 255, encoded * 255, encoded * 255)
     }
 
     /// The candidate that scores highest on `fill`; the first of equals.
@@ -157,21 +167,22 @@ enum EmberContrast {
 }
 
 /// The one accent: a flat colour for the colour-temp value on screen right now.
-/// 1 = unfiltered (pale), 0 = the Late preset (deep red).
+/// 1 = unfiltered (white, in dark), 0 = the Late preset (deep red).
 enum EmberTint {
     private static let dark: [(Double, EmberRGB)] = [
         (0, EmberRGB(204, 44, 26)), (0.34, EmberRGB(232, 84, 46)),
-        (0.7, EmberRGB(248, 156, 86)), (1, EmberRGB(255, 226, 180)),
+        (0.7, EmberRGB(248, 156, 86)), (1, .white),
     ]
-    /// Deeper than the dark scale so the accent stays darker than the pale panel. Its red
-    /// end is as deep as it can go with a black mark on it still at 3:1.
+    /// Deeper than the dark scale, and with no white: white does not show on the pale panel,
+    /// and the accent has to stay darker than it. Its red end is as deep as it can go with a
+    /// black mark on it still at 3:1.
     private static let light: [(Double, EmberRGB)] = [
         (0, EmberRGB(166, 52, 32)), (0.34, EmberRGB(176, 74, 34)),
         (0.7, EmberRGB(190, 108, 38)), (1, EmberRGB(196, 146, 48)),
     ]
 
-    /// The palest accent of the dark scale: what an action fill moves toward when the live
-    /// accent is too deep for its label.
+    /// A pale warm tone: what an action fill moves toward when the live accent is too deep
+    /// for its label. Not white, so a lifted red stays an ember red and not a pink.
     static let palest = EmberRGB(255, 226, 180)
 
     static func rgb(intensity: Double, scheme: ColorScheme) -> EmberRGB {
@@ -217,8 +228,11 @@ struct EmberPalette: Equatable, Sendable {
     let raisedRGB: EmberRGB
     let raisedAlpha: Double
     let nightAlpha: Double
-    /// How much of the accent the soft slider fill is before any lift.
-    let softFraction: Double
+    /// The white point slider's fill at the bottom of its range, before any lift: how far
+    /// the accent moves toward its own grey, and how much of that is left over black (dark)
+    /// or over the panel (light).
+    let dimMuting: Double
+    let dimFraction: Double
     /// Least strength of a grabber and of a notch: the design's own values.
     let grabberAlpha: Double
     let notchAlpha: Double
@@ -246,8 +260,6 @@ struct EmberPalette: Equatable, Sendable {
     /// the strongest thing on the panel both as it is normally seen and under Late.
     var focusRingRGB: EmberRGB { textRGB }
     var focusRing: Color { focusRingRGB.color }
-    /// The check on a swatch whose colour is not known. Prefer `check(on:)`.
-    var check: Color { Color.black }
 
     // MARK: Surfaces as numbers
 
@@ -311,20 +323,49 @@ struct EmberPalette: Equatable, Sendable {
 
     /// A slider fill as a number, so the marks on it can be chosen.
     ///
-    /// The soft tone is `softFraction` of the accent over the panel. Where that is too dim
-    /// for any mark on it to reach `notchTarget` (the red end, in dark), it takes more of
-    /// the accent, up to the accent itself. That also keeps it apart from the band under it.
+    /// A level runs in a straight line from `dimmestFill` at 0 to the accent itself at 1, so
+    /// every step of the white point slider changes its colour and none changes it twice.
     func sliderFillRGB(_ tone: EmberTone, accent: EmberRGB) -> EmberRGB {
         switch tone {
         case .accent:
             return accent
-        case .soft:
-            let soft = accent.mixed(softFraction, over: background)
-            return EmberContrast.lifted(soft, toward: accent) {
-                EmberContrast.score(EmberContrast.best(of: [.black, .white], on: $0), $0) >= notchTarget + 0.1
-            }
+        case .level(let level):
+            return accent.mixed(level.isFinite ? level : 1, over: dimmestFill(accent: accent))
         }
     }
+
+    /// The white point slider's fill at the bottom of its range: the accent with less colour
+    /// and less light. White becomes a grey; a red becomes a slightly duller, dimmer red.
+    ///
+    /// Dark dims toward black. Light has no room to: its accent is already as deep as a mark
+    /// on it allows, so there the fill fades toward the panel instead.
+    ///
+    /// Dark stops dimming where the fill would no longer carry the accent's mark at
+    /// `notchTarget` or would come too close to the band under it. At the red end that is
+    /// early: under Late only red reaches the screen, and a black mark needs a bright red to
+    /// stand on. Light stops fading where the fill would come too close to the band; a mark
+    /// only gains from a paler fill.
+    func dimmestFill(accent: EmberRGB) -> EmberRGB {
+        let muted = EmberContrast.grey(matching: accent).mixed(dimMuting, over: accent)
+        let band = sliderBand
+        guard isDark else {
+            return EmberContrast.lifted(muted.mixed(dimFraction, over: background), toward: muted) {
+                EmberContrast.wcag($0, band) >= Self.bandWCAG
+            }
+        }
+        let ink = EmberContrast.best(of: [.black, .white], on: accent)
+        return EmberContrast.lifted(muted.mixed(dimFraction, over: .black), toward: muted) { fill in
+            EmberContrast.score(ink, fill) >= notchTarget + 0.1
+                && EmberContrast.wcag(fill, band) >= Self.bandWCAG
+                && EmberContrast.late(fill, band) >= Self.bandLate
+        }
+    }
+
+    /// How far a slider fill stays from the band under it, as it is normally seen and, in
+    /// dark, under Late. Light's fills are the darker of the two, and Late cannot tell them
+    /// from the band by lightness however deep they are.
+    static let bandWCAG = 1.45
+    static let bandLate = 1.6
 
     // MARK: Palettes
 
@@ -353,7 +394,7 @@ struct EmberPalette: Equatable, Sendable {
             // mark on it reads both ways.
             fillAlpha: 0.06, fillStrongAlpha: increased ? 0.14 : 0.12, troughAlpha: 0.06,
             raisedRGB: EmberRGB(255, 238, 224), raisedAlpha: increased ? 0.22 : 0.17, nightAlpha: 0.045,
-            softFraction: 0.50, grabberAlpha: 0.50, notchAlpha: 0.22,
+            dimMuting: 0.35, dimFraction: 0.55, grabberAlpha: 0.50, notchAlpha: 0.22,
             markTarget: increased ? 7 : 4.5, notchTarget: increased ? 4.5 : 3,
             actionTarget: increased ? 7 : 4.6, focusBand: increased ? 3.5 : 2.5)
     }
@@ -365,8 +406,7 @@ struct EmberPalette: Equatable, Sendable {
             secondaryAlpha: increased ? 0.90 : 0.78, tertiaryAlpha: increased ? 0.80 : 0.64,
             fillAlpha: 0.07, fillStrongAlpha: increased ? 0.20 : 0.13, troughAlpha: increased ? 0.14 : 0.10,
             raisedRGB: .white, raisedAlpha: 1, nightAlpha: 0.06,
-            // A stronger band needs a stronger soft fill to stay apart from it.
-            softFraction: increased ? 0.80 : 0.62, grabberAlpha: 0.88, notchAlpha: 0.42,
+            dimMuting: 0.35, dimFraction: 0.60, grabberAlpha: 0.88, notchAlpha: 0.42,
             markTarget: increased ? 7 : 4.5, notchTarget: increased ? 4.5 : 3,
             actionTarget: increased ? 7 : 4.6, focusBand: increased ? 3.5 : 2.5)
     }
@@ -374,15 +414,22 @@ struct EmberPalette: Equatable, Sendable {
 
 enum EmberMetrics {
     static let width: CGFloat = 300
-    static let padding: CGFloat = 16
+    static let padding: CGFloat = 14
     /// Vertical gap between the popover's blocks.
-    static let spacing: CGFloat = 14
+    static let spacing: CGFloat = 12
     static let cardRadius: CGFloat = 12
     static let cardInset: CGFloat = 12
-    static let rowHeight: CGFloat = 34
-    static let sliderHeight: CGFloat = 28
-    static let sliderRadius: CGFloat = 9
-    static let controlHeight: CGFloat = 28
+    /// One line of a card. A switch's focus band (18 + 2 × 4) and a chip's (20 + 2 × 4)
+    /// both stay inside it.
+    static let rowHeight: CGFloat = 30
+    static let sliderHeight: CGFloat = 24
+    static let sliderRadius: CGFloat = 8
+    /// The header's pills and round button, and the Settings bar's pills.
+    static let controlHeight: CGFloat = 26
+    /// One option of a segmented control, inside its 2 pt trough.
+    static let segmentHeight: CGFloat = 24
+    /// A preset's swatch.
+    static let swatchHeight: CGFloat = 34
 }
 
 /// The live accent, published once for a whole popover.

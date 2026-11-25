@@ -1,14 +1,14 @@
 import SwiftUI
 
-/// The popover, in the Ember layout: displays on top, then Auto or Manual, then the bar.
+/// The popover, in the Ember layout: displays on top, then Auto or Manual, then Settings.
 ///
 /// Redraw isolation: `MenuBarView.body` reads only the page and `isTerminating`. Every
 /// model value is read in the body of the small view that shows it, so a slider tick
 /// re-evaluates the slider rows (and the views that paint with the accent), a pause minute
-/// the header status, and the arc's timeline the arc.
+/// the pause pill, and the arc's timeline the arc.
 
 /// Which page the popover shows. Settings and About are pushed in place of the controls.
-enum MenuBarPage: Equatable, Sendable {
+enum MenuBarPage: Hashable, Sendable {
     case controls, settings, about
 }
 
@@ -25,8 +25,12 @@ struct MenuBarInitialState {
     var latitudeText: String? = nil
     var longitudeText: String? = nil
     var locationError: String? = nil
-    /// True shows the update dot and the "Update Available" button. Nil asks the updater.
+    /// True shows "Update available" on the Settings row and the "Update Available" button.
+    /// Nil asks the updater.
     var updateAvailable: Bool? = nil
+    /// A value shows the "Update automatically" switch in that state. Nil asks the updater,
+    /// which has the switch only in a built app.
+    var updatesAutomatically: Bool? = nil
     /// True shows the Settings dot and the "Approval needed" row. Nil asks the login item.
     var loginRequiresApproval: Bool? = nil
 }
@@ -58,8 +62,9 @@ final class LocationDraft {
     }
 }
 
-/// The time in the "Deepest by" field. It is kept in the defaults, so that switching the
-/// bedtime off, leaving the page or closing the popover does not lose it.
+/// The time in the "Deepest by" field. It is kept in the defaults, so that with the bedtime
+/// switched off, leaving the page or closing the popover does not lose it. While a bedtime
+/// is on, the field shows that bedtime again each time the row appears.
 ///
 /// It is read from the defaults once and written when it changes. `@AppStorage` would
 /// evaluate the row again on every change to the defaults, and the manager saves to them
@@ -153,26 +158,31 @@ struct MenuBarView: View {
     var body: some View {
         let dispatch = PopoverDispatch(handler: handler, session: session)
         EmberSurface {
-            // The accent follows the live colour temp. The closure is not called here or in
-            // the scope: each view that paints with the accent calls it in its own body.
-            EmberAccentScope(intensity: { manager.intensity }) {
-                switch page {
-                case .controls:
-                    ControlsPage(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
-                                 session: session, initialState: initialState,
-                                 bedtimeDraft: bedtimeDraft,
-                                 headerFocus: $focusedHeader) { enterCoordinates in
-                        locationDraft.begin(editing: enterCoordinates)
-                        page = .settings
+            // The accent follows the colour temp on the displays, also while a flag previews
+            // a limit. The closure is not called here or in the scope: each view that paints
+            // with the accent calls it in its own body.
+            EmberAccentScope(intensity: { manager.shownIntensity }) {
+                // Deeper pages lie to the right: Settings slides in from there, and Back
+                // slides it away again.
+                EmberPager(ids: [MenuBarPage.controls, .settings, .about], selection: page) { shown in
+                    switch shown {
+                    case .controls:
+                        ControlsPage(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
+                                     session: session, initialState: initialState,
+                                     headerFocus: $focusedHeader) { enterCoordinates in
+                            locationDraft.begin(editing: enterCoordinates)
+                            page = .settings
+                        }
+                    case .settings:
+                        SettingsPage(manager: manager, launchAtLogin: launchAtLogin,
+                                     openShortcuts: openShortcuts, apps: apps, dispatch: dispatch,
+                                     session: session, initialState: initialState,
+                                     locationDraft: locationDraft, bedtimeDraft: bedtimeDraft,
+                                     headerFocus: $focusedHeader,
+                                     back: { page = .controls }, showAbout: { page = .about })
+                    case .about:
+                        AboutView(headerFocus: $focusedHeader) { page = .settings }
                     }
-                case .settings:
-                    SettingsPage(manager: manager, launchAtLogin: launchAtLogin,
-                                 openShortcuts: openShortcuts, apps: apps, dispatch: dispatch,
-                                 session: session, initialState: initialState,
-                                 locationDraft: locationDraft, headerFocus: $focusedHeader,
-                                 back: { page = .controls }, showAbout: { page = .about })
-                case .about:
-                    AboutView(headerFocus: $focusedHeader) { page = .settings }
                 }
             }
         }
@@ -210,7 +220,6 @@ private struct ControlsPage: View {
     let dispatch: PopoverDispatch
     let session: PopoverSession
     let initialState: MenuBarInitialState
-    let bedtimeDraft: BedtimeDraft
     let headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding
     /// True opens Settings on the coordinate fields.
     let openSettings: (Bool) -> Void
@@ -223,8 +232,7 @@ private struct ControlsPage: View {
             ModeControl(manager: manager, dispatch: dispatch)
             ModeContent(manager: manager, dispatch: dispatch, session: session,
                         choosingSaveTarget: initialState.choosingSaveTarget, openSettings: openSettings)
-            SettingsCard(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
-                         bedtimeDraft: bedtimeDraft, updateAvailable: initialState.updateAvailable,
+            SettingsCard(launchAtLogin: launchAtLogin, updateAvailable: initialState.updateAvailable,
                          loginRequiresApproval: initialState.loginRequiresApproval) { openSettings(false) }
             CommandErrorLine(session: session)
         }
@@ -236,9 +244,9 @@ private struct ControlsPage: View {
 
 // MARK: - Header
 
-/// The title, then Pause, the system appearance and the master switch. What the tint is
-/// doing when it is not simply on reads on a line of its own beneath, and the other pause
-/// lengths unfold below that.
+/// The title, then Pause, the system appearance and the master switch. A pause counts down
+/// inside its own pill. Quitting, and being off for an app, read on a line of their own
+/// beneath, and the other pause lengths unfold below that.
 private struct PopoverHeader: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
@@ -273,10 +281,9 @@ private struct PopoverHeader: View {
                     .accessibilityFocused(headerFocus, equals: .controls)
                 Spacer(minLength: 0)
                 PauseControl(
-                    isPaused: isPaused,
+                    pausedUntil: manager.pausedUntil, pauseLength: manager.pauseLength,
                     isExpanded: choosingPauseLength && canChoosePauseLength,
                     focus: $pauseFocused,
-                    showsTitle: false,
                     toggle: { dispatch(.pause(manager.isPaused ? .off : .on)) },
                     toggleLengths: {
                         if !choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
@@ -317,7 +324,7 @@ private struct PopoverHeader: View {
     }
 }
 
-/// What the tint is doing when it is not simply on: quitting, paused, or off for an app.
+/// What the tint is doing when it is neither on nor paused: quitting, or off for an app.
 private struct HeaderStatus: View {
     let manager: DisplayManager
     @Environment(\.emberPalette) private var palette
@@ -326,17 +333,7 @@ private struct HeaderStatus: View {
         Group {
             if manager.isTerminating {
                 Text("Quitting…")
-            } else if let pausedUntil = manager.pausedUntil {
-                // Ticks on the pause's own minute boundaries, from when it started. A
-                // sunrise pause is not whole minutes, so round back to one.
-                let start = pausedUntil.addingTimeInterval(-(manager.pauseLength / 60).rounded(.up) * 60)
-                TimelineView(.periodic(from: start, by: 60)) { context in
-                    Text("Paused, \(DisplayManager.pauseCountdownText(until: pausedUntil, now: context.date)) left")
-                        .monospacedDigit()
-                        .accessibilityLabel(DisplayManager.pauseCountdownAccessibilityText(
-                            until: pausedUntil, now: context.date))
-                }
-            } else if manager.isOn, let app = manager.suspendedForApp {
+            } else if !manager.isPaused, manager.isOn, let app = manager.suspendedForApp {
                 Text("Off for \(app)")
                     .help("Redlight is suspended while \(app) is in front")
                     .accessibilityLabel("Suspended while \(app) is in front")
@@ -376,9 +373,9 @@ private struct DisplaysCard: View {
 /// The spaces of a display row.
 ///
 /// "Built-in Retina Display" is the name of every MacBook's own screen, and it has to fit
-/// between the glyph and the Invert chip at the popover's width: 131 pt of the row's 244.
-/// At a card row's usual 8 pt between pieces and 8 pt of chip padding the name had 126.5 pt
-/// and lost its last four letters. These leave it 134.5 pt.
+/// between the glyph and the Invert chip at the popover's width: 131 pt of the row's 248.
+/// A card row's usual 8 pt between pieces and 8 pt of chip padding would leave it 130.5 pt,
+/// and it would lose its last letters. These leave it 138.5 pt.
 enum DisplayRowMetrics {
     static let glyphWidth: CGFloat = 17
     /// Between the glyph, the name, the chip and the switch.
@@ -436,13 +433,15 @@ private struct ModeControl: View {
         EmberSegmented(
             label: "Mode", options: [(value: true, title: "Auto"), (value: false, title: "Manual")],
             selection: manager.adaptiveEnabled,
-            help: "Auto follows real solar elevation. You can still adjust either slider while Auto stays on."
+            help: "Auto follows real solar elevation. You can still adjust either slider while Auto stays on.",
+            animation: EmberMotion.modeSwitch
         ) { dispatch(.adaptive($0 ? .on : .off)) }
     }
 }
 
-/// Everything between the mode control and the bar. The two sliders are shared by both
-/// modes, so a drag survives a mode change made from the CLI.
+/// Everything between the mode control and the Settings card: one pane per mode, Auto on the
+/// left and Manual on the right, as their segments are. A mode change slides the one out and
+/// the other in (`EmberPager`). Each pane has its own sliders.
 private struct ModeContent: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
@@ -462,20 +461,24 @@ private struct ModeContent: View {
 
     var body: some View {
         let auto = manager.adaptiveEnabled
+        EmberPager(ids: [true, false], selection: auto) { pane(auto: $0) }
+            .onChange(of: auto) { _, _ in choosingSaveTarget = false }
+    }
+
+    private func pane(auto: Bool) -> some View {
         VStack(alignment: .leading, spacing: EmberMetrics.spacing) {
             if auto {
-                AutoHeadline(manager: manager) { openSettings(true) }
+                AutoLocationNotice(manager: manager) { openSettings(true) }
                 SunArcSection(manager: manager)
             } else {
                 PresetSwatches(manager: manager, isSaveTarget: choosingSaveTarget, choose: choosePreset)
             }
-            SliderRow(manager: manager, channel: .color, dispatch: dispatch)
-            SliderRow(manager: manager, channel: .whitepoint, dispatch: dispatch)
+            SliderRow(manager: manager, channel: .color, isAuto: auto, dispatch: dispatch)
+            SliderRow(manager: manager, channel: .whitepoint, isAuto: auto, dispatch: dispatch)
             if !auto {
                 SaveToPreset(isChoosing: $choosingSaveTarget)
             }
         }
-        .onChange(of: auto) { _, _ in choosingSaveTarget = false }
     }
 
     private func choosePreset(_ index: Int) {
@@ -494,8 +497,9 @@ private struct ModeContent: View {
 
 // MARK: - Auto
 
-/// The headline of Auto: the next solar event, or what stands in the way of one.
-struct AutoHeadline: View {
+/// What stands between Auto and the sun, while it has no location: the ask, or that it is
+/// looking. With a location there is nothing to say here; the arc says it.
+struct AutoLocationNotice: View {
     let manager: DisplayManager
     let enterCoordinates: () -> Void
 
@@ -529,54 +533,16 @@ struct AutoHeadline: View {
             } else {
                 headline(manager.adaptiveStatusText.isEmpty ? "Locating…" : manager.adaptiveStatusText)
             }
-        } else {
-            VStack(alignment: .leading, spacing: 3) {
-                headline(manager.nextSolarEventText ?? "Following the sun")
-                if let subline {
-                    Text(subline)
-                        .font(.ember(12))
-                        .monospacedDigit()
-                        .foregroundStyle(palette.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
         }
-    }
-
-    /// The bedtime only while the curve will use it tonight; otherwise the status line, which
-    /// also says where the location comes from and whether a slider was adjusted.
-    private var subline: String? {
-        if let bedtime = manager.effectiveBedtime {
-            return "Deepest red by \(BedtimeRow.clockText(bedtime))"
-        }
-        return manager.adaptiveStatusText.isEmpty ? nil : manager.adaptiveStatusText
     }
 
     private func headline(_ text: String) -> some View {
         Text(text)
             .font(.ember(22, .semibold))
             .tracking(-0.22)
-            .monospacedDigit()
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel(Self.spokenText(text))
-    }
-
-    /// A headline as VoiceOver should say it: "Sunset in 1 h 12 m" becomes "Sunset in 1 hour
-    /// 12 minutes". The letters would otherwise be read as letters. Made from the visible
-    /// text, so the two cannot disagree; text without a count and a unit comes back as it is.
-    static func spokenText(_ text: String) -> String {
-        var words = text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
-        for index in words.indices.dropFirst() {
-            guard let count = Int(words[index - 1]) else { continue }
-            switch words[index] {
-            case "h": words[index] = count == 1 ? "hour" : "hours"
-            case "m": words[index] = count == 1 ? "minute" : "minutes"
-            default: break
-            }
-        }
-        return words.joined(separator: " ")
     }
 }
 
@@ -619,6 +585,8 @@ private struct SunArcSection: View {
             // Read here, so a new bedtime redraws the arc at once. Whether tonight's curve
             // uses it is asked again on every tick: the moon is only drawn when it does.
             let hasBedtime = manager.bedtime != nil
+            // The arc shows what comes next; assistive apps are told it in words.
+            let nextEvent = manager.nextSolarEventText
             TimelineView(.periodic(from: scheduleStart, by: SunArcCache.refreshInterval)) { context in
                 let key = SunArcCache.CycleKey(date: context.date, lat: coord.latitude,
                                                lon: coord.longitude, calendar: calendar)
@@ -627,43 +595,35 @@ private struct SunArcSection: View {
                 // tick. The arc itself is evaluated on every colour-temp tick as well.
                 SunArcView(cycle: cycle, marks: SunArcView.marks(
                     for: cycle, bedtime: hasBedtime ? manager.effectiveBedtime : nil,
-                    calendar: calendar, locale: locale))
+                    nextEvent: nextEvent, calendar: calendar, locale: locale))
             }
         }
     }
 }
 
-/// The foot of the controls: "Deepest by" in Auto, then the row that opens Settings, with a
-/// dot when an update or a login item is waiting.
+/// The foot of the controls: the row that opens Settings, with a dot when an update or a
+/// login item is waiting.
 private struct SettingsCard: View {
-    let manager: DisplayManager
     let launchAtLogin: LaunchAtLogin?
-    let dispatch: PopoverDispatch
-    let bedtimeDraft: BedtimeDraft
     let updateAvailable: Bool?
     /// A render's stand-in for the login item's state; nil in the app.
     let loginRequiresApproval: Bool?
     let openSettings: () -> Void
 
     @Environment(\.emberPalette) private var palette
-    @Environment(\.emberAccent) private var accent
 
     var body: some View {
-        let auto = manager.adaptiveEnabled
         let notice = SettingsNotice(
             hasUpdate: updateAvailable ?? Updater.shared.hasPendingUpdate,
             loginRequiresApproval: loginRequiresApproval ?? launchAtLogin?.requiresApproval ?? false)
         EmberCard {
-            if auto {
-                BedtimeRow(bedtime: manager.bedtime, draft: bedtimeDraft) { dispatch(.bedtime($0)) }
-            }
-            EmberRowButton(divider: auto, action: openSettings) {
+            EmberRowButton(action: openSettings) {
                 Text("Settings").foregroundStyle(palette.text)
                 Spacer(minLength: 8)
                 HStack(spacing: 6) {
-                    if !notice.isEmpty {
-                        Circle().fill(palette.arcDot(accent: accent)).frame(width: 7, height: 7)
-                    }
+                    // An update says so in words; a login item waiting for approval is the
+                    // dot, and Settings says the rest.
+                    if notice.hasUpdate { UpdateNotice() } else if !notice.isEmpty { NoticeDot() }
                     EmberChevron(direction: .right)
                 }
                 .foregroundStyle(palette.secondary)
@@ -672,6 +632,28 @@ private struct SettingsCard: View {
             .accessibilityLabel("Settings")
             .accessibilityValue(notice.accessibilityValue)
         }
+    }
+}
+
+/// "Update available" on the Settings row, in the fill of a committed action. A view of its
+/// own for the same reason as the dot. It is a label, not a button: the row is the button.
+private struct UpdateNotice: View {
+    static let title = "Update available"
+
+    var body: some View {
+        EmberChipLabel(title: Self.title, isProminent: true, height: 18)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The dot on the Settings row. A view of its own, so that the colour temp it is drawn in
+/// (in dark) is read here and a slider tick does not evaluate the whole card again.
+private struct NoticeDot: View {
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.emberAccent) private var accent
+
+    var body: some View {
+        Circle().fill(palette.arcDot(accent: accent)).frame(width: 7, height: 7)
     }
 }
 
@@ -723,17 +705,23 @@ struct SliderRow: View {
         case color, whitepoint
 
         var title: String { self == .color ? "Color temp" : "White point" }
-        var range: ClosedRange<Double> { self == .color ? 0...1 : 0.25...1 }
+        var range: ClosedRange<Double> { self == .color ? 0...1 : WhitepointScale.output }
     }
 
     let manager: DisplayManager
     let channel: Channel
+    /// Whether the row shows Auto's band and flags. Its pane's mode, not the model's: a
+    /// pane sliding out keeps the shape it had.
+    let isAuto: Bool
     let dispatch: PopoverDispatch
 
+    /// A white point as a fill level: 0 at the bottom of the slider, 1 at the top.
+    static func level(whitepoint: Double) -> Double { WhitepointScale.shown(whitepoint) }
+
     var body: some View {
-        let auto = manager.adaptiveEnabled
-        VStack(alignment: .leading, spacing: 5) {
-            SliderHeader(manager: manager, channel: channel, dispatch: dispatch)
+        let auto = isAuto
+        VStack(alignment: .leading, spacing: 4) {
+            SliderHeader(manager: manager, channel: channel, isAuto: isAuto, dispatch: dispatch)
                 // Over the slider's slop: where Reset's hit area and the slop meet, Reset wins.
                 .zIndex(1)
             switch channel {
@@ -755,7 +743,9 @@ struct SliderRow: View {
                 EmberSlider(
                     value: manager.whitepoint, range: channel.range,
                     band: auto ? manager.whitepointBand : nil,
-                    label: channel.title, tone: .soft,
+                    // Its brightness follows the white point on the displays, read here and
+                    // not in the colour temp's branch, which a white point tick leaves alone.
+                    label: channel.title, tone: .level(Self.level(whitepoint: manager.shownWhitepoint)),
                     onChange: { manager.setWhitepointPushingBand($0) },
                     onLimitChange: { bound, v in
                         if bound == .lower { manager.adaptiveWpMin = v } else { manager.adaptiveWpMax = v }
@@ -774,6 +764,8 @@ struct SliderRow: View {
 struct SliderHeader: View {
     let manager: DisplayManager
     let channel: SliderRow.Channel
+    /// Its row's mode; see `SliderRow.isAuto`.
+    let isAuto: Bool
     let dispatch: PopoverDispatch
     @Environment(\.emberPalette) private var palette
 
@@ -788,13 +780,15 @@ struct SliderHeader: View {
             if showsReset {
                 let help = channel == .color ? "Reset color temp and its limits to default"
                     : "Reset white point and its limits to default"
-                EmberChipButton(title: "Reset", height: 18, onCard: false) {
+                // The usual sign for putting something back: an arrow going round, anticlockwise.
+                EmberIconButton(systemImage: Self.resetSymbol, size: 18, symbolSize: 10, isQuiet: true) {
                     dispatch(.reset(channel == .color ? .color : .whitepoint))
                 }
                 .help(help)
                 .accessibilityLabel(help)
             }
-            Text("\(Int((value * 100).rounded()))%")
+            // The slider's own percent: its place in the range, as its flags count it.
+            Text(SliderCore.percentText(value, in: channel.range))
                 .font(.ember(12, .semibold))
                 .monospacedDigit()
                 .accessibilityHidden(true)
@@ -803,6 +797,8 @@ struct SliderHeader: View {
         .frame(height: 16)
     }
 
+    static let resetSymbol = "arrow.counterclockwise"
+
     /// Reset restores the value, its Auto limits and any Auto adjustment. In Manual a chosen
     /// preset is already a deliberate value, so Reset would only be noise there, unless
     /// limits or an adjustment made in Auto are waiting behind it: Manual does not show
@@ -810,7 +806,7 @@ struct SliderHeader: View {
     private var showsReset: Bool {
         Self.showsReset(
             isDefault: channel == .color ? manager.intensityIsDefault : manager.whitepointIsDefault,
-            isAuto: manager.adaptiveEnabled, hasPreset: manager.activePresetIndex != nil,
+            isAuto: isAuto, hasPreset: manager.activePresetIndex != nil,
             autoSettingsAreDefault: channel == .color
                 ? manager.intensityAutoSettingsAreDefault : manager.whitepointAutoSettingsAreDefault)
     }
@@ -823,7 +819,7 @@ struct SliderHeader: View {
     /// The value the slider shows: in Auto it is held inside the band, as the slider draws it.
     private var value: Double {
         let raw = channel == .color ? manager.intensity : manager.whitepoint
-        guard manager.adaptiveEnabled else { return raw }
+        guard isAuto else { return raw }
         let band = channel == .color ? manager.intensityBand : manager.whitepointBand
         return SliderCore.clampToBand(raw, lower: band.lowerBound, upper: band.upperBound)
     }
@@ -870,7 +866,7 @@ struct PresetButton: View {
             VStack(spacing: 5) {
                 shape
                     .fill(swatch.color)
-                    .frame(height: 38)
+                    .frame(height: EmberMetrics.swatchHeight)
                     .overlay {
                         if isActive || isSaveTarget {
                             Image(systemName: isActive ? "checkmark" : "arrow.down.to.line")
@@ -960,69 +956,158 @@ struct SettingsNotice: Equatable {
 }
 
 /// Pause and Resume are one button whose glyph changes, so keyboard and VoiceOver focus stay
-/// on it when a pause starts or ends. It is the leading part of a split pill whose chevron
-/// unfolds the other lengths. The pill keeps its size and fill in both states, so nothing
-/// beside it moves: paused, the pause glyph becomes a play glyph in the accent, and the
-/// chevron dims because there are no other lengths to choose.
+/// on it when a pause starts or ends. Unpaused it is the leading part of a split pill whose
+/// chevron unfolds the other lengths. Paused, the chevron gives its place to the time left:
+/// the play glyph in the accent, then a count that steps down each minute, and the whole
+/// pill resumes.
 private struct PauseControl: View {
-    let isPaused: Bool
+    /// When the pause ends; nil when nothing is paused.
+    let pausedUntil: Date?
+    /// How long the pause was set for: its countdown ticks on minutes counted from its start.
+    let pauseLength: TimeInterval
     let isExpanded: Bool
     let focus: AccessibilityFocusState<Bool>.Binding
-    /// False draws only the glyphs, for the header; the names stay for assistive apps.
-    var showsTitle = true
     /// Pauses, or resumes when paused.
     let toggle: () -> Void
     let toggleLengths: () -> Void
 
+    /// The countdown's last tick. The button says the time left as of then (its value, its
+    /// tooltip), so what is said keeps step with the count that is drawn.
+    @State private var tick: Date?
+
     @Environment(\.emberPalette) private var palette
     @Environment(\.emberAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberAnimationsEnabled) private var animates
 
     var body: some View {
+        let isPaused = pausedUntil != nil
         // Only the play glyph is drawn in the accent, so only a paused control follows the
         // colour temp.
         let glyph = isPaused ? accent.rgb(for: palette).color : palette.text
         let height = EmberMetrics.controlHeight
+        let now = pausedUntil.map { PauseCountdown.moment(tick: tick, until: $0, length: pauseLength) }
         HStack(spacing: 0) {
-            // Never inside an `if`: this button's identity is what keeps the focus.
+            // Never inside an `if`, and nothing in its label comes or goes: to assistive apps a
+            // button whose label gains a view is a new button, and focus falls off the old one.
+            // So the count is always there, and empty while nothing is paused.
             EmberButton(action: toggle) { state in
-                HStack(spacing: 6) {
-                    // Both glyphs in one fixed frame, so the pill's width never changes.
+                HStack(spacing: 0) {
                     Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                        .font(.system(size: showsTitle ? 9 : 10.5, weight: .bold))
+                        .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(glyph)
-                        .frame(width: showsTitle ? 10 : 12)
-                    if showsTitle {
-                        Text(isPaused ? "Resume" : "Pause").lineLimit(1).fixedSize()
-                            .foregroundStyle(palette.text)
-                    }
+                        .frame(width: 12)
+                    PauseCountdown(until: pausedUntil, length: pauseLength) { tick = $0 }
+                        .padding(.leading, isPaused ? 5 : 0)
                 }
-                .font(.ember(12.5, .medium))
-                .padding(.leading, showsTitle ? 11 : 10)
-                .padding(.trailing, showsTitle ? 5 : 2)
+                .padding(.leading, 10)
+                .padding(.trailing, isPaused ? 10 : 2)
                 .frame(height: height)
                 .contentShape(Rectangle())
-                .emberFocusHalo(PauseControlShape.leading, isFocused: state.isFocused, spread: 0)
+                .emberFocusHalo(PauseControlShape.leading, isFocused: state.isFocused && !isPaused, spread: 0)
+                .emberFocusHalo(Capsule(), isFocused: state.isFocused && isPaused, spread: 0)
             }
-            .help(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
+            .help(Self.help(until: pausedUntil, now: now))
             .accessibilityLabel(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
+            .accessibilityValue(Self.spokenValue(until: pausedUntil, now: now))
             .accessibilityFocused(focus)
-            EmberButton(action: toggleLengths) { state in
-                EmberChevron(direction: isExpanded ? .up : .down)
-                    .foregroundStyle(palette.tertiary)
-                    .padding(.leading, showsTitle ? 6 : 3)
-                    .padding(.trailing, showsTitle ? 11 : 9)
-                    .frame(height: height)
-                    .contentShape(Rectangle())
-                    .emberFocusHalo(PauseControlShape.trailing, isFocused: state.isFocused, spread: 0)
+            if !isPaused {
+                EmberButton(action: toggleLengths) { state in
+                    EmberChevron(direction: isExpanded ? .up : .down)
+                        .foregroundStyle(palette.tertiary)
+                        .padding(.leading, 3)
+                        .padding(.trailing, 9)
+                        .frame(height: height)
+                        .contentShape(Rectangle())
+                        .emberFocusHalo(PauseControlShape.trailing, isFocused: state.isFocused, spread: 0)
+                }
+                .help("Pause for another length")
+                .accessibilityLabel("Pause lengths")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .transition(.opacity)
             }
-            // While paused there is no other length to choose; the chevron stays, dimmed,
-            // so the pill does not change shape.
-            .disabled(isPaused)
-            .help(isPaused ? "Resume first to pause for another length" : "Pause for another length")
-            .accessibilityLabel("Pause lengths")
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         }
         .background { Capsule().fill(palette.fill) }
+        // The pill opens for the count and closes on it, gently.
+        .animation(reduceMotion || !animates ? nil : .spring(duration: 0.4, bounce: 0.12), value: isPaused)
+    }
+
+    static func help(until: Date?, now: Date?) -> String {
+        guard let until, let now else { return "Pause Redlight for 30 minutes" }
+        return "Resume Redlight (\(DisplayManager.pauseCountdownText(until: until, now: now)) left)"
+    }
+
+    /// What VoiceOver adds after "Resume Redlight": "Paused, 30 minutes left".
+    static func spokenValue(until: Date?, now: Date?) -> String {
+        guard let until, let now else { return "" }
+        return DisplayManager.pauseCountdownAccessibilityText(until: until, now: now)
+    }
+}
+
+/// The time left of a pause, in its pill: "30m", then "29m" as each minute goes, the digits
+/// rolling down. Up to 99 minutes it counts minutes; a longer pause counts hours still to
+/// run, "2h", and starts on minutes when it gets there. Always three characters at most, so
+/// the pill barely changes width as it counts.
+///
+/// With nothing paused it is still there and draws nothing: see `PauseControl`.
+struct PauseCountdown: View {
+    /// When the pause ends, or nil when nothing is paused, and how long it was set for.
+    let until: Date?
+    let length: TimeInterval
+    /// Called with the moment of each tick, the first included.
+    var onTick: (Date) -> Void = { _ in }
+
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberAnimationsEnabled) private var animates
+
+    static func text(minutes: Int) -> String {
+        let minutes = max(1, minutes)
+        // Rounded up without adding to the count, which is `Int.max` for a pause with no end in sight.
+        return minutes < 100 ? "\(minutes)m" : "\(minutes / 60 + (minutes % 60 == 0 ? 0 : 1))h"
+    }
+
+    /// The pause's first minute boundary: when it started. A sunrise pause is not whole
+    /// minutes, so its start is rounded back to one.
+    static func start(until: Date, length: TimeInterval) -> Date {
+        until.addingTimeInterval(-(length / 60).rounded(.up) * 60)
+    }
+
+    /// The moment to count from: the last tick when it belongs to this pause, else now. A
+    /// tick from before this pause began is left over from an earlier one.
+    static func moment(tick: Date?, until: Date, length: TimeInterval, now: Date = Date()) -> Date {
+        guard let tick, tick >= start(until: until, length: length), tick <= until else { return now }
+        return tick
+    }
+
+    /// Where the ticks are counted from while nothing is paused: any fixed moment.
+    private static let idleAnchor = Date(timeIntervalSinceReferenceDate: 0)
+
+    var body: some View {
+        // Ticks on the pause's own minute boundaries, from when it started.
+        let anchor = until.map { Self.start(until: $0, length: length) } ?? Self.idleAnchor
+        TimelineView(.periodic(from: anchor, by: 60)) { context in
+            // The timeline may still hold the idle minute in the update that starts a pause:
+            // counted from then the pill would open on "31m".
+            let text = until.map {
+                let now = Self.moment(tick: context.date, until: $0, length: length)
+                return Self.text(minutes: DisplayManager.pauseMinutesLeft(until: $0, now: now))
+            } ?? ""
+            Text(text)
+                .font(.ember(11.5, .semibold))
+                .monospacedDigit()
+                .foregroundStyle(palette.text)
+                .lineLimit(1)
+                .fixedSize()
+                .contentTransition(.numericText(countsDown: true))
+                // Fades in as the pill opens for it, and out as it closes.
+                .opacity(until == nil ? 0 : 1)
+                .animation(reduceMotion || !animates ? nil : .easeInOut(duration: 0.5), value: text)
+                // Only a pause's own ticks are reported: the idle minutes concern nobody.
+                .onChange(of: context.date, initial: true) { _, date in if until != nil { onTick(date) } }
+        }
+        // The button says the time left in words.
+        .accessibilityHidden(true)
     }
 }
 
@@ -1082,7 +1167,8 @@ struct PauseLengthRow: View {
 
 // MARK: - Bedtime Row
 
-/// "Deepest by" for Auto: a time field that remembers its draft, and a switch.
+/// "Deepest by" for Auto, on the Settings page: a time field that remembers its draft, and
+/// a switch.
 struct BedtimeRow: View {
     static let suggested = Bedtime(hour: 22, minute: 30)!
 
@@ -1145,11 +1231,6 @@ struct BedtimeRow: View {
     static func bedtime(from date: Date, calendar: Calendar = .current) -> Bedtime {
         let parts = calendar.dateComponents([.hour, .minute], from: date)
         return Bedtime(hour: parts.hour ?? 0, minute: parts.minute ?? 0) ?? suggested
-    }
-
-    /// The bedtime as the user's clock writes it: "10:30 PM" or "22:30".
-    static func clockText(_ bedtime: Bedtime) -> String {
-        date(for: bedtime).formatted(date: .omitted, time: .shortened)
     }
 }
 

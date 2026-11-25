@@ -8,6 +8,8 @@ import Testing
             (["on"], .master(.on)), (["off"], .master(.off)), (["toggle"], .master(.toggle)),
             (["status"], .status), (["color", "0"], .color(0)), (["color", "100"], .color(100)),
             (["whitepoint", "25"], .whitepoint(25)), (["whitepoint", "72.5"], .whitepoint(72.5)),
+            // The white point runs from 0 to 100 like the colour temp.
+            (["whitepoint", "0"], .whitepoint(0)), (["limits", "whitepoint", "0", "5"], .limits(.whitepoint, min: 0, max: 5)),
             (["reset", "color"], .reset(.color)), (["reset", "whitepoint"], .reset(.whitepoint)),
             (["preset", "day"], .preset(.day)), (["preset", "late"], .preset(.late)),
             (["preset", "deep-red"], .preset(.late)),
@@ -99,9 +101,9 @@ import Testing
         let examples = [
             [], ["unknown"], ["on", "extra"], ["status", "--bad"], ["color"],
             ["color", "nan"], ["color", "inf"], ["color", "-1"], ["color", "101"],
-            ["whitepoint", "24"], ["whitepoint", "101"], ["reset", "all"],
+            ["whitepoint", "-1"], ["whitepoint", "101"], ["reset", "all"],
             ["preset", "noon"], ["preset", "save"], ["adaptive", "yes"],
-            ["limits", "whitepoint", "24", "100"],
+            ["limits", "whitepoint", "-1", "100"],
             ["limits", "color", "100", "0"], ["display", "0", "on"],
             ["display", "all", "invert", "yes"], ["display", "", "on"],
             ["display", "all", "wrong", "on"], ["appearance", "system"],

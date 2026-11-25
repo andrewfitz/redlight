@@ -342,7 +342,8 @@ final class BedtimeTestClock {
 
         #expect(manager.bedtime == bedtime)
         #expect(manager.intensity == 0)
-        #expect(manager.whitepoint == 0.3)
+        // The deepest end of the default limits.
+        #expect(manager.whitepoint == DisplayManager.Defaults.whitepointMin)
         #expect(manager.adaptiveStatusText.hasPrefix("Following the sun · "))
         #expect(manager.adaptiveStatusText.hasSuffix(" · bedtime"))
 
@@ -438,7 +439,7 @@ final class BedtimeTestClock {
         manager.flushBandRefresh()
         manager.setBedtime(bedtime)
         #expect(manager.intensity == 0.6)
-        #expect(manager.whitepoint == 0.3)
+        #expect(manager.whitepoint == DisplayManager.Defaults.whitepointMin)
     }
 
     @Test func savingAPresetUnderTheFloorDoesNotJump() {
@@ -447,15 +448,16 @@ final class BedtimeTestClock {
         manager.adaptiveEnabled = true
         manager.setBedtime(bedtime)
         manager.intensity = 0.15
-        manager.whitepoint = 0.4
+        // Inside Auto's default limits, which stop at 0.625.
+        manager.whitepoint = 0.7
 
         manager.saveToPreset(2)
 
         #expect(abs(manager.intensity - 0.15) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.4) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.7) < 1e-9)
         manager.applyAdaptive()
         #expect(abs(manager.intensity - 0.15) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.4) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.7) < 1e-9)
     }
 
     @Test func sunArcSamplesDrawTheSameFlooredCurve() throws {
@@ -500,7 +502,7 @@ final class BedtimeTestClock {
                 #expect(floored.intensity == plain.intensity && floored.whitepoint == plain.whitepoint)
             } else {
                 #expect(floored.intensity < 1e-9)
-                #expect(abs(floored.whitepoint - 0.3) < 1e-9)
+                #expect(abs(floored.whitepoint - DisplayManager.Defaults.whitepointMin) < 1e-9)
             }
             clock.date.addTimeInterval(60)
         }

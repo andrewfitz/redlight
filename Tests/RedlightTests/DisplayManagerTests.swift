@@ -127,6 +127,25 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(manager.displays.isEmpty)
     }
 
+    /// The menu bar icon counts a tint's depth only while a tint is on screen. An inversion
+    /// keeps the icon lit without one.
+    @Test func anInversionIsActiveWithoutATintShowing() throws {
+        let manager = makeManager()
+        manager.applyPreset(4)
+        if !manager.displays[0].isEnabled { manager.toggle(1) }
+        #expect(manager.isAnyActive && manager.isTintShowing)
+        manager.setInverted(true, for: 1)
+        try #require(manager.pause())
+        #expect(manager.isAnyActive, "the inversion still shows")
+        #expect(!manager.isTintShowing, "a paused tint is not on screen")
+        manager.resume()
+        #expect(manager.isTintShowing)
+        manager.toggle(1)
+        #expect(manager.isAnyActive && !manager.isTintShowing, "inverted, and switched off")
+        manager.setInverted(false, for: 1)
+        #expect(!manager.isAnyActive && !manager.isTintShowing)
+    }
+
     @Test func sameIDScreenRefreshInvalidatesBackendCachesWithoutResettingCalibration() {
         let manager = makeManager()
         #expect(mock.displayChangeCount == 0)
@@ -199,6 +218,76 @@ final class ImmediateFixLocationProvider: LocationProviding {
         // 8 is a real display: it is added, and the recovery runs for it.
         #expect(mock.restoreAllCount == 1)
         #expect(manager.displays.map(\.id) == [1, 8])
+    }
+
+    /// A display ID can come back as another display. Once a real display with an agent
+    /// display's old ID is listed, its changes recover like any real display's.
+    @Test func aRealDisplayThatTakesAnAgentDisplaysOldIDIsNotIgnored() {
+        var ids: [CGDirectDisplayID] = [1, 7]
+        var agents: Set<CGDirectDisplayID> = [7]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { "Display \($0)" },
+            isAgentDisplay: { agents.contains($0) },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        #expect(manager.displays.map(\.id) == [1])
+        ids = [1]
+        agents = []
+        // Gone, and no longer there to be asked what it was: still the agent's display.
+        manager.handleDisplayReconfiguration(.removeFlag, display: 7)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 0)
+        // A monitor is plugged in and gets the same ID. The screens change, and it is listed.
+        ids = [1, 7]
+        manager.refreshDisplays()
+        #expect(manager.displays.map(\.id) == [1, 7])
+        manager.completeDisplayRecovery()
+        // Its later changes recover as any real display's do.
+        let resets = mock.restoreAllCount
+        manager.handleDisplayReconfiguration(.setModeFlag, display: 7)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == resets + 1)
+    }
+
+    /// Changes are handled a turn after they happen. An agent display that is gone by the
+    /// time one of its earlier changes is handled cannot be asked what it was, and is still
+    /// the agent's display.
+    @Test func anAgentDisplaysLateChangeIsIgnoredAfterItHasGone() {
+        var ids: [CGDirectDisplayID] = [1, 7]
+        var agents: Set<CGDirectDisplayID> = [7]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { "Display \($0)" },
+            isAgentDisplay: { agents.contains($0) },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        ids = [1]
+        agents = []
+        manager.handleDisplayReconfiguration(.setModeFlag, display: 7)
+        manager.handleDisplayReconfiguration(.removeFlag, display: 7)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 0)
+    }
+
+    /// The same when the display list is refreshed before any change is reported for the ID.
+    @Test func aListedDisplayIsNeverIgnoredForItsIDsPast() {
+        var ids: [CGDirectDisplayID] = [1, 7]
+        var agents: Set<CGDirectDisplayID> = [7]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { "Display \($0)" },
+            isAgentDisplay: { agents.contains($0) },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        ids = [1]
+        agents = []
+        manager.refreshDisplays()
+        ids = [1, 7]
+        manager.refreshDisplays()
+        #expect(manager.displays.map(\.id) == [1, 7])
+        // The new display's own recovery runs first, so that the next one is the removal's.
+        manager.completeDisplayRecovery()
+        // Unplugged: a real display's removal recovers the others.
+        let resets = mock.restoreAllCount
+        ids = [1]
+        manager.handleDisplayReconfiguration(.removeFlag, display: 7)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == resets + 1)
     }
 
     @Test func sameIDHardwareModeChangesCoalesceIntoOneRecovery() {
@@ -295,7 +384,9 @@ final class ImmediateFixLocationProvider: LocationProviding {
         // (0.0 is pure red), and 1.0 whitepoint is no reduction.
         #expect(DisplayManager.Defaults.intensity == 1.0)
         #expect(DisplayManager.Defaults.whitepoint == 1.0)
-        #expect(DisplayManager.Defaults.whitepointMin == 0.3)
+        // Halfway down the white point's scale: 50 % as the slider and the CLI show it.
+        #expect(DisplayManager.Defaults.whitepointMin == 0.625)
+        #expect(WhitepointScale.percent(DisplayManager.Defaults.whitepointMin) == 50)
         #expect(DisplayManager.Defaults.adaptiveFadeDuration == 2.0)
         #expect(DisplayManager.Defaults.displayFadeDuration == 0.7)
     }
@@ -315,7 +406,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(manager.intensity == 1.0)
         #expect(manager.whitepoint == 1.0)
         #expect(manager.intensityBand == 0.0...1.0)
-        #expect(manager.whitepointBand == 0.3...1.0)
+        #expect(manager.whitepointBand == DisplayManager.Defaults.whitepointMin...1.0)
         #expect(manager.intensityIsDefault)
         #expect(manager.whitepointIsDefault)
     }
@@ -993,11 +1084,11 @@ final class ImmediateFixLocationProvider: LocationProviding {
         let manager = makeManager(location: loc, now: { noon })
         manager.adaptiveEnabled = true
 
-        manager.whitepoint = 0.6   // offset −0.4
+        manager.whitepoint = 0.7   // offset −0.3, inside the default limits
 
         #expect(manager.adaptiveEnabled == true)
         manager.applyAdaptive()
-        #expect(abs(manager.whitepoint - 0.6) < 1e-9)
+        #expect(abs(manager.whitepoint - 0.7) < 1e-9)
     }
 
     @Test func adaptiveOffHoldsLiveAdjustedValues() {
@@ -1444,6 +1535,52 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.endPreview()
         #expect(mock.applyCalls.count == 1)
         #expect(mock.applyCalls.last?.whitepoint == 1)
+    }
+
+    @Test func theShownOutputIsAPreviewedLimitAndOtherwiseTheValue() {
+        let manager = makeManager()
+        manager.intensity = 0.4
+        manager.whitepoint = 0.8
+        #expect(manager.shownIntensity == 0.4)
+        #expect(manager.shownWhitepoint == 0.8)
+
+        // A flag's preview reaches whoever paints with the shown output, at once.
+        let previewed = ObservationFlag()
+        withObservationTracking { _ = manager.shownIntensity } onChange: { previewed.fired = true }
+        manager.previewIntensity(0.1)
+        #expect(previewed.fired)
+        #expect(manager.shownIntensity == 0.1)
+        #expect(manager.intensity == 0.4)
+        #expect(manager.shownWhitepoint == 0.8)
+        manager.previewWhitepoint(0.1)
+        #expect(manager.shownWhitepoint == 0.25)
+
+        // The same value again tells nobody.
+        let repeated = ObservationFlag()
+        withObservationTracking {
+            _ = manager.shownIntensity
+            _ = manager.shownWhitepoint
+        } onChange: { repeated.fired = true }
+        manager.previewIntensity(0.1)
+        manager.previewWhitepoint(0.25)
+        #expect(!repeated.fired)
+
+        let ended = ObservationFlag()
+        withObservationTracking { _ = manager.shownIntensity } onChange: { ended.fired = true }
+        manager.endPreview()
+        #expect(ended.fired)
+        #expect(manager.shownIntensity == 0.4)
+        #expect(manager.shownWhitepoint == 0.8)
+
+        // Every command and every popover close ends a preview. With none, nobody is told.
+        let idle = ObservationFlag()
+        withObservationTracking {
+            _ = manager.shownIntensity
+            _ = manager.shownWhitepoint
+        } onChange: { idle.fired = true }
+        manager.endPreview()
+        manager.interruptSliderInteraction()
+        #expect(!idle.fired)
     }
 
     @Test func adaptiveTickPushesGammaOncePerDisplay() {
@@ -2039,7 +2176,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         d.set(Double.infinity, forKey: "redlight.adaptiveWpMin")
         let manager = makeManager(defaults: d)
         #expect(manager.intensityBand == 0...1)
-        #expect(manager.whitepointBand == 0.3...1)
+        #expect(manager.whitepointBand == DisplayManager.Defaults.whitepointMin...1)
     }
 
     @Test func activePresetOnLoadRequiresAValidIndexAndMatchingSettings() {

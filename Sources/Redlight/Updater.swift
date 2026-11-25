@@ -15,8 +15,14 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
 
     private(set) var hasPendingUpdate = false
     private(set) var canCheckForUpdates = false
+    /// Sparkle's own setting, kept by Sparkle in the app's defaults: new versions are
+    /// downloaded in the background and installed when the app next quits, without asking.
+    private(set) var updatesAutomatically = false
+    /// False where that setting cannot be turned on: automatic checks are off.
+    private(set) var canUpdateAutomatically = false
     @ObservationIgnored private var controller: SPUStandardUpdaterController?
     @ObservationIgnored private var availabilityObservation: NSKeyValueObservation?
+    @ObservationIgnored private var automaticObservations: [NSKeyValueObservation] = []
 
     private override init() {
         super.init()
@@ -28,6 +34,22 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
             [weak self] updater, _ in
             MainActor.assumeIsolated { self?.canCheckForUpdates = updater.canCheckForUpdates }
         }
+        automaticObservations = [
+            controller.updater.observe(\.automaticallyDownloadsUpdates, options: [.initial, .new]) {
+                [weak self] updater, _ in
+                MainActor.assumeIsolated { self?.updatesAutomatically = updater.automaticallyDownloadsUpdates }
+            },
+            controller.updater.observe(\.allowsAutomaticUpdates, options: [.initial, .new]) {
+                [weak self] updater, _ in
+                MainActor.assumeIsolated { self?.canUpdateAutomatically = updater.allowsAutomaticUpdates }
+            },
+        ]
+    }
+
+    /// Only ever called for the user's own choice: Sparkle remembers it.
+    func setUpdatesAutomatically(_ on: Bool) {
+        guard let updater = controller?.updater, updater.automaticallyDownloadsUpdates != on else { return }
+        updater.automaticallyDownloadsUpdates = on
     }
 
     var isAvailable: Bool { controller != nil }

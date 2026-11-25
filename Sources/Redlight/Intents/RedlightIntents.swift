@@ -230,7 +230,7 @@ struct SetRedlightColorIntent: AppIntent {
 struct SetRedlightWhitepointIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Redlight White Point"
     static let openAppWhenRun = false
-    @Parameter(title: "White Point", inclusiveRange: (25, 100)) var value: Double
+    @Parameter(title: "White Point", inclusiveRange: (0, 100)) var value: Double
     init() {}
     init(value: Double) { self.value = value }
     @MainActor func perform() async throws -> some IntentResult {
@@ -506,7 +506,7 @@ func redlightStatusText(_ status: Status) -> String {
         text += " (paused, \(DisplayManager.pauseMinutesLeft(until: pausedUntil, now: Date())) min left)"
     }
     if let app = status.suspendedFor { text += " (suspended for \(app))" }
-    text += "\nColor Temp: \(status.color.set)% (target \(status.color.target)%)\nWhite Point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)\nAdaptive: \(status.adaptive ? "on" : "off")"
+    text += "\nColor Temp: \(status.color.text)\nWhite Point: \(status.whitepoint.text)\nAdaptive: \(status.adaptive ? "on" : "off")"
     if let bedtime = status.bedtime { text += "\nBedtime: \(bedtime)" }
     text += "\nPreset: \(status.activePreset?.cliName ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"

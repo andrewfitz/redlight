@@ -255,7 +255,8 @@ enum RedlightApp {
         }
         AppDelegate.makeStatusItem = {
             StatusItemController(iconLevel: {
-                MenuBarIcon.Level(isActive: manager.isAnyActive, intensity: manager.intensity)
+                MenuBarIcon.Level(isActive: manager.isAnyActive, showsTint: manager.isTintShowing,
+                                  intensity: manager.intensity)
             }) {
                 MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
                             openShortcuts: { shortcutsWindow.show() }, apps: appSuspension)

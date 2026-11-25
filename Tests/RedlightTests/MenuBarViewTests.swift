@@ -107,8 +107,10 @@ struct AccessibilityTree {
         #expect(originalSize.width == 300)
         #expect(originalSize.height > 200)
 
-        let maximumHeight = originalSize.height + 40
-        let expanded = StatusItemController.makePopover(maximumHeight: maximumHeight, content: view)
+        // Auto adds the sun arc and the flags under the sliders: more than this.
+        let maximumHeight = originalSize.height + 20
+        let expanded = StatusItemController.makePopover(
+            maximumHeight: maximumHeight, content: view.environment(\.emberAnimationsEnabled, false))
         let controller = try #require(expanded.contentViewController)
         let scroll = try #require(controller.view as? NSScrollView)
         let document = try #require(scroll.documentView)
@@ -200,7 +202,8 @@ struct AccessibilityTree {
     /// Hosts the popover's content offscreen, as the existing render test does.
     private func host<Content: View>(_ view: Content) async throws -> (popover: NSPopover, document: NSView, window: NSWindow) {
         _ = NSApplication.shared
-        let popover = StatusItemController.makePopover(content: view)
+        // Offscreen nothing carries an animation to its end; see `OffscreenPopover`.
+        let popover = StatusItemController.makePopover(content: view.environment(\.emberAnimationsEnabled, false))
         let controller = try #require(popover.contentViewController)
         let scroll = try #require(controller.view as? NSScrollView)
         let document = try #require(scroll.documentView)
@@ -287,7 +290,7 @@ struct AccessibilityTree {
             }
             hosted.document.layoutSubtreeIfNeeded()
         }
-        #expect(hosted.document.frame.height > manualHeight + 40)
+        #expect(hosted.document.frame.height > manualHeight + 20)
         #expect(hosted.popover.contentSize.height == hosted.document.frame.height)
         let fields = allViews(hosted.document).compactMap { $0 as? NSTextField }
         #expect(!fields.contains { $0.placeholderString == "Latitude" })
@@ -497,6 +500,19 @@ struct AccessibilityTree {
         #expect(manager.adaptiveMax == 1, "the upper limit did not come along")
         #expect(AccessibilityTree.decrement(try #require(tree.first("Color temp"))))
         #expect(manager.intensity < 1)
+
+        // The white point is spoken in percent of its own scale, as a status reports it:
+        // its floor, 0.25 on the displays, is 0 percent.
+        let handler = makeHandler(manager)
+        for output in [0.25, 0.45, 0.625, 1.0] {
+            manager.setWhitepointPushingBand(output)
+            tree = await accessibility(of: hosted.document)
+            let status = handler.snapshot().whitepoint.set
+            #expect(tree.first("White point")?.value == "\(Int(status.rounded())) percent", "at \(output)")
+        }
+        manager.setWhitepointPushingBand(0.25)
+        tree = await accessibility(of: hosted.document)
+        #expect(tree.first("White point")?.value == "0 percent")
     }
 
     /// In Auto each slider also has its minimum and maximum, each a slider of its own that
@@ -583,25 +599,25 @@ struct AccessibilityTree {
 
     // MARK: - What VoiceOver is told
 
-    @Test func autoHeadlineIsSpokenInWholeWords() {
-        #expect(AutoHeadline.spokenText("Sunset in 1 h 12 m") == "Sunset in 1 hour 12 minutes")
-        #expect(AutoHeadline.spokenText("Sunrise in 2 h") == "Sunrise in 2 hours")
-        #expect(AutoHeadline.spokenText("First light in 1 h 1 m") == "First light in 1 hour 1 minute")
-        #expect(AutoHeadline.spokenText("Sunset in 45 m") == "Sunset in 45 minutes")
+    @Test func theNextSolarEventIsSpokenInWholeWords() {
+        #expect(SunArcView.spokenDuration("Sunset in 1 h 12 m") == "Sunset in 1 hour 12 minutes")
+        #expect(SunArcView.spokenDuration("Sunrise in 2 h") == "Sunrise in 2 hours")
+        #expect(SunArcView.spokenDuration("First light in 1 h 1 m") == "First light in 1 hour 1 minute")
+        #expect(SunArcView.spokenDuration("Sunset in 45 m") == "Sunset in 45 minutes")
         // Nothing to expand: the text is spoken as it is shown.
         for text in ["Sunset in under a minute", "Following the sun", "Locating…", "Auto needs your location"] {
-            #expect(AutoHeadline.spokenText(text) == text)
+            #expect(SunArcView.spokenDuration(text) == text)
         }
         // Every form the manager can produce, so the two cannot drift apart.
         for minutes in [0, 1, 59, 60, 61, 72, 120, 1439] {
             let shown = DisplayManager.describeNextSolarEvent("sunset", in: TimeInterval(minutes * 60))
-            let spoken = AutoHeadline.spokenText(shown)
+            let spoken = SunArcView.spokenDuration(shown)
             #expect(!spoken.hasSuffix(" h") && !spoken.hasSuffix(" m") && !spoken.contains(" h "))
             #expect(spoken.hasPrefix("Sunset in "))
         }
     }
 
-    @Test func autoPageNamesEachControlOnceAndSaysTheHeadlineInWords() async throws {
+    @Test func autoPageNamesEachControlOnceAndSaysTheNextEventInWords() async throws {
         let registry = TestDefaultsRegistry()
         let defaults = registry.makeDefaults()
         defaults.set(true, forKey: "redlight.adaptiveEnabled")
@@ -613,13 +629,15 @@ struct AccessibilityTree {
         let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager))
         let hosted = try await host(view)
         defer { hosted.window.close() }
-        var tree = await accessibility(of: hosted.document)
+        let tree = await accessibility(of: hosted.document)
 
-        // The headline has letters for units on screen and words for VoiceOver.
+        // No headline is drawn: the arc shows what comes next, and says it in words, once.
         let shown = try #require(manager.nextSolarEventText)
         #expect(shown.contains(" h ") || shown.hasSuffix(" m"))
-        #expect(tree.named(AutoHeadline.spokenText(shown)).count == 1)
-        #expect(tree.named(shown).isEmpty)
+        let spoken = SunArcView.spokenDuration(shown)
+        #expect(tree.names.filter { $0.hasPrefix("\(spoken). Solar elevation ") }.count == 1)
+        #expect(tree.named(shown).isEmpty && !tree.names.contains { $0.hasPrefix("\(shown).") || $0.hasPrefix("\(shown) ·") })
+        #expect(!tree.names.contains { $0.hasPrefix("Following the sun") || $0.hasPrefix("Deepest red by") })
 
         // The mode is one named picker that says which mode is chosen. Its name is not also
         // read as text beside it.
@@ -637,6 +655,24 @@ struct AccessibilityTree {
             #expect(tree.first(option)?.help.hasPrefix("Auto follows real solar elevation") == true)
             #expect(tree.first(option)?.roleDescription.lowercased().contains("solar") == false)
         }
+        // "Deepest by" is on the Settings page.
+        #expect(tree.named(BedtimeRow.title).isEmpty)
+    }
+
+    @Test func deepestByIsAtTheTopOfSettingsAndNamedOnce() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        defaults.set(22 * 60 + 30, forKey: "redlight.adaptiveBedtime")
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location,
+                                  now: { Self.evening }, calendar: Self.chicagoCalendar)
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                               initialPage: .settings)
+        let hosted = try await host(view)
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
 
         // "Deepest by" is said once, by the switch, which also carries the explanation.
         let deepest = tree.named(BedtimeRow.title)
@@ -645,6 +681,10 @@ struct AccessibilityTree {
         #expect(deepest.first?.value == "1")
         #expect(deepest.first?.help == BedtimeRow.explanation)
         #expect(tree.named("Reach the deepest setting by a bedtime").isEmpty)
+        // Above the location, which was the top of the page before.
+        let toggleIndex = try #require(tree.index(BedtimeRow.title))
+        let locationIndex = try #require(tree.index("Location"))
+        #expect(toggleIndex < locationIndex)
 
         // A changed time puts Set after the field it applies and before the switch.
         #expect(!tree.names.contains { $0.hasPrefix("Set bedtime") })
@@ -658,6 +698,38 @@ struct AccessibilityTree {
         tree = try await press("Set bedtime to 23:00", in: hosted.document)
         #expect(manager.bedtime == Bedtime(hour: 23, minute: 0))
         #expect(!tree.names.contains { $0.hasPrefix("Set bedtime") })
+    }
+
+    /// Settings is reached from Manual too, where "Deepest by" was never shown before. The
+    /// bedtime is set and kept there; it only takes effect in Auto.
+    @Test func deepestByCanBeSetInManualAndWaitsForAuto() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location,
+                                  now: { Self.evening }, calendar: Self.chicagoCalendar)
+        manager.applyPreset(3)
+        #expect(!manager.adaptiveEnabled && manager.bedtime == nil)
+        let before = manager.intensity
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                               initialPage: .settings)
+        let hosted = try await host(view)
+        defer { hosted.window.close() }
+        var tree = try await press(BedtimeRow.title, in: hosted.document)
+        #expect(manager.bedtime == BedtimeRow.suggested)
+        #expect(tree.first(BedtimeRow.title)?.value == "1")
+        #expect(!tree.names.contains { $0.hasPrefix("Command failed") })
+        // Manual holds its setting: nothing on screen changes.
+        #expect(manager.intensity == before && manager.activePresetIndex == 3)
+        try enterBedtime(Bedtime(hour: 23, minute: 15)!, in: hosted.document)
+        tree = try await press("Set bedtime to 23:15", in: hosted.document)
+        #expect(manager.bedtime == Bedtime(hour: 23, minute: 15))
+        #expect(!tree.names.contains { $0.hasPrefix("Command failed") })
+        // Auto picks it up.
+        manager.adaptiveEnabled = true
+        #expect(manager.bedtime == Bedtime(hour: 23, minute: 15))
+        #expect(manager.effectiveBedtime == Bedtime(hour: 23, minute: 15))
     }
 
     /// The time the hosted popover's bedtime field shows, as minutes into the day.
@@ -678,7 +750,8 @@ struct AccessibilityTree {
         let key = BedtimeDraft.key
         #expect(key == "redlight.adaptiveBedtimeDraft")
         func open() async throws -> (popover: NSPopover, document: NSView, window: NSWindow) {
-            try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager)))
+            try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                                       initialPage: .settings))
         }
 
         // Nothing saved: the suggested time. A typed time is saved at once, with no bedtime set.
@@ -690,15 +763,9 @@ struct AccessibilityTree {
         #expect(defaults.integer(forKey: key) == 21 * 60 + 15)
         #expect(manager.bedtime == nil)
 
-        // It is still there after Manual and back, after Settings and back, and in a popover
-        // opened afresh.
-        manager.adaptiveEnabled = false
-        await settle(hosted.document)
-        manager.adaptiveEnabled = true
-        await settle(hosted.document)
-        #expect(try bedtimeFieldMinute(in: hosted.document) == 21 * 60 + 15)
-        _ = try await press("Settings", in: hosted.document)
+        // It is still there after the controls and back, and in a popover opened afresh.
         _ = try await press("Back", in: hosted.document)
+        _ = try await press("Settings", in: hosted.document)
         #expect(try bedtimeFieldMinute(in: hosted.document) == 21 * 60 + 15)
         hosted.window.close()
         hosted = try await open()
@@ -856,8 +923,11 @@ struct AccessibilityTree {
         #expect(resume.object === pause.object)
         #expect(resume.isEnabled)
         #expect(tree.first("Pause Redlight for 30 minutes") == nil)
-        // The chevron stays, so the pill keeps its shape, but there is no length to choose.
-        #expect(tree.first("Pause lengths")?.isEnabled == false)
+        // The time left takes the chevron's place: there is no other length to choose, and
+        // the button says how long is left.
+        #expect(tree.first("Pause lengths") == nil)
+        #expect(resume.value == "Paused, 30 minutes left")
+        #expect(!tree.names.contains { $0.hasPrefix("Paused") }, "the countdown is also read as text")
 
         tree = try await press("Resume Redlight", in: hosted.document)
         #expect(!manager.isPaused)
@@ -897,7 +967,8 @@ struct AccessibilityTree {
     }
 
     /// Draws one dark popover at a low and then a higher colour temp and checks every colour
-    /// made from the accent: the accent itself, the committed-action fill and the soft fill.
+    /// made from the accent: the accent itself, the committed-action fill and the white point
+    /// slider's fill.
     /// Dark, because there all three are made of the accent.
     private func expectTheAccentToFollow(
         _ manager: DisplayManager, defaults: UserDefaults,
@@ -927,7 +998,9 @@ struct AccessibilityTree {
         let derived: [(name: String, color: (EmberRGB) -> EmberRGB)] = [
             ("accent", { $0 }),
             ("action", { palette.actionRGB(accent: $0).background }),
-            ("soft fill", { palette.sliderFillRGB(.soft, accent: $0) }),
+            ("white point fill", {
+                palette.sliderFillRGB(.level(SliderRow.level(whitepoint: manager.whitepoint)), accent: $0)
+            }),
         ]
         let newColors = derived.map { $0.color(high.accent) }
         for (name, color) in derived {
@@ -972,7 +1045,8 @@ struct AccessibilityTree {
                                   now: { Self.evening }, calendar: Self.chicagoCalendar)
         manager.setEnabled(true, for: 1)
         manager.setInverted(true, for: 1)
-        try await expectTheAccentToFollow(manager, defaults: defaults, minimumBands: 5)
+        // The header's switch, the display's, the arc and the colour temp slider.
+        try await expectTheAccentToFollow(manager, defaults: defaults, minimumBands: 4)
 
         // Manual and paused: Resume is the action fill, and the Settings button has its dot.
         defaults = registry.makeDefaults()
@@ -983,6 +1057,74 @@ struct AccessibilityTree {
             manager, defaults: defaults,
             initialState: MenuBarInitialState(updateAvailable: true, loginRequiresApproval: false),
             minimumBands: 4)
+    }
+
+    @Test func aDraggedFlagRecoloursThePopoverBeforeTheDragPausesOrEnds() async throws {
+        // A flag's limit reaches the value only when the drag pauses or ends. Until then the
+        // displays show the limit, and so must everything painted with the accent.
+        let defaults = TestDefaultsRegistry().makeDefaults()
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        defaults.set(0.2, forKey: "redlight.adaptiveMin")
+        defaults.set(0.45, forKey: "redlight.adaptiveWpMin")
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location,
+                                  now: { Self.evening }, calendar: Self.chicagoCalendar)
+        manager.setEnabled(true, for: 1)
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager))
+            .environment(\.colorScheme, .dark)
+            .preferredColorScheme(.dark)
+        let popover = try OffscreenPopover(content: AnyView(view), appearance: NSAppearance(named: .darkAqua))
+        defer { popover.close() }
+        await popover.settle()
+        let palette = EmberPalette.dark
+        // No run loop turn between a write and the drawing: only what the write itself
+        // invalidated is drawn anew.
+        func draw() throws -> Raster {
+            popover.document.layoutSubtreeIfNeeded()
+            let bitmap = try popover.makeBitmap()
+            popover.draw(into: bitmap)
+            return try Raster(bitmap)
+        }
+        func fill(intensity: Double, whitepoint: Double) -> EmberRGB {
+            palette.sliderFillRGB(.level(SliderRow.level(whitepoint: whitepoint)),
+                                  accent: EmberTint.rgb(intensity: intensity, scheme: .dark))
+        }
+        // A white point below its top, so its fill is not the accent itself.
+        manager.whitepoint = 0.7
+        let value = manager.intensity, white = manager.whitepoint
+        #expect(value > 0.3 && white == 0.7)
+        let resting = EmberTint.rgb(intensity: value, scheme: .dark)
+        #expect(pixels(of: resting, in: try draw()).count > 400)
+
+        // The minimum flag dragged to 10 %, the value untouched.
+        manager.adaptiveMin = 0.1
+        manager.previewIntensity(0.1)
+        #expect(manager.intensity == value)
+        var raster = try draw()
+        let previewed = EmberTint.rgb(intensity: 0.1, scheme: .dark)
+        #expect(pixels(of: previewed, in: raster).count > 400)
+        #expect(pixels(of: resting, in: raster).isEmpty)
+        // The white point slider keeps the colour temp's hue at its own brightness.
+        #expect(pixels(of: fill(intensity: 0.1, whitepoint: white), in: raster).count > 400)
+
+        // The white point's minimum flag: its fill dims to the limit shown on the displays.
+        manager.adaptiveWpMin = 0.25
+        manager.previewWhitepoint(0.25)
+        #expect(manager.whitepoint == white)
+        raster = try draw()
+        #expect(pixels(of: fill(intensity: 0.1, whitepoint: 0.25), in: raster).count > 400)
+        #expect(pixels(of: fill(intensity: 0.1, whitepoint: white), in: raster).isEmpty)
+
+        // Released: back to the value's own colours, wherever the wider bands put it.
+        manager.endPreview()
+        raster = try draw()
+        #expect(manager.intensity > 0.3)
+        let released = EmberTint.rgb(intensity: manager.intensity, scheme: .dark)
+        #expect(pixels(of: released, in: raster).count > 400)
+        #expect(pixels(of: previewed, in: raster).isEmpty)
+        #expect(pixels(of: fill(intensity: manager.intensity, whitepoint: manager.whitepoint),
+                       in: raster).count > 400)
     }
 
     @Test func aLiveAccentGivesTheSameColoursAsTheAccentItself() {
@@ -1108,12 +1250,11 @@ struct AccessibilityTree {
         location.coordinate = (41.88, -87.63)
         let manager = makeManager(defaults: defaults, location: location,
                                   now: { Self.evening }, calendar: Self.chicagoCalendar)
-        // The bedtime line takes the status line's place on the controls page, so the
-        // source is said on the Settings page, under Location for Auto.
+        // The controls page has no status line: the source is said on the Settings page,
+        // under Location for Auto.
         let controls = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager)))
         let controlsTree = await accessibility(of: controls.document)
         controls.window.close()
-        #expect(controlsTree.names.contains { $0.hasPrefix("Deepest red by ") })
         #expect(controlsTree.first("Location") == nil)
 
         let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
@@ -1155,18 +1296,21 @@ struct AccessibilityTree {
         let hosted = try await host(view)
         defer { hosted.window.close() }
         var tree = await accessibility(of: hosted.document)
-        // 03:00 is after solar midnight: the ordinary status line, and no bedtime on the arc.
-        #expect(!tree.names.contains { $0.hasPrefix("Deepest red by ") })
-        #expect(tree.named(manager.adaptiveStatusText).count == 1)
-        #expect(manager.adaptiveStatusText.hasPrefix("Following the sun"))
-        // The switch still shows that a bedtime is set.
-        #expect(tree.first(BedtimeRow.title)?.value == "1")
+        // 03:00 is after solar midnight: no bedtime on the arc.
+        #expect(tree.names.contains { $0.contains("Solar elevation ") })
+        #expect(!tree.names.contains { $0.contains("Bedtime ") })
 
         let effective = Bedtime(hour: 22, minute: 30)!
         manager.setBedtime(effective)
         tree = await accessibility(of: hosted.document)
-        #expect(tree.named("Deepest red by \(BedtimeRow.clockText(effective))").count == 1)
-        #expect(tree.named(manager.adaptiveStatusText).isEmpty)
+        #expect(tree.names.contains { $0.contains("Bedtime \(SunArcView.bedtimeText(effective, locale: .current)).") })
+
+        // On the Settings page the switch shows that a bedtime is set, taken up or not.
+        manager.setBedtime(Bedtime(hour: 3, minute: 0))
+        let settings = try await host(MenuBarView(manager: manager, defaults: defaults,
+                                                  handler: makeHandler(manager), initialPage: .settings))
+        defer { settings.window.close() }
+        #expect(await accessibility(of: settings.document).first(BedtimeRow.title)?.value == "1")
     }
 
     // MARK: - Reset, the Settings dot and the Settings bar
@@ -1240,6 +1384,67 @@ struct AccessibilityTree {
             defer { hosted.window.close() }
             let tree = await accessibility(of: hosted.document)
             #expect(tree.first("Settings")?.value == value)
+            // The words drawn on the row belong to the row: nothing else is named by them.
+            #expect(tree.named("Update available").isEmpty)
+        }
+    }
+
+    @Test func anUpdateIsWrittenOnTheSettingsRowAndALoginItemIsADot() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        // Not a preset's colour temp, and a white point under its top: no swatch and no
+        // slider is the accent's own colour.
+        manager.intensity = 0.62
+        manager.whitepoint = 0.6
+        // The label is the fill of a committed action; the dot is far too small to be it.
+        let fill = EmberPalette.dark.actionRGB(accent: EmberTint.rgb(intensity: 0.62, scheme: .dark)).background
+        var painted: [Int] = []
+        for state in [MenuBarInitialState(updateAvailable: false, loginRequiresApproval: false),
+                      MenuBarInitialState(updateAvailable: false, loginRequiresApproval: true),
+                      MenuBarInitialState(updateAvailable: true, loginRequiresApproval: false),
+                      MenuBarInitialState(updateAvailable: true, loginRequiresApproval: true)] {
+            let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager), initialState: state)
+                .environment(\.colorScheme, .dark)
+                .preferredColorScheme(.dark)
+            let popover = try OffscreenPopover(content: AnyView(view), appearance: NSAppearance(named: .darkAqua))
+            defer { popover.close() }
+            await popover.settle()
+            let bitmap = try popover.makeBitmap()
+            popover.draw(into: bitmap)
+            let raster = try Raster(bitmap)
+            // The bottom of the popover, where the Settings row is.
+            let rows = raster.height * 6 / 7..<raster.height
+            painted.append(pixels(of: fill, in: raster).filter { rows.contains($0 / 4 / raster.width) }.count)
+        }
+        #expect(painted[0] == 0)
+        #expect(painted[1] > 20 && painted[1] < 400, "the dot: \(painted[1]) pixels")
+        #expect(painted[2] > 2000, "the label: \(painted[2]) pixels")
+        #expect(painted[3] == painted[2], "an update and an approval show the label alone")
+    }
+
+    @Test func theAutomaticUpdatesSwitchIsThereOnlyWithAnUpdater() async throws {
+        // A test run has no feed, so no updater: the setting is off and cannot be set.
+        #expect(!Updater.shared.isAvailable)
+        Updater.shared.setUpdatesAutomatically(true)
+        #expect(!Updater.shared.updatesAutomatically && !Updater.shared.canUpdateAutomatically)
+
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        for (stand, expected) in [(nil, nil), (true, "1"), (false, "0")] as [(Bool?, String?)] {
+            let view = MenuBarView(
+                manager: manager, defaults: defaults, launchAtLogin: LaunchAtLogin(), handler: makeHandler(manager),
+                initialState: MenuBarInitialState(updateAvailable: false, updatesAutomatically: stand),
+                initialPage: .settings)
+            let hosted = try await host(view)
+            defer { hosted.window.close() }
+            let tree = await accessibility(of: hosted.document)
+            let switches = tree.named("Update automatically")
+            #expect(switches.count == (expected == nil ? 0 : 1), "\(String(describing: stand)): \(switches.map(\.role))")
+            #expect(switches.first?.value == expected)
+            // Launch at login is still the first row either way.
+            #expect(tree.named("Launch at login").count == 1)
         }
     }
 
@@ -1295,5 +1500,59 @@ extension AccessibilityTree {
     /// For a name that a heading and a control share.
     func first(_ name: String, role: NSAccessibility.Role) -> Node? {
         nodes.first { $0.name == name && $0.role == role.rawValue }
+    }
+}
+
+/// Words the popover makes from the model's, where a wrong one is easy to miss on screen.
+@MainActor @Suite struct PopoverWordingTests {
+    /// The pause pill ticks on the pause's own minutes, and counts from its own last tick: a
+    /// tick left over from before the pause, or from an earlier one, is not counted from.
+    @Test func thePauseCountdownCountsFromItsOwnPausesTicks() {
+        let until = Date(timeIntervalSinceReferenceDate: 100_000)
+        // Thirty minutes: the first boundary is the start.
+        #expect(PauseCountdown.start(until: until, length: 1800) == until.addingTimeInterval(-1800))
+        // A sunrise pause of 7 h 12 m 20 s: rounded back to a whole minute before it began.
+        let odd: TimeInterval = 7 * 3600 + 12 * 60 + 20
+        let start = PauseCountdown.start(until: until, length: odd)
+        #expect(start == until.addingTimeInterval(-(7 * 3600 + 13 * 60)))
+        #expect(until.timeIntervalSince(start).truncatingRemainder(dividingBy: 60) == 0)
+
+        let now = until.addingTimeInterval(-1795)
+        // No tick yet, one from before this pause, one from after its end: now.
+        #expect(PauseCountdown.moment(tick: nil, until: until, length: 1800, now: now) == now)
+        #expect(PauseCountdown.moment(tick: until.addingTimeInterval(-1830), until: until, length: 1800, now: now) == now)
+        #expect(PauseCountdown.moment(tick: until.addingTimeInterval(5), until: until, length: 1800, now: now) == now)
+        // Its own tick, the first included: the tick.
+        let first = until.addingTimeInterval(-1800), later = until.addingTimeInterval(-600)
+        #expect(PauseCountdown.moment(tick: first, until: until, length: 1800, now: now) == first)
+        #expect(PauseCountdown.moment(tick: later, until: until, length: 1800, now: now) == later)
+        // So a pause opens on its own length, not a minute more: counted from an idle tick
+        // 40 s before it began it would read 31.
+        let stale = first.addingTimeInterval(-40)
+        #expect(DisplayManager.pauseMinutesLeft(until: until, now: stale) == 31)
+        let counted = PauseCountdown.moment(tick: stale, until: until, length: 1800, now: first.addingTimeInterval(0.2))
+        #expect(PauseCountdown.text(minutes: DisplayManager.pauseMinutesLeft(until: until, now: counted)) == "30m")
+        // A pause with no end in sight does not trap.
+        #expect(PauseCountdown.text(minutes: Int.max).hasSuffix("h"))
+    }
+
+    /// The pause pill counts minutes up to 99, then the hours still to run.
+    @Test func thePauseCountdownStaysThreeCharactersWide() {
+        #expect(PauseCountdown.text(minutes: 30) == "30m")
+        #expect(PauseCountdown.text(minutes: 1) == "1m")
+        #expect(PauseCountdown.text(minutes: 0) == "1m")
+        #expect(PauseCountdown.text(minutes: 99) == "99m")
+        #expect(PauseCountdown.text(minutes: 100) == "2h")
+        #expect(PauseCountdown.text(minutes: 120) == "2h")
+        #expect(PauseCountdown.text(minutes: 121) == "3h")
+        #expect(PauseCountdown.text(minutes: 24 * 60) == "24h")
+        for minutes in 0...(25 * 60) { #expect(PauseCountdown.text(minutes: minutes).count <= 3) }
+    }
+
+    /// The row shows the chosen apps; VoiceOver is told them too, not only that it is folded.
+    @Test func pauseForAppsSaysWhichAppsAreChosen() {
+        #expect(PauseForAppsControl.accessibilityValue(chosen: [], isExpanded: false) == "None, collapsed")
+        #expect(PauseForAppsControl.accessibilityValue(chosen: ["Safari", "Preview"], isExpanded: true)
+                == "Safari, Preview, expanded")
     }
 }

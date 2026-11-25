@@ -21,7 +21,7 @@ struct EmberSliderFace: Equatable {
         var mid: CGFloat { (start + end) / 2 }
     }
 
-    static let grabSize = CGSize(width: 4, height: 16)
+    static let grabSize = CGSize(width: 4, height: 14)
     /// Clear space between the grabber and the end of the fill it sits in.
     static let markGap: CGFloat = 5
     /// Inset of the value ⇄ x mapping: the grabber's gap plus half the grabber.
@@ -30,6 +30,10 @@ struct EmberSliderFace: Equatable {
     /// Within this distance of where either end of the range is drawn (and anywhere past
     /// it), the pointer takes exactly that end.
     static let endSnap: CGFloat = 4
+    /// Within this distance of where one of Auto's limits is drawn, the pointer takes exactly
+    /// that limit. A press on a limit's own place would otherwise land a rounding error past
+    /// it, and a value past a limit moves the limit.
+    static let limitSnap: CGFloat = 1
     /// How far above and below the pill a press still takes the slider.
     static let verticalSlop: CGFloat = 4
     /// How far to either side of the grabber's centre a press counts as a press on the
@@ -63,9 +67,26 @@ struct EmberSliderFace: Equatable {
         SliderCore.position(value, width: width, inset: inset, range: range)
     }
 
-    /// The value under the pointer, the ends taken within `endSnap`.
-    static func value(atX x: CGFloat, width: CGFloat, range: ClosedRange<Double>) -> Double {
-        SliderCore.value(atX: x, width: width, inset: inset, snap: endSnap, range: range)
+    /// The value under the pointer, the ends taken within `endSnap`. An end the handle is
+    /// being moved away from is switched off with `snapsLower` or `snapsUpper`.
+    static func value(
+        atX x: CGFloat, width: CGFloat, range: ClosedRange<Double>,
+        snapsLower: Bool = true, snapsUpper: Bool = true
+    ) -> Double {
+        SliderCore.value(atX: x, width: width, inset: inset, snap: endSnap,
+                         snapsLower: snapsLower, snapsUpper: snapsUpper, range: range)
+    }
+
+    /// The one of `limits` drawn within `limitSnap` of `x`, the nearest of them, or nil.
+    /// Asked of the handle's place before the ends' own snap, so that a limit close to an
+    /// end of the range is still landed on.
+    static func limit(
+        atX x: CGFloat, among limits: [Double], width: CGFloat, range: ClosedRange<Double>
+    ) -> Double? {
+        func distance(_ limit: Double) -> CGFloat { abs(Self.x(for: limit, width: width, range: range) - x) }
+        guard let nearest = limits.min(by: { distance($0) < distance($1) }),
+              distance(nearest) <= limitSnap else { return nil }
+        return nearest
     }
 }
 
@@ -73,34 +94,49 @@ struct EmberSliderFace: Equatable {
 ///
 /// A press anywhere on the pill takes the slider: the value jumps to the pointer and then
 /// follows it, and past either end it holds that end. A press on the grabber itself leaves
-/// the value alone until the pointer moves (a click there changes nothing, so a preset
-/// stays chosen), and then the value follows at the distance the grabber was taken at.
+/// the value alone until the pointer has moved `SliderCore.liveTravel` (a click there
+/// changes nothing, so a preset stays chosen), and then the value follows at the distance
+/// the grabber was taken at.
 struct EmberSliderDrag: Equatable {
     let start: CGPoint
     /// The grabber's x minus the pointer's: kept for a press on the grabber, 0 elsewhere.
     let offset: CGFloat
+    /// True for a press on the grabber.
+    let tookGrabber: Bool
+    /// Auto's band as the press found it, or nil in Manual.
+    let limits: ClosedRange<Double>?
     /// False while a press on the grabber has not moved.
     private(set) var isLive: Bool
 
-    init(start: CGPoint, valueX: CGFloat) {
+    init(start: CGPoint, valueX: CGFloat, limits: ClosedRange<Double>? = nil) {
         self.start = start
+        self.limits = limits
         let dx = valueX - start.x
-        if abs(dx) <= EmberSliderFace.grabReach {
-            offset = dx
-            isLive = false
-        } else {
-            offset = 0
-            isLive = true
-        }
+        tookGrabber = abs(dx) <= EmberSliderFace.grabReach
+        offset = tookGrabber ? dx : 0
+        isLive = !tookGrabber
     }
 
     /// The value for the pointer at `x`, or nil while nothing is to change.
     mutating func value(pointerX x: CGFloat, width: CGFloat, range: ClosedRange<Double>) -> Double? {
         if !isLive {
-            guard x != start.x else { return nil }
+            guard abs(x - start.x) >= SliderCore.liveTravel else { return nil }
             isLive = true
         }
-        return EmberSliderFace.value(atX: x + offset, width: width, range: range)
+        // A grabber that stood near an end and is taken away from it is not pulled back
+        // to that end. A press elsewhere is at the pointer, and takes an end it is near.
+        return EmberSliderFace.value(
+            atX: x + offset, width: width, range: range,
+            snapsLower: !tookGrabber || x < start.x, snapsUpper: !tookGrabber || x > start.x)
+    }
+
+    /// The limits of `band` a value comes to rest on exactly: those still where the press
+    /// found them. A limit this drag has pushed moves with the value, and a pinned band's
+    /// pin does too.
+    func restingLimits(in band: ClosedRange<Double>) -> [Double] {
+        guard let limits, limits.lowerBound < limits.upperBound else { return [] }
+        return [band.lowerBound == limits.lowerBound ? band.lowerBound : nil,
+                band.upperBound == limits.upperBound ? band.upperBound : nil].compactMap { $0 }
     }
 }
 
@@ -148,6 +184,7 @@ struct EmberSlider: View {
     @Environment(\.emberPalette) private var palette
     @Environment(\.emberAccent) private var accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberIsLeaving) private var isLeaving
 
     enum Emphasis: Equatable { case rest, hover, pressed, focused }
 
@@ -194,7 +231,7 @@ struct EmberSlider: View {
             VStack {
                 Slider(value: Binding(get: { shown }, set: { discreteEdit($0) }), in: range) { Text(label) }
                     .accessibilityLabel(label)
-                    .accessibilityValue(SliderCore.spokenPercent(shown))
+                    .accessibilityValue(SliderCore.spokenPercent(shown, in: range))
                 if let band, showsFlags {
                     limitSlider(.lower, band: band)
                     limitSlider(.upper, band: band)
@@ -210,12 +247,13 @@ struct EmberSlider: View {
             guard let onLimitChange else { return }
             EmberSliderFlags.discreteEdit(
                 proposed, for: bound, range: range, lower: band.lowerBound, upper: band.upperBound,
-                minGap: 0.05, onLimitChange: onLimitChange, onPreviewEnd: onPreviewEnd,
+                minGap: SliderCore.limitGap(in: range), isStep: false, onLimitChange: onLimitChange, onPreviewEnd: onPreviewEnd,
                 onInteractionBegin: onInteractionBegin, isInteractionCurrent: isInteractionCurrent)
         }), in: range) { Text(name) }
             .accessibilityLabel(name)
             .accessibilityValue(isPinned
-                ? "Fixed at \(SliderCore.spokenPercent(current))" : SliderCore.spokenPercent(current))
+                ? "Fixed at \(SliderCore.spokenPercent(current, in: range))"
+                : SliderCore.spokenPercent(current, in: range))
     }
 
     private func pill(width w: CGFloat) -> some View {
@@ -240,7 +278,7 @@ struct EmberSlider: View {
             // The value's keyboard stop: the whole pill, so it keeps one place in the Tab
             // order wherever the value is.
             Color.clear
-                .focusable()
+                .focusable(!isLeaving)
                 .focusEffectDisabled()
                 .focused($isFocused)
                 .onKeyPress(keys: SliderKeyStep.keys) { press in
@@ -269,7 +307,7 @@ struct EmberSlider: View {
                         if showsFocus { showsFocus = false }
                         interactionToken = onInteractionBegin?()
                         interactionGate = SliderInteractionGate()
-                        drag = EmberSliderDrag(start: g.startLocation, valueX: face.valueX)
+                        drag = EmberSliderDrag(start: g.startLocation, valueX: face.valueX, limits: band)
                     }
                     updateDrag(pointerX: g.location.x, width: w)
                 }
@@ -288,8 +326,12 @@ struct EmberSlider: View {
         // command that interrupted this gesture.
         guard var current = drag, interactionGate.permitsMutation(
             token: interactionToken, isCurrent: isInteractionCurrent) else { return }
-        let next = current.value(pointerX: x, width: width, range: range)
+        var next = current.value(pointerX: x, width: width, range: range)
         if current != drag { drag = current }
+        if next != nil, let band, let limit = EmberSliderFace.limit(
+            atX: x + current.offset, among: current.restingLimits(in: band), width: width, range: range) {
+            next = limit
+        }
         guard let next, next != shown else { return }
         onChange(next)
     }
@@ -303,8 +345,10 @@ struct EmberSlider: View {
     /// A key press or an assistive app's adjustment: one edit with a fresh token of its
     /// own, which can supersede a drag without inheriting its token.
     private func discreteEdit(_ proposed: Double) {
+        // Before the clamp, which would turn a value that is not a number into an end.
+        guard proposed.isFinite else { return }
         let v = min(range.upperBound, max(range.lowerBound, proposed))
-        guard v.isFinite, v != shown else { return }
+        guard v != shown else { return }
         let token = onInteractionBegin?()
         if let token, isInteractionCurrent?(token) == false { return }
         onChange(v)
@@ -327,9 +371,9 @@ struct EmberSlider: View {
     nonisolated static func grabberSize(_ emphasis: Emphasis) -> CGSize {
         switch emphasis {
         case .rest: EmberSliderFace.grabSize
-        case .hover: CGSize(width: 5, height: 18)
-        case .pressed: CGSize(width: 5, height: 20)
-        case .focused: CGSize(width: 6, height: 22)
+        case .hover: CGSize(width: 5, height: 16)
+        case .pressed: CGSize(width: 5, height: 18)
+        case .focused: CGSize(width: 6, height: 20)
         }
     }
 

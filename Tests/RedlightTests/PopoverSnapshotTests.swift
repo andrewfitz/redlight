@@ -154,9 +154,29 @@ struct PopoverState {
             "redlight.adaptiveMin": 0.45, "redlight.adaptiveMax": 0.5,
             "redlight.adaptiveWpMin": 0.25, "redlight.adaptiveWpMax": 0.3,
         ])),
+        // Merged flags: the colour temp fixed on the top of its range, and the white point
+        // in the narrowest band there is, the gap, against its own top.
+        PopoverState("auto-merged-flags", defaults: adaptive([
+            "redlight.adaptiveMin": 1.0, "redlight.adaptiveMax": 1.0,
+            "redlight.adaptiveWpMin": 0.95, "redlight.adaptiveWpMax": 1.0,
+        ])),
         PopoverState("sliders-nondefault") {
             $0.manager.intensity = 0.62
             $0.manager.whitepoint = 0.8
+        },
+        // No tint and the white point at its floor: a white colour temp fill over a grey one.
+        PopoverState("white-dimmed") {
+            $0.manager.intensity = 1
+            $0.manager.whitepoint = 0.25
+        },
+        // A minimum flag held at 10 % while the value stays at 70 %: the displays preview the
+        // limit, and everything painted with the accent shows it too.
+        PopoverState("auto-flag-preview", defaults: adaptive([
+            "redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 1.0,
+            "redlight.adaptiveWpMin": 0.45, "redlight.adaptiveWpMax": 1.0,
+        ])) {
+            $0.manager.adaptiveMin = 0.1
+            $0.manager.previewIntensity(0.1)
         },
         // Not in the brief: the only state that shows the AppKit text fields.
         PopoverState("auto-manual-location", defaults: adaptive(), location: .manual),
@@ -168,13 +188,17 @@ struct PopoverState {
             $0.location.authorization = .denied
             $0.manager.applyAdaptive()
         },
-        // 03:00 is after solar midnight all year, so the curve ignores it: the ordinary
-        // status line, and no bedtime on the arc.
+        // 03:00 is after solar midnight all year, so the curve ignores it: no bedtime on the arc.
         PopoverState("auto-inert-bedtime", defaults: adaptive(["redlight.adaptiveBedtime": 3 * 60])),
-        // A time typed into the field but not applied yet: Set, after the field.
-        PopoverState("auto-bedtime-draft", defaults: adaptive(["redlight.adaptiveBedtime": 22 * 60 + 30]))
+        // A time typed into the Settings page's field but not applied yet: Set, after the field.
+        PopoverState("settings-bedtime-draft", defaults: adaptive(["redlight.adaptiveBedtime": 22 * 60 + 30]))
+            .showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) }
             // The row copies the bedtime into its draft when it appears; type the time after.
             .interacting { try enterBedtime(Bedtime(hour: 23, minute: 0)!, in: $0) },
+        // A long pause counts its hours; "paused" counts minutes.
+        PopoverState("paused-until-sunrise", defaults: adaptive(), clock: .wall) {
+            try #require($0.manager.pause(for: 7 * 3600 + 20 * 60))
+        },
         // A preset chosen in Manual over a colour-temp limit set in Auto: Reset shows.
         PopoverState("manual-preset-hidden-limits", defaults: ["redlight.adaptiveMin": 0.2]) {
             $0.manager.applyPreset(3)
@@ -189,8 +213,17 @@ struct PopoverState {
         PopoverState("settings-dot") { $0.manager.applyPreset(3) }
             .showing { $0.menuBarView(MenuBarInitialState(updateAvailable: false, loginRequiresApproval: true)) },
 
+        // An update is waiting: the Settings row says so in words.
+        PopoverState("update-notice") { $0.manager.applyPreset(3) }
+            .showing { $0.menuBarView(MenuBarInitialState(updateAvailable: true, loginRequiresApproval: false)) },
+
         PopoverState("settings") { $0.manager.applyPreset(3) }
             .showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
+        // As the built app shows it: with the updater's switch, here on.
+        PopoverState("settings-automatic-updates") { $0.manager.applyPreset(3) }
+            .showing {
+                $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false, updatesAutomatically: true))
+            },
         PopoverState("settings-coordinates-error", defaults: adaptive(), location: .none(.denied))
             .showing {
                 $0.menuBarView(page: .settings, MenuBarInitialState(
@@ -411,7 +444,10 @@ final class OffscreenPopover {
         _ = NSApplication.shared
         self.appearance = appearance
         // No maximum height: the document takes its natural size.
-        popover = StatusItemController.makePopover(content: content)
+        // Nothing here is ever on a screen, so nothing would carry an animation to its end:
+        // a mode change swaps its panes in place, as it does with Reduce Motion. The slide
+        // itself is the live tier's (`theModeSwitchMovesItsSegmentStraightAcross`).
+        popover = StatusItemController.makePopover(content: content.environment(\.emberAnimationsEnabled, false))
         let controller = try #require(popover.contentViewController)
         scroll = try #require(controller.view as? NSScrollView)
         document = try #require(scroll.documentView)

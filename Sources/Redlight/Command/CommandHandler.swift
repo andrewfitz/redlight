@@ -110,11 +110,15 @@ final class CommandHandler {
             case .color(let value):
                 manager.intensity = value / 100
             case .whitepoint(let value):
-                manager.whitepoint = value / 100
+                manager.whitepoint = WhitepointScale.output(percent: value)
             case .step(.color, let delta):
                 manager.intensity = Self.stepped(manager.intensity, by: delta, in: 0...1)
             case .step(.whitepoint, let delta):
-                manager.whitepoint = Self.stepped(manager.whitepoint, by: delta, in: 0.25...1)
+                // A step is so many percent of the scale people see, 0 to 100, counted from
+                // the percent a status reports, so that steps up from the floor end on the
+                // top exactly and not a rounding error short of it.
+                let percent = min(100, max(0, WhitepointScale.percent(manager.whitepoint) + delta))
+                manager.whitepoint = WhitepointScale.output(percent: percent)
             case .pause(let state):
                 if state.resolve(current: manager.isPaused) {
                     if !manager.isPaused { manager.pause() }
@@ -144,8 +148,8 @@ final class CommandHandler {
                 manager.adaptiveMax = max / 100
                 manager.flushBandRefresh()
             case .limits(.whitepoint, let min, let max):
-                manager.adaptiveWpMin = min / 100
-                manager.adaptiveWpMax = max / 100
+                manager.adaptiveWpMin = WhitepointScale.output(percent: min)
+                manager.adaptiveWpMax = WhitepointScale.output(percent: max)
                 manager.flushBandRefresh()
             case .display(_, let state):
                 let anyEnabled = manager.displays.contains { addressed.contains($0.id) && $0.isEnabled }
@@ -204,14 +208,15 @@ final class CommandHandler {
                                enabled: display.isEnabled, inverted: display.isInverted)
             },
             color: Status.Level(set: manager.intensity * 100, target: target.intensity * 100),
-            whitepoint: Status.Level(set: manager.whitepoint * 100, target: target.whitepoint * 100),
+            whitepoint: Status.Level(set: WhitepointScale.percent(manager.whitepoint),
+                                     target: WhitepointScale.percent(target.whitepoint)),
             activePreset: preset, adaptive: manager.adaptiveEnabled,
             elevation: manager.commandElevation, statusLine: manager.adaptiveStatusText,
             limits: Status.Limits(
                 color: Status.Band(min: manager.intensityBand.lowerBound * 100,
                                    max: manager.intensityBand.upperBound * 100),
-                whitepoint: Status.Band(min: manager.whitepointBand.lowerBound * 100,
-                                        max: manager.whitepointBand.upperBound * 100)
+                whitepoint: Status.Band(min: WhitepointScale.percent(manager.whitepointBand.lowerBound),
+                                        max: WhitepointScale.percent(manager.whitepointBand.upperBound))
             ),
             appearance: services.appearance() ? .dark : .light,
             login: services.login(), version: services.version(), fading: manager.commandIsFading,
@@ -231,10 +236,10 @@ final class CommandHandler {
         return min(range.upperBound, max(range.lowerBound, next))
     }
 
+    /// Both channels are set in percent of their own scale, 0 to 100; see `WhitepointScale`.
     private func validate(_ value: Double, channel: CommandChannel) throws {
-        let range: ClosedRange<Double> = channel == .color ? 0...100 : 25...100
-        guard value.isFinite, range.contains(value) else {
-            throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(range.lowerBound)) to 100.")
+        guard value.isFinite, (0...100).contains(value) else {
+            throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from 0 to 100.")
         }
     }
 

@@ -4,17 +4,18 @@ import SwiftUI
 /// Where Auto's two limit flags sit under a slider at one width. UI-free, so the placement
 /// and the hit rules are testable.
 ///
-/// Each flag is a small rounded chip with its percent, and a tip above it that points up at
-/// the limit's exact place on the track: `EmberSliderFace.x`, the mapping the value uses.
-/// Chips stay at least `minGap` apart centre to centre (they slide apart evenly, the tips stay
-/// where they are) and inside the row at both ends. A pinned band (both limits on one value)
-/// has one chip, "Fixed N%".
+/// Each flag is a small rounded chip with its percent, and a tail above it that points up at
+/// the limit's place on the track: `EmberSliderFace.x`, the mapping the value uses. Chips
+/// stay at least `minGap` apart centre to centre (they slide apart evenly) and inside the row
+/// at both ends. A chip moved off its limit that way keeps its tail on the side nearest the
+/// limit (`FlagBubble`): it points toward the limit, no longer at its exact place. A pinned
+/// band (both limits on one value) has one chip, "Fixed N%".
 struct EmberFlagFace: Equatable {
     struct Chip: Equatable {
         /// The limit the chip sets; nil for a pinned band's one chip, which sets either.
         var bound: SliderCore.Bound?
         var text: String
-        /// The limit's place on the track: where the tip points.
+        /// The limit's place on the track: where the tail points, or the side it leans to.
         var tipX: CGFloat
         var centerX: CGFloat
         var width: CGFloat
@@ -25,15 +26,17 @@ struct EmberFlagFace: Equatable {
                    width: width, height: EmberFlagFace.chipHeight)
         }
 
-        /// Where a press takes the flag: the row's whole height, and at least `hitWidth`
-        /// across, around the chip.
+        /// Where a press takes the flag: the row's whole height and `hitSlop` under it, and
+        /// at least `hitWidth` across, around the chip.
         var hitRect: CGRect {
             let w = max(width, EmberFlagFace.hitWidth)
-            return CGRect(x: centerX - w / 2, y: 0, width: w, height: EmberFlagFace.rowHeight)
+            return CGRect(x: centerX - w / 2, y: 0, width: w,
+                          height: EmberFlagFace.rowHeight + EmberFlagFace.hitSlop)
         }
     }
 
-    static let rowHeight: CGFloat = 26
+    /// The tip and the chip, with nothing under them: the next block's gap follows.
+    static let rowHeight: CGFloat = tipSize.height + chipHeight
     /// Space between the pill and the row.
     static let spacing: CGFloat = 3
     static let tipSize = CGSize(width: 10, height: 6)
@@ -44,6 +47,9 @@ struct EmberFlagFace: Equatable {
     /// Least distance between the two chips' centres.
     static let minGap: CGFloat = 46
     static let hitWidth: CGFloat = 28
+    /// How far under the row a press still takes a flag, into the gap before the next block:
+    /// with it a flag's hit area is 24 pt tall.
+    static let hitSlop: CGFloat = 2
 
     let chips: [Chip]
 
@@ -54,13 +60,13 @@ struct EmberFlagFace: Equatable {
         let loX = EmberSliderFace.x(for: lo, width: width, range: range)
         let hiX = EmberSliderFace.x(for: hi, width: width, range: range)
         if lo == hi {
-            let text = Self.pinnedText(lo)
+            let text = Self.pinnedText(lo, in: range)
             let w = chipWidth(text)
             chips = [Chip(bound: nil, text: text, tipX: loX,
                           centerX: Self.clamp(loX, half: w / 2, row: width), width: w)]
             return
         }
-        let loText = SliderCore.percentText(lo), hiText = SliderCore.percentText(hi)
+        let loText = SliderCore.percentText(lo, in: range), hiText = SliderCore.percentText(hi, in: range)
         let wl = chipWidth(loText), wu = chipWidth(hiText)
         let gap = max(Self.minGap, (wl + wu) / 2 + 6)
         var a = loX, b = hiX
@@ -79,7 +85,9 @@ struct EmberFlagFace: Equatable {
                  Chip(bound: .upper, text: hiText, tipX: hiX, centerX: b, width: wu)]
     }
 
-    static func pinnedText(_ value: Double) -> String { "Fixed \(SliderCore.percentText(value))" }
+    static func pinnedText(_ value: Double, in range: ClosedRange<Double> = 0...1) -> String {
+        "Fixed \(SliderCore.percentText(value, in: range))"
+    }
 
     /// The chip whose hit area holds `point`, the nearer one where both do.
     func chip(at point: CGPoint) -> Chip? {
@@ -103,18 +111,25 @@ struct EmberFlagFace: Equatable {
 
 /// One press on a flag, from mouse-down to mouse-up.
 ///
-/// The flag moves with the pointer from where it was taken: its tip keeps its distance from
-/// the pointer, so nothing jumps on the press. Every value goes through
-/// `SliderCore.editedValue`, so the limits keep `minGap` apart, and the ends snap as the
-/// value does. A pinned band's chip is taken by the direction of the first movement: left
-/// the lower limit, right the upper one.
+/// The flag moves with the pointer from where it was taken, once the pointer has travelled
+/// `SliderCore.liveTravel`: its limit keeps its distance from the pointer, so nothing jumps
+/// on the press and a click changes nothing. Every value goes through
+/// `SliderCore.editedValue`: the limits stay `minGap` apart until the flag is taken more
+/// than halfway across that gap, and then they are on one value, one flag. An end of the
+/// range snaps as the value's does when the flag is moved toward it.
+///
+/// While the limits share one value the flag is both of them, at the press and again after
+/// a merge in mid-drag. The side of that value the handle is on picks the limit that leaves
+/// it: left the lower limit, right the upper one, and on an end of the range the only limit
+/// that can. So a flag dragged through the other merges with it and then carries the other
+/// one on, and the limit left behind stays where they met.
 struct EmberFlagDrag: Equatable {
     let start: CGPoint
     private(set) var bound: SliderCore.Bound
     /// The tip's x minus the pointer's.
     let offset: CGFloat
     private(set) var hasMoved = false
-    /// A press on a pinned band's chip that has not moved yet.
+    /// A press on a pinned band's chip that has not yet taken a limit off the pin.
     private(set) var awaitsDirection: Bool
 
     init(start: CGPoint, chip: EmberFlagFace.Chip) {
@@ -129,18 +144,24 @@ struct EmberFlagDrag: Equatable {
         pointerX x: CGFloat, width: CGFloat, range: ClosedRange<Double>,
         lower: Double, upper: Double, minGap: Double
     ) -> (bound: SliderCore.Bound, value: Double)? {
+        let dx = x - start.x
         if !hasMoved {
-            let dx = x - start.x
-            guard dx != 0 else { return nil }
-            if awaitsDirection {
-                bound = SliderCore.resolveStackedMarker(bound, dx: dx, lower: lower, upper: upper)
-                awaitsDirection = false
-            }
+            guard abs(dx) >= SliderCore.liveTravel else { return nil }
             hasMoved = true
         }
-        let proposed = EmberSliderFace.value(atX: x + offset, width: width, range: range)
-        return (bound, SliderCore.editedValue(
-            proposed, for: bound, range: range, lower: lower, upper: upper, minGap: minGap))
+        let handleX = x + offset
+        if lower == upper {
+            let pinX = EmberSliderFace.x(for: lower, width: width, range: range)
+            bound = SliderCore.resolveStackedMarker(bound, dx: handleX - pinX, lower: lower, upper: upper,
+                                                    range: range, minGap: minGap)
+        }
+        // A limit that stood near an end and is taken away from it is not pulled back there.
+        let proposed = EmberSliderFace.value(atX: handleX, width: width, range: range,
+                                             snapsLower: dx < 0, snapsUpper: dx > 0)
+        let value = SliderCore.editedValue(
+            proposed, for: bound, range: range, lower: lower, upper: upper, minGap: minGap)
+        if awaitsDirection, value != (bound == .lower ? lower : upper) { awaitsDirection = false }
+        return (bound, value)
     }
 }
 
@@ -156,7 +177,8 @@ struct EmberSliderFlags: View {
     let upper: Double
     let range: ClosedRange<Double>
     let width: CGFloat
-    var minGap: Double = 0.05
+    /// Nil: 5 % of the slider's range, as the slider counts percent.
+    var minGap: Double? = nil
     let onLimitChange: (SliderCore.Bound, Double) -> Void
     var onPreview: ((Double) -> Void)? = nil
     var onPreviewEnd: (() -> Void)? = nil
@@ -173,6 +195,7 @@ struct EmberSliderFlags: View {
 
     @Environment(\.emberPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberIsLeaving) private var isLeaving
 
     var body: some View {
         let face = EmberFlagFace(lower: lower, upper: upper, range: range, width: width)
@@ -182,24 +205,37 @@ struct EmberSliderFlags: View {
             ForEach([SliderCore.Bound.lower, .upper], id: \.self) { bound in
                 let chip = face.chips.first { $0.bound == bound || $0.bound == nil } ?? face.chips[0]
                 Color.clear
-                    .frame(width: EmberFlagFace.hitWidth, height: EmberFlagFace.rowHeight - 6)
-                    .focusable()
+                    .frame(width: EmberFlagFace.hitWidth, height: EmberFlagFace.chipHeight)
+                    .focusable(!isLeaving)
                     .focusEffectDisabled()
                     .focused($focused, equals: bound)
                     .onKeyPress(keys: SliderKeyStep.keys) { press in
                         if !showsFocus { showsFocus = true }
                         guard let step = SliderKeyStep(press.key) else { return .ignored }
-                        discreteEdit(step.value(from: value(of: bound), in: range,
-                                                large: press.modifiers.contains(.shift)), for: bound)
+                        let proposed = step.value(from: value(of: bound), in: range,
+                                                  large: press.modifiers.contains(.shift))
+                        // From either stop of a pinned band the key's direction picks the limit.
+                        let target = SliderCore.keyBound(bound, proposed: proposed, lower: lower, upper: upper)
+                        // The limit that moved is the one the next key moves.
+                        if discreteEdit(proposed, for: target), target != bound { focused = target }
                         return .handled
                     }
-                    .position(x: chip.centerX, y: EmberFlagFace.rowHeight / 2)
+                    .position(x: chip.centerX, y: chip.frame.midY)
             }
-            ForEach(face.chips, id: \.bound) { chip in
-                flag(chip)
+            // Always two flags, so that they can slide into one and out again: on a pinned
+            // band both are the same chip in the same place, and the maximum's is not drawn.
+            let isPinned = face.chips.count == 1
+            ForEach([SliderCore.Bound.lower, .upper], id: \.self) { bound in
+                let chip = face.chips.first { $0.bound == bound || $0.bound == nil } ?? face.chips[0]
+                EmberFlag(chip: chip, isActive: isActive(chip), isFocusShown: isFocusShown(chip),
+                          isPinned: isPinned, isDrawn: !isPinned || bound == .lower)
+                    // The flag that stays is on top: the other goes in under it as it fades.
+                    .zIndex(bound == .lower ? 1 : 0)
             }
         }
         .frame(width: width, height: EmberFlagFace.rowHeight, alignment: .topLeading)
+        // The hit area reaches a little under the row; the layout keeps the row's height.
+        .padding(.bottom, EmberFlagFace.hitSlop)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -213,6 +249,12 @@ struct EmberSliderFlags: View {
                         interactionToken = onInteractionBegin?()
                         interactionGate = SliderInteractionGate()
                         drag = EmberFlagDrag(start: g.startLocation, chip: chip)
+                        // The displays show the limit from the press on, before it moves:
+                        // pressing a flag is asking what its limit looks like.
+                        if interactionGate.permitsMutation(token: interactionToken, isCurrent: isInteractionCurrent) {
+                            isPreviewing = true
+                            onPreview?(value(of: chip.bound ?? .lower))
+                        }
                     }
                     updateDrag(pointerX: g.location.x)
                 }
@@ -222,6 +264,7 @@ struct EmberSliderFlags: View {
                     finishInteraction()
                 }
         )
+        .padding(.bottom, -EmberFlagFace.hitSlop)
         .onChange(of: gestureInProgress) { _, inProgress in
             if !inProgress, drag != nil { finishInteraction() }
         }
@@ -232,6 +275,8 @@ struct EmberSliderFlags: View {
         .onDisappear { finishInteraction() }
     }
 
+    private var gap: Double { minGap ?? SliderCore.limitGap(in: range) }
+
     private func value(of bound: SliderCore.Bound) -> Double {
         bound == .lower ? lower : upper
     }
@@ -240,7 +285,7 @@ struct EmberSliderFlags: View {
         guard var current = drag, interactionGate.permitsMutation(
             token: interactionToken, isCurrent: isInteractionCurrent) else { return }
         let proposal = current.proposal(pointerX: x, width: width, range: range,
-                                        lower: lower, upper: upper, minGap: minGap)
+                                        lower: lower, upper: upper, minGap: gap)
         if current != drag {
             drag = current
             // The limit taken is the one the keys move next.
@@ -266,26 +311,36 @@ struct EmberSliderFlags: View {
 
     /// A key press or an assistive app's adjustment: one edit with a fresh token, which then
     /// applies at once (`onPreviewEnd` lands Auto in the new range).
-    func discreteEdit(_ proposed: Double, for bound: SliderCore.Bound) {
-        Self.discreteEdit(proposed, for: bound, range: range, lower: lower, upper: upper, minGap: minGap,
+    @discardableResult
+    func discreteEdit(_ proposed: Double, for bound: SliderCore.Bound) -> Bool {
+        Self.discreteEdit(proposed, for: bound, range: range, lower: lower, upper: upper, minGap: gap,
                           onLimitChange: onLimitChange, onPreviewEnd: onPreviewEnd,
                           onInteractionBegin: onInteractionBegin, isInteractionCurrent: isInteractionCurrent)
     }
 
+    /// `isStep` is true for a key: a step that the gap would hold goes on across it
+    /// (`SliderCore.steppedValue`). An assistive app names the value it wants, and gets the
+    /// place that value would be dragged to, the same however often it asks. True when the
+    /// limit was written.
+    @discardableResult
     nonisolated static func discreteEdit(
         _ proposed: Double, for bound: SliderCore.Bound, range: ClosedRange<Double>,
-        lower: Double, upper: Double, minGap: Double,
+        lower: Double, upper: Double, minGap: Double, isStep: Bool = true,
         onLimitChange: (SliderCore.Bound, Double) -> Void, onPreviewEnd: (() -> Void)?,
         onInteractionBegin: (() -> UInt64)?, isInteractionCurrent: ((UInt64) -> Bool)?
-    ) {
-        let v = SliderCore.editedValue(proposed, for: bound, range: range,
-                                       lower: lower, upper: upper, minGap: minGap)
-        guard v.isFinite, v != (bound == .lower ? lower : upper) else { return }
+    ) -> Bool {
+        // Before the clamp, which would turn a value that is not a number into an end.
+        guard proposed.isFinite else { return false }
+        let v = isStep
+            ? SliderCore.steppedValue(proposed, for: bound, range: range, lower: lower, upper: upper, minGap: minGap)
+            : SliderCore.editedValue(proposed, for: bound, range: range, lower: lower, upper: upper, minGap: minGap)
+        guard v != (bound == .lower ? lower : upper) else { return false }
         let token = onInteractionBegin?()
-        if let token, isInteractionCurrent?(token) == false { return }
+        if let token, isInteractionCurrent?(token) == false { return false }
         onLimitChange(bound, v)
-        if let token, isInteractionCurrent?(token) == false { return }
+        if let token, isInteractionCurrent?(token) == false { return true }
         onPreviewEnd?()
+        return true
     }
 
     // MARK: - Pieces
@@ -301,30 +356,60 @@ struct EmberSliderFlags: View {
         guard showsFocus, let focused else { return false }
         return chip.bound == nil || chip.bound == focused
     }
+}
 
-    /// A chip and its tip, drawn as one bubble. Lit while dragged: the text colour, its label
-    /// in the panel's colour.
-    private func flag(_ chip: EmberFlagFace.Chip) -> some View {
-        let active = isActive(chip)
-        let fill = active ? palette.text : palette.fillStrong
+/// One flag: a chip and its tail, drawn as one bubble. Lit while dragged: the text colour, its
+/// label in the panel's colour.
+///
+/// The flag follows its limit exactly. Only two things animate: the tail's change of shape,
+/// and the merge. When the band becomes pinned or stops being so, the flag slides and grows
+/// from where it was to where it is now, its label fades into the new one, and the flag that
+/// is no longer drawn fades out under the other: two flags close into one, one opens into two.
+private struct EmberFlag: View {
+    let chip: EmberFlagFace.Chip
+    let isActive: Bool
+    let isFocusShown: Bool
+    let isPinned: Bool
+    /// False for the maximum's flag on a pinned band, which lies under the minimum's.
+    let isDrawn: Bool
+
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberAnimationsEnabled) private var animates
+
+    var body: some View {
+        // The flat colour `fillStrong` shows as on the panel, so that two flags crossing as
+        // they merge do not darken where they overlap.
+        let fill = isActive ? palette.text : palette.strong(onCard: false).color
         let shape = RoundedRectangle(cornerRadius: EmberFlagFace.chipRadius, style: .continuous)
-        let hooks = FlagBubble.hooks(chip: chip.frame, tipX: chip.tipX)
-        return ZStack(alignment: .topLeading) {
-            FlagBubble(chip: chip.frame, tipX: chip.tipX, leading: hooks.leading, trailing: hooks.trailing)
+        // The bubble is drawn in the flag's own frame, which is what moves and grows.
+        let tip = chip.tipX - chip.frame.minX
+        let hooks = FlagBubble.hooks(
+            chip: CGRect(x: 0, y: EmberFlagFace.tipSize.height, width: chip.width, height: EmberFlagFace.chipHeight),
+            tipX: tip)
+        let moves = !reduceMotion && animates
+        ZStack(alignment: .top) {
+            FlagBubble(tipX: tip, leading: hooks.leading, trailing: hooks.trailing)
                 .fill(fill)
-                // The tail follows the pointer exactly; only its change of shape animates, as it
-                // turns from an arrow into a chat-bubble tail at the chip's side and back.
-                .animation(reduceMotion ? nil : .spring(duration: 0.26, bounce: 0.18), value: hooks)
+                // An arrow tail follows its limit exactly; only its change of shape animates, as
+                // it turns into a chat-bubble tail at the chip's side and back.
+                .animation(moves ? .spring(duration: 0.26, bounce: 0.18) : nil, value: hooks)
             Text(chip.text)
-                .font(.ember(EmberFlagFace.fontSize, active ? .semibold : .regular))
+                .font(.ember(EmberFlagFace.fontSize, isActive ? .semibold : .regular))
                 .monospacedDigit()
                 .lineLimit(1)
                 .fixedSize()
-                .foregroundStyle(active ? palette.background.color : palette.secondary)
-                .frame(width: chip.width, height: EmberFlagFace.chipHeight)
-                .emberFocusHalo(shape, isFocused: isFocusShown(chip), spread: 3)
-                .position(x: chip.centerX, y: chip.frame.midY)
+                .contentTransition(.opacity)
+                .foregroundStyle(isActive ? palette.background.color : palette.secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: EmberFlagFace.chipHeight)
+                .emberFocusHalo(shape, isFocused: isFocusShown, spread: 3)
+                .padding(.top, EmberFlagFace.tipSize.height)
         }
+        .frame(width: chip.width, height: EmberFlagFace.rowHeight)
+        .offset(x: chip.frame.minX)
+        .opacity(isDrawn ? 1 : 0)
+        .animation(moves ? .spring(duration: 0.32, bounce: 0.22) : nil, value: isPinned)
         .allowsHitTesting(false)
     }
 }
@@ -344,7 +429,10 @@ struct FlagBubble: Shape {
         var trailing: CGFloat
     }
 
-    let chip: CGRect
+    /// The chip in the shape's coordinates. Nil: the shape's own rectangle below the tail,
+    /// so that a flag whose frame is animated grows and moves with it.
+    var chip: CGRect? = nil
+    /// The limit's place, in the same coordinates as the chip.
     let tipX: CGFloat
     var leading: CGFloat
     var trailing: CGFloat
@@ -383,6 +471,8 @@ struct FlagBubble: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
+        let chip = self.chip ?? CGRect(x: rect.minX, y: rect.minY + Self.tipHeight,
+                                       width: rect.width, height: EmberFlagFace.chipHeight)
         let r = Self.radius, h = Self.tipHeight, top = chip.minY, bottom = chip.maxY
         let left = chip.minX, right = chip.maxX
         let tl = min(1, max(0, leading)), tr = min(1, max(0, trailing))
@@ -393,12 +483,14 @@ struct FlagBubble: Shape {
         var tail = Tail(footL: footL0, footR: footR0, apexX: apex0,
                         controlL: CGPoint(x: footL0 + (apex0 - footL0) * 0.55, y: top),
                         controlR: CGPoint(x: footR0 - (footR0 - apex0) * 0.55, y: top))
-        // A chat-bubble tail on either side.
+        // A chat-bubble tail on either side. Both are mixed in: while the tail changes sides
+        // one is still leaving as the other arrives, and dropping either would make it jump.
         if tl > 0 {
             tail = tail.mixed(Tail(footL: left, footR: left + Self.hookReach, apexX: left + 0.5,
                                    controlL: CGPoint(x: left, y: top - h * 0.55),
                                    controlR: CGPoint(x: left + 3.2, y: top - 0.2)), tl)
-        } else if tr > 0 {
+        }
+        if tr > 0 {
             tail = tail.mixed(Tail(footL: right - Self.hookReach, footR: right, apexX: right - 0.5,
                                    controlL: CGPoint(x: right - 3.2, y: top - 0.2),
                                    controlR: CGPoint(x: right, y: top - h * 0.55)), tr)

@@ -18,7 +18,7 @@ enum CLIParser {
       on | off | toggle | status | resume
       pause [minutes|until sunrise]
         Use 1–1440 minutes (default 30) or the next sunrise within 25 hours.
-      color <0-100> | whitepoint <25-100>
+      color <0-100> | whitepoint <0-100>
       color <up|down> [step] | whitepoint <up|down> [step]
       reset <color|whitepoint>
       preset [save] <day|warm|sunset|night|late>
@@ -48,9 +48,8 @@ enum CLIParser {
             guard tail.count == expected else { throw CommandError.invalidInput("Usage: redlight \(usage)") }
         }
         func level(_ text: String, channel: CommandChannel) throws -> Double {
-            let minimum: Double = channel == .color ? 0 : 25
-            guard let value = Double(text), value.isFinite, (minimum...100).contains(value) else {
-                throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from \(Int(minimum)) to 100.")
+            guard let value = Double(text), value.isFinite, (0...100).contains(value) else {
+                throw CommandError.invalidInput("\(channel.displayName) must be a finite percentage from 0 to 100.")
             }
             return value
         }
@@ -247,8 +246,8 @@ enum RedlightCLI {
         guard status.running else { return "not running" }
         return """
         Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")\(status.suspendedFor.map { "; suspended for \($0)" } ?? "")
-        Color temp: \(status.color.set)% (target \(status.color.target)%)
-        White point: \(status.whitepoint.set)% (target \(status.whitepoint.target)%)
+        Color temp: \(status.color.text)
+        White point: \(status.whitepoint.text)
         Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
         Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.fading ? "; fading" : "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")

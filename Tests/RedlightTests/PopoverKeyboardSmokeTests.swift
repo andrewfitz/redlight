@@ -237,6 +237,8 @@ struct LiveSlider {
 
     /// The size of a popover slider's keyboard stop: the pill.
     static let size = CGSize(width: EmberMetrics.width - 2 * EmberMetrics.padding, height: EmberMetrics.sliderHeight)
+    /// The length of track the whole range is drawn along.
+    static let usableWidth = Double(size.width - 2 * EmberSliderFace.inset)
 
     /// A point `x` along the pill and `dy` below its centre line.
     func point(x: CGFloat, dy: CGFloat = 0) -> CGPoint {
@@ -489,7 +491,7 @@ final class LivePopover {
     /// The Auto limit flags' keyboard stops, row by row and left to right: minimum then
     /// maximum under each slider (one spot for both under a pinned band).
     func flagStops() throws -> [CGRect] {
-        let size = CGSize(width: EmberFlagFace.hitWidth, height: EmberFlagFace.rowHeight - 6)
+        let size = CGSize(width: EmberFlagFace.hitWidth, height: EmberFlagFace.chipHeight)
         let thumbs = views()
             .filter { $0.acceptsFirstResponder && $0.bounds.size == size }
             .map(frame(of:))
@@ -725,6 +727,407 @@ extension Raster {
         }
     }
 
+    // MARK: The mode switch
+
+    /// Where the selected segment of the mode control is drawn: the rows and columns, in
+    /// pixels, holding the raised fill. Nil when there is none.
+    private func selectedSegment(
+        in raster: Raster, palette: EmberPalette
+    ) -> (rows: ClosedRange<Int>, columns: ClosedRange<Int>)? {
+        let trough = palette.wash.mixed(palette.troughAlpha, over: palette.background)
+        let raised = palette.raisedRGB.mixed(palette.raisedAlpha, over: trough)
+        let wanted = [Int(raised.r.rounded()), Int(raised.g.rounded()), Int(raised.b.rounded())]
+        var rows: [Int] = [], lefts: [Int] = [], rights: [Int] = []
+        for y in 0..<raster.height {
+            // The longest unbroken run of the fill in this row: the segment itself, without
+            // the edges of a label that pass through its colour.
+            var best = 0, bestStart = 0, run = 0
+            for x in 0..<raster.width {
+                let index = (y * raster.width + x) * 4
+                if raster.pixels[index + 3] == 255,
+                   (0..<3).allSatisfy({ abs(Int(raster.pixels[index + $0]) - wanted[$0]) <= 3 }) {
+                    run += 1
+                    if run > best {
+                        best = run
+                        bestStart = x - run + 1
+                    }
+                } else {
+                    run = 0
+                }
+            }
+            if best >= 60 {
+                rows.append(y)
+                lefts.append(bestStart)
+                rights.append(bestStart + best - 1)
+            }
+        }
+        guard let top = rows.first, let bottom = rows.last, let left = lefts.min(), let right = rights.max()
+        else { return nil }
+        return (top...bottom, left...right)
+    }
+
+    /// The rows and columns holding the Warm preset's swatch: something of the Manual pane,
+    /// near its leading edge, that no other part of the popover is the colour of while the
+    /// colour temp is at 100 %.
+    private func warmSwatch(in raster: Raster) -> (rows: ClosedRange<Int>, columns: ClosedRange<Int>)? {
+        let late = EmberTint.rgb(intensity: Preset.defaults[1].intensity, scheme: .dark)
+        let wanted = [Int(late.r.rounded()), Int(late.g.rounded()), Int(late.b.rounded())]
+        var rows: [Int] = [], lefts: [Int] = [], rights: [Int] = []
+        for y in 0..<raster.height {
+            var first: Int?, last = 0, count = 0
+            for x in 0..<raster.width {
+                let index = (y * raster.width + x) * 4
+                if (0..<3).allSatisfy({ abs(Int(raster.pixels[index + $0]) - wanted[$0]) <= 3 }) {
+                    if first == nil { first = x }
+                    last = x
+                    count += 1
+                }
+            }
+            // A row through the whole swatch, not one of its rounded ends.
+            if let first, count >= 20 {
+                rows.append(y)
+                lefts.append(first)
+                rights.append(last)
+            }
+        }
+        guard let top = rows.first, let bottom = rows.last, let left = lefts.min(), let right = rights.max()
+        else { return nil }
+        return (top...bottom, left...right)
+    }
+
+    /// Pressing the other mode slides the selected segment straight across, and the pane
+    /// under it sideways with it: in every frame the window server shows, the segment is on
+    /// its own rows and the Manual pane's swatches on theirs, while the popover goes through
+    /// the heights between the two panes'. Segment, pane and height arrive together. The
+    /// popover animates as the app's does.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func theModeSwitchMovesItsSegmentStraightAcross() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto()
+            let dark = try #require(NSAppearance(named: .darkAqua))
+            let live = try LivePopover(
+                fixture.view().environment(\.colorScheme, .dark).preferredColorScheme(.dark),
+                appearance: dark, animated: true)
+            defer {
+                live.close()
+                fixture.retire()
+            }
+            let palette = EmberPalette.dark
+            live.pump(0.4)
+            // The control in the document, to press its other half.
+            let drawn = try #require(selectedSegment(in: try live.raster(), palette: palette),
+                                     "no selected segment drawn")
+            // Its text breaks the fill's rows, so take the width from the trough: two halves
+            // of the panel's width inside its padding and the control's own.
+            let segmentWidth = (EmberMetrics.width - 2 * EmberMetrics.padding - 4) / 2
+            let midY = CGFloat(drawn.rows.lowerBound + drawn.rows.upperBound) / 4
+            let autoX = EmberMetrics.padding + 2 + segmentWidth / 2
+
+            @MainActor func capture() throws -> Raster {
+                let image = try #require(live.windowImage())
+                return try Raster(image: image)
+            }
+            @MainActor func press(_ type: NSEvent.EventType, at point: CGPoint) throws {
+                NSApp.postEvent(try #require(NSEvent.mouseEvent(
+                    with: type, location: live.document.convert(point, to: nil), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: live.window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)),
+                    atStart: false)
+            }
+            let resting = try #require(selectedSegment(in: try capture(), palette: palette),
+                                       "no selected segment shown")
+
+            for (round, toAuto) in [false, true].enumerated() {
+                let before = try #require(selectedSegment(in: try capture(), palette: palette))
+                let x = toAuto ? autoX : autoX + segmentWidth
+                let point = CGPoint(x: x, y: live.document.isFlipped ? midY : live.document.bounds.height - midY)
+                try press(.leftMouseDown, at: point)
+                try press(.leftMouseUp, at: point)
+                // Every frame the window server has, for longer than any of the animations.
+                var frames: [Raster] = []
+                let end = Date().addingTimeInterval(0.9)
+                while Date() < end {
+                    live.pump(0.004)
+                    frames.append(try capture())
+                }
+                #expect(fixture.manager.adaptiveEnabled == toAuto)
+                var lines: [String] = []
+                var lastLeft = before.columns.lowerBound
+                var moved = 0
+                for (index, frame) in frames.enumerated() {
+                    guard let segment = selectedSegment(in: frame, palette: palette) else {
+                        Issue.record("round \(round) frame \(index): no selected segment")
+                        continue
+                    }
+                    lines.append("\(index): rows \(segment.rows) columns \(segment.columns) height \(frame.height)")
+                    #expect(segment.rows == resting.rows,
+                            "round \(round) frame \(index): rows \(segment.rows), not \(resting.rows)")
+                    // Only ever toward the pressed half.
+                    let left = segment.columns.lowerBound
+                    if toAuto { #expect(left <= lastLeft + 1) } else { #expect(left >= lastLeft - 1) }
+                    if left != lastLeft { moved += 1 }
+                    lastLeft = left
+                }
+                note("mode switch round \(round) to \(toAuto ? "auto" : "manual"): \(frames.count) frames, "
+                    + "\(moved) moves\n" + lines.joined(separator: "\n"))
+                let settled = try capture()
+                let after = try #require(selectedSegment(in: settled, palette: palette))
+                #expect(after.rows == resting.rows)
+                #expect(abs(after.columns.lowerBound - before.columns.lowerBound) > Int(segmentWidth))
+
+                // The height: through values of its own between the two, never back.
+                let heights = frames.map(\.height)
+                let from = try #require(heights.first), to = settled.height
+                #expect(abs(to - from) > 40, "the two panes are \(abs(to - from)) px apart")
+                for (earlier, later) in zip(heights, heights.dropFirst()) {
+                    #expect(to > from ? later >= earlier : later <= earlier, "the height went back: \(heights)")
+                }
+                let between = Set(heights.filter { min(from, to) + 2 < $0 && $0 < max(from, to) - 2 })
+                // Two at the least, however few frames a busy machine captures; a jump has none.
+                #expect(between.count >= 2, "the height jumped: \(heights)")
+
+                // The Manual pane: its swatch only ever moves sideways.
+                let manualFrame = toAuto ? frames.first : settled
+                let swatchRows = try #require(manualFrame.flatMap { warmSwatch(in: $0) }, "no Warm swatch").rows
+                var swatchLefts: [Int] = []
+                for (index, frame) in frames.enumerated() {
+                    // Also while the popover's edge cuts it: its leading edge is the last to
+                    // go and the first to come. Cut down to its rounded end it shows on fewer
+                    // rows, evenly above and below: its middle row is what must not move.
+                    guard let swatch = warmSwatch(in: frame) else { continue }
+                    let middle = swatch.rows.lowerBound + swatch.rows.upperBound
+                    #expect(abs(middle - (swatchRows.lowerBound + swatchRows.upperBound)) <= 4
+                        && swatch.rows.lowerBound >= swatchRows.lowerBound - 2
+                        && swatch.rows.upperBound <= swatchRows.upperBound + 2,
+                            "round \(round) frame \(index): swatch rows \(swatch.rows), not \(swatchRows)")
+                    swatchLefts.append(swatch.columns.lowerBound)
+                }
+                // Coming in, it is seen at several places on its way. Going out it is past
+                // the edge within a frame or two of these captures, so there it only has to
+                // have been seen.
+                #expect(Set(swatchLefts).count >= (toAuto ? 1 : 3), "the pane did not slide: \(swatchLefts)")
+                for (earlier, later) in zip(swatchLefts, swatchLefts.dropFirst()) {
+                    // Manual lives on the right: it leaves to the right and comes from there.
+                    #expect(toAuto ? later >= earlier - 1 : later <= earlier + 1, "\(swatchLefts)")
+                }
+
+                // Together: the segment and the height are home within a few frames of
+                // each other.
+                func arrival(_ values: [Int], at target: Int) -> Int {
+                    values.firstIndex { abs($0 - target) <= 4 } ?? values.count
+                }
+                let segmentLefts = frames.map { selectedSegment(in: $0, palette: palette)?.columns.lowerBound ?? -1 }
+                let segmentHome = arrival(segmentLefts, at: after.columns.lowerBound)
+                let heightHome = arrival(heights, at: to)
+                #expect(abs(segmentHome - heightHome) <= 4, "segment home at \(segmentHome), height at \(heightHome)")
+
+                // One pane is left, with one of each slider, and the popover is its size.
+                let pills = try live.sliders().map(\.pill)
+                #expect(pills.count == 2, "round \(round): slider pills at \(pills)")
+                #expect(live.popover.contentSize.height == live.document.frame.height)
+                if let directory = LivePopoverEnvironment.shotDirectory {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    for (index, frame) in frames.enumerated() {
+                        try frame.shown(on: (90, 90, 90)).writePNG(to: directory.appendingPathComponent(
+                            String(format: "mode-%d-%03d.png", round, index)))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Settings slides in from the right as the controls leave by the left, and Back slides
+    /// them the other way: the controls' mode segment stays on its own rows in every frame
+    /// and only ever moves toward the side it is going to, and the popover's height never
+    /// turns back on its way. Each ends with one page, the size of the popover.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func settingsSlidesInFromTheRightAndBackSlidesItAway() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto()
+            let dark = try #require(NSAppearance(named: .darkAqua))
+            let live = try LivePopover(
+                fixture.view().environment(\.colorScheme, .dark).preferredColorScheme(.dark),
+                appearance: dark, animated: true)
+            defer {
+                live.close()
+                fixture.retire()
+            }
+            let palette = EmberPalette.dark
+            live.pump(0.4)
+            @MainActor func capture() throws -> Raster {
+                let image = try #require(live.windowImage())
+                return try Raster(image: image)
+            }
+            @MainActor func press(at point: CGPoint) throws {
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    NSApp.postEvent(try #require(NSEvent.mouseEvent(
+                        with: type, location: live.document.convert(point, to: nil), modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: live.window.windowNumber,
+                        context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)),
+                        atStart: false)
+                }
+            }
+            @MainActor func isOnSettings() -> Bool { !live.views().compactMap { $0 as? NSDatePicker }.isEmpty }
+            @MainActor func sliderCount() -> Int {
+                live.views().filter { $0.acceptsFirstResponder && $0.bounds.size == LiveSlider.size }.count
+            }
+            let resting = try #require(selectedSegment(in: try capture(), palette: palette), "no mode segment shown")
+            let controlsHeight = live.document.frame.height
+            #expect(!isOnSettings() && sliderCount() == 2)
+
+            for toSettings in [true, false] {
+                // The Settings row is the last card of the controls; Back is the first thing
+                // on the Settings page.
+                let height = live.document.bounds.height
+                let top = toSettings
+                    ? CGPoint(x: EmberMetrics.width / 2, y: height - EmberMetrics.padding - 22)
+                    : CGPoint(x: EmberMetrics.padding + 18, y: EmberMetrics.padding + 13)
+                try press(at: CGPoint(x: top.x, y: live.document.isFlipped ? top.y : height - top.y))
+                var frames: [Raster] = []
+                let end = Date().addingTimeInterval(0.9)
+                while Date() < end {
+                    live.pump(0.004)
+                    frames.append(try capture())
+                }
+                let what = toSettings ? "to Settings" : "back"
+                #expect(isOnSettings() == toSettings, "\(what): the page did not change")
+                // One page is left, and the popover is its size.
+                #expect(sliderCount() == (toSettings ? 0 : 2), "\(what)")
+                #expect(abs(live.popover.contentSize.height - live.document.frame.height) < 1, "\(what)")
+                if !toSettings { #expect(abs(live.document.frame.height - controlsHeight) < 1) }
+
+                // The controls' segment: on its rows, and only ever going its way.
+                var lefts: [Int] = []
+                for (index, frame) in frames.enumerated() {
+                    guard let segment = selectedSegment(in: frame, palette: palette) else { continue }
+                    #expect(segment.rows == resting.rows, "\(what) frame \(index): rows \(segment.rows)")
+                    lefts.append(segment.columns.lowerBound)
+                }
+                for (earlier, later) in zip(lefts, lefts.dropFirst()) {
+                    #expect(toSettings ? later <= earlier + 1 : later >= earlier - 1, "\(what): \(lefts)")
+                }
+                if toSettings {
+                    #expect(selectedSegment(in: try capture(), palette: palette) == nil, "the controls did not leave")
+                } else {
+                    // Coming back it is seen at several places on its way, and ends at home.
+                    #expect(Set(lefts).count >= 3, "\(what): the page did not slide: \(lefts)")
+                    #expect(lefts.last == resting.columns.lowerBound)
+                }
+                // The height goes one way.
+                let heights = frames.map(\.height)
+                let rising = (heights.last ?? 0) >= (heights.first ?? 0)
+                for (earlier, later) in zip(heights, heights.dropFirst()) {
+                    #expect(rising ? later >= earlier : later <= earlier, "\(what): the height went back: \(heights)")
+                }
+                note("page slide \(what): \(frames.count) frames, segment lefts \(lefts), heights \(Set(heights).sorted())")
+                if let directory = LivePopoverEnvironment.shotDirectory {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    for (index, frame) in frames.prefix(8).enumerated() {
+                        try frame.shown(on: (90, 90, 90)).writePNG(to: directory.appendingPathComponent(
+                            String(format: "page-%@-%03d.png", toSettings ? "in" : "back", index)))
+                    }
+                }
+            }
+        }
+    }
+
+    /// A mode change that something interrupts, or that nobody pressed for, still ends with
+    /// one pane at its own height, and lets go of that height afterwards.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aModeChangeSettlesWhateverInterruptsIt() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto()
+            let live = try LivePopover(fixture.view(), animated: true)
+            defer {
+                live.close()
+                fixture.retire()
+            }
+            let manager = fixture.manager
+            live.pump(0.4)
+            @MainActor func height() -> CGFloat { live.document.frame.height }
+            @MainActor func expectSettled(_ expected: CGFloat, _ what: String) throws {
+                // Within a point: a pane with running text has a height that is not whole.
+                #expect(abs(height() - expected) < 1, "\(what): \(height()), not \(expected)")
+                #expect(abs(live.popover.contentSize.height - height()) < 1, "\(what): the popover is another size")
+                let pills = try live.sliders().map(\.pill)
+                #expect(pills.count == 2, "\(what): slider pills at \(pills)")
+                // And the strip is at that pane, not parked between two or on the other.
+                for pill in pills { #expect(pill.minX == EmberMetrics.padding, "\(what): a slider at \(pill)") }
+            }
+            let autoHeight = height()
+
+            // From outside, as the CLI does: no event, nothing pressed.
+            manager.adaptiveEnabled = false
+            live.pump(0.8)
+            let manualHeight = height()
+            #expect(manualHeight < autoHeight - 20)
+            try expectSettled(manualHeight, "a flip from outside")
+
+            // Back, and away again before the slide is a third done; then back for good.
+            manager.adaptiveEnabled = true
+            live.pump(0.08)
+            manager.adaptiveEnabled = false
+            live.pump(0.8)
+            try expectSettled(manualHeight, "a flip turned round midway")
+            manager.adaptiveEnabled = true
+            live.pump(0.05)
+            manager.adaptiveEnabled = false
+            live.pump(0.05)
+            manager.adaptiveEnabled = true
+            live.pump(0.8)
+            try expectSettled(autoHeight, "three flips in a row")
+            #expect(try live.flagStops().count == 4)
+
+            // The height is let go: when the pane changes by itself, the popover follows at
+            // once. Auto loses its location, and the arc gives way to the ask for one.
+            fixture.location.coordinate = nil
+            fixture.location.authorization = .denied
+            manager.applyAdaptive()
+            live.pump(0.3)
+            let askHeight = height()
+            #expect(abs(askHeight - autoHeight) > 4)
+            #expect(abs(live.popover.contentSize.height - askHeight) < 1)
+            // And with no location the switch still lands on each pane's own height.
+            manager.adaptiveEnabled = false
+            live.pump(0.8)
+            try expectSettled(manualHeight, "to Manual from the ask")
+            manager.adaptiveEnabled = true
+            live.pump(0.8)
+            try expectSettled(askHeight, "back to the ask")
+            fixture.location.authorization = .authorized
+            fixture.location.coordinate = (41.88, -87.63)
+            manager.applyAdaptive()
+            live.pump(0.3)
+            try expectSettled(autoHeight, "the location back")
+
+            // Tab during a slide never stops in the pane that is leaving. To Manual, that is
+            // Auto's, going out by the left: no stop is left of the popover. A stop in the
+            // pane coming in from the right is one the user is about to see.
+            manager.adaptiveEnabled = false
+            live.pump(0.03)
+            var during: [CGRect] = []
+            for _ in 0..<14 {
+                try live.key(.tab, settle: 0.012)
+                if let frame = live.focusFrame { during.append(frame) }
+            }
+            #expect(during.count >= 10)
+            for frame in during {
+                #expect(frame.minX >= 0, "Tab stopped at \(frame)")
+            }
+            live.pump(0.8)
+            try expectSettled(manualHeight, "Tab pressed all through the slide")
+            manager.adaptiveEnabled = true
+            live.pump(0.8)
+            try expectSettled(autoHeight, "back to Auto")
+
+            // One Tab round afterwards: each stop once, the sliders among them.
+            let stops = try tabRound(live)
+            #expect(Set(stops.map { "\($0)" }).count == stops.count)
+            let pills = try live.sliders().map(\.pill)
+            for pill in pills { #expect(stops.filter { $0 == pill }.count == 1) }
+        }
+    }
+
     // MARK: Slider press and drag
 
     private static let whiteRange = 0.25...1.0
@@ -775,8 +1178,9 @@ extension Raster {
             #expect(abs(manager.intensity - 0.3) < 0.005, "a press just over the pill did not take the value")
 
             // Under Reset the header lies over the slop: a press there never moves the value
-            // (Reset itself answers only on its drawn chip), and the chip still works.
-            let underReset = color.pill.width - 60
+            // (Reset itself answers only on its drawn button), and the button still works. It is
+            // the 18 pt circle before the value: the value's "30%", 8 pt, then its middle.
+            let underReset = color.pill.width - 42
             try live.drag(from: color.point(x: underReset, dy: -(EmberMetrics.sliderHeight / 2 + 2.5)), dx: 0)
             note("slider auto, pressed over the pill under Reset: \(fixture.settings[3])")
             #expect(abs(manager.intensity - 0.3) < 0.005, "the slop under Reset took the press")
@@ -786,7 +1190,7 @@ extension Raster {
 
             // The drag follows the pointer.
             try live.drag(from: color.point(x: color.x(for: 0.6, range: Self.colorRange)), dx: -40)
-            #expect(abs(manager.intensity - (0.6 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
+            #expect(abs(manager.intensity - (0.6 - 40.0 / LiveSlider.usableWidth)) < 0.01, "the value did not follow the drag")
         }
     }
 
@@ -838,7 +1242,7 @@ extension Raster {
             let color = sliders[0]
             try live.drag(from: color.point(x: color.x(for: 0.6, range: Self.colorRange)), dx: -40)
             note("slider pinned, dragged left 40: \(fixture.settings[3])")
-            #expect(abs(manager.intensity - (0.6 - 40.0 / 254)) < 0.01, "the value did not follow the drag")
+            #expect(abs(manager.intensity - (0.6 - 40.0 / LiveSlider.usableWidth)) < 0.01, "the value did not follow the drag")
             #expect(manager.adaptiveMin == manager.intensity && manager.adaptiveMax == manager.intensity,
                     "the band is no longer pinned on the value")
         }
@@ -874,7 +1278,7 @@ extension Raster {
             try live.drag(from: slider.point(x: valueX), dx: -30)
             note("slider manual, grabber dragged left 30: value \(manager.intensity), "
                  + "preset \(String(describing: manager.activePresetIndex))")
-            #expect(abs(manager.intensity - (preset - 30.0 / 254)) < 0.01, "the value did not follow the drag")
+            #expect(abs(manager.intensity - (preset - 30.0 / LiveSlider.usableWidth)) < 0.01, "the value did not follow the drag")
             #expect(manager.activePresetIndex == nil)
 
             try live.drag(from: slider.point(x: slider.x(for: 0.9, range: Self.colorRange)), dx: 0)
@@ -886,6 +1290,80 @@ extension Raster {
 
     /// The centre of a flag's keyboard stop, which is the centre of its chip's row.
     private func centre(_ frame: CGRect) -> CGPoint { CGPoint(x: frame.midX, y: frame.midY) }
+
+    /// The minimum's flag dragged onto the maximum's: they are one flag, the band is pinned and
+    /// the value is on the pin. Short of it by less than the gap the flag is held at the gap.
+    /// The merged flag dragged left opens the band again, the minimum leaving.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aFlagDraggedOntoTheOtherMergesWithItAndDraggedOffOpensTheBand() async throws {
+        try inRunLoopTurn {
+            let (fixture, live, sliders) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            let color = sliders[0]
+            @MainActor func place(_ value: Double) -> CGFloat { color.x(for: value, range: Self.colorRange) }
+            var flags = try live.flagStops()
+            try #require(flags.count == 4, "found \(flags.count) flag stops")
+
+            // To 77 %: closer to the maximum than the gap, not yet halfway across it.
+            try live.drag(from: centre(flags[0]), dx: place(0.77) - place(0.2), steps: 10)
+            note("merge: minimum dragged to 77 %: \(fixture.settings[3])")
+            #expect(abs(manager.adaptiveMin - 0.75) < 1e-9 && manager.adaptiveMax == 0.8, "not held at the gap")
+
+            // On to the maximum's own place, and a little past it.
+            flags = try live.flagStops()
+            // In one move, so that the merge begins at a known moment: with a directory for
+            // pictures, the flags are drawn as they close, a few times on the way.
+            try live.drag(from: centre(flags[0]), dx: place(0.81) - place(0.75), steps: 1) {
+                guard let directory = LivePopoverEnvironment.shotDirectory else { return }
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                for (index, wait) in [0, 0.05, 0.07, 0.1, 0.3].enumerated() {
+                    live.pump(wait)
+                    try live.raster().writePNG(to: directory.appendingPathComponent("flags-merging-\(index).png"))
+                }
+            }
+            note("merge: minimum dragged onto the maximum: \(fixture.settings[3])")
+            #expect(manager.adaptiveMin == 0.8 && manager.adaptiveMax == 0.8, "the flags did not merge")
+            #expect(manager.isIntensityPinned && manager.intensity == 0.8, "the value is not on the pin")
+            if let directory = LivePopoverEnvironment.shotDirectory {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try live.raster().writePNG(to: directory.appendingPathComponent("flags-merged.png"))
+            }
+
+            // A click on the merged flag changes nothing.
+            flags = try live.flagStops()
+            try live.drag(from: centre(flags[0]), dx: 0)
+            #expect(manager.adaptiveMin == 0.8 && manager.adaptiveMax == 0.8, "a click opened the band")
+
+            // Dragged left by 40 pt: the minimum leaves, the maximum stays.
+            try live.drag(from: centre(flags[0]), dx: -40, steps: 8)
+            note("merge: merged flag dragged left 40: \(fixture.settings[3])")
+            #expect(abs(manager.adaptiveMin - (0.8 - 40.0 / LiveSlider.usableWidth)) < 0.01, "the minimum did not leave")
+            #expect(manager.adaptiveMax == 0.8, "the maximum moved")
+            #expect(!manager.isIntensityPinned)
+        }
+    }
+
+    /// A flag is taken a little under its chip too, in the gap before the next block, so its
+    /// hit area is as tall as any control's. Past that the gap takes nothing.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aFlagIsTakenJustUnderItsChipAndNotBelowThat() async throws {
+        try inRunLoopTurn {
+            let (fixture, live, _) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            var flags = try live.flagStops()
+            try #require(flags.count == 4, "found \(flags.count) flag stops")
+            try live.drag(from: CGPoint(x: flags[0].midX, y: flags[0].maxY + EmberFlagFace.hitSlop - 0.5), dx: 40)
+            note("flags: minimum dragged from under its chip: \(fixture.settings[3])")
+            #expect(abs(manager.adaptiveMin - (0.2 + 40.0 / LiveSlider.usableWidth)) < 0.01,
+                    "a press just under the chip did not take the flag")
+            let moved = manager.adaptiveMin
+            flags = try live.flagStops()
+            try live.drag(from: CGPoint(x: flags[0].midX, y: flags[0].maxY + EmberFlagFace.hitSlop + 1.5), dx: 40)
+            #expect(manager.adaptiveMin == moved && manager.adaptiveMax == 0.8, "the gap under the flags took a press")
+        }
+    }
 
     /// A press and drag on a flag moves that limit alone and shows it on the displays while
     /// the button is down; the release goes back to the real value.
@@ -901,13 +1379,29 @@ extension Raster {
             try live.drag(from: centre(flags[0]), dx: 40) {
                 let shown = fixture.gamma.applyCalls.last?.intensity
                 note("flags: while the minimum is dragged, \(fixture.settings[3]), displays at \(String(describing: shown))")
-                #expect(abs(manager.adaptiveMin - (0.2 + 40.0 / 254)) < 0.01, "the drag did not move the minimum")
+                #expect(abs(manager.adaptiveMin - (0.2 + 40.0 / LiveSlider.usableWidth)) < 0.01, "the drag did not move the minimum")
                 #expect(manager.adaptiveMax == 0.8, "the drag moved the maximum")
                 #expect(shown.map { abs(Double($0) - manager.adaptiveMin) < 1e-6 } == true,
                         "the displays do not show the minimum being dragged")
+                // And so does the popover, with the button still down: what the window
+                // server shows is painted in the limit's colour, not the value's.
+                let image = try #require(live.windowImage())
+                let onScreen = try Raster(image: image)
+                let isDark = live.window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                @MainActor func painted(_ intensity: Double) -> Int {
+                    let color = EmberTint.rgb(intensity: intensity, scheme: isDark ? .dark : .light)
+                    let wanted = [Int(color.r.rounded()), Int(color.g.rounded()), Int(color.b.rounded())]
+                    return stride(from: 0, to: onScreen.pixels.count, by: 4).count { index in
+                        (0..<3).allSatisfy { abs(Int(onScreen.pixels[index + $0]) - wanted[$0]) <= 4 }
+                    }
+                }
+                #expect(manager.intensity == 0.8, "the value moved during the drag")
+                #expect(painted(manager.adaptiveMin) > 2000, "the popover is not in the dragged limit's colour")
+                #expect(painted(0.8) == 0, "the popover is still in the value's colour")
                 if let directory = LivePopoverEnvironment.shotDirectory {
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                     try live.raster().writePNG(to: directory.appendingPathComponent("flag-drag.png"))
+                    try onScreen.shown(on: (90, 90, 90)).writePNG(to: directory.appendingPathComponent("flag-drag-window.png"))
                 }
             }
             let shown = fixture.gamma.applyCalls.last?.intensity
@@ -915,6 +1409,41 @@ extension Raster {
             #expect(abs(manager.intensity - 0.8) < 1e-9, "the value moved")
             #expect(shown.map { abs(Double($0) - manager.intensity) < 1e-6 } == true,
                     "the release did not go back to the real value")
+        }
+    }
+
+    /// A press on a flag that does not move still shows its limit, on the displays and in the
+    /// popover's colours, for as long as the button is down. Nothing is changed by it.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aPressOnAFlagPreviewsItsLimitBeforeItMoves() async throws {
+        try inRunLoopTurn {
+            let (fixture, live, _) = try openAuto()
+            defer { live.close(); fixture.retire() }
+            let manager = fixture.manager
+            let flags = try live.flagStops()
+            try #require(flags.count == 4, "found \(flags.count) flag stops")
+            let before = fixture.settings
+            // Colour temp minimum (20 %), its maximum (80 %, where the value rests), then the
+            // white point's minimum.
+            for (index, expected) in [(0, manager.adaptiveMin), (1, manager.adaptiveMax)] {
+                try live.drag(from: centre(flags[index]), dx: 0) {
+                    let shown = fixture.gamma.applyCalls.last?.intensity
+                    #expect(shown.map { abs(Double($0) - expected) < 1e-6 } == true,
+                            "flag \(index) held still: the displays show \(String(describing: shown)), not \(expected)")
+                    #expect(manager.shownIntensity == expected)
+                }
+                #expect(manager.shownIntensity == manager.intensity, "the release did not end the preview")
+                let shown = fixture.gamma.applyCalls.last?.intensity
+                #expect(shown.map { abs(Double($0) - manager.intensity) < 1e-6 } == true)
+            }
+            try live.drag(from: centre(flags[2]), dx: 0) {
+                let shown = fixture.gamma.applyCalls.last?.whitepoint
+                #expect(shown.map { abs(Double($0) - manager.adaptiveWpMin) < 1e-6 } == true,
+                        "the white point's minimum held still shows \(String(describing: shown))")
+                #expect(manager.shownWhitepoint == manager.adaptiveWpMin)
+            }
+            #expect(manager.shownWhitepoint == manager.whitepoint)
+            #expect(fixture.settings == before, "a press that did not move changed a setting")
         }
     }
 
@@ -934,7 +1463,7 @@ extension Raster {
             try #require(start > 0.25 && start < 0.7, "the evening is not partway down the band: \(start)")
             let flags = try live.flagStops()
             let target = start + 0.1
-            try live.drag(from: centre(flags[0]), dx: CGFloat(target - 0.2) * 254, steps: 8)
+            try live.drag(from: centre(flags[0]), dx: CGFloat(target - 0.2) * CGFloat(LiveSlider.usableWidth), steps: 8)
             note("flags: minimum dragged past the value \(start): \(fixture.settings[3])")
             #expect(manager.adaptiveMin > start, "the minimum did not pass the value")
             #expect(manager.intensity >= manager.adaptiveMin - 1e-9, "the value did not follow the minimum")
@@ -1014,9 +1543,21 @@ extension Raster {
             try live.key(.tab)
             try live.key(.end)
             #expect(manager.adaptiveMax == 1, "End did not take the maximum to 100 %")
+            // Home takes the maximum as far down as it goes: onto the minimum, one fixed value.
             try live.key(.home)
-            #expect(abs(manager.adaptiveMax - 0.15) < 1e-9, "the maximum came closer than 5 %: \(manager.adaptiveMax)")
+            #expect(manager.adaptiveMax == manager.adaptiveMin && abs(manager.adaptiveMax - 0.1) < 1e-9,
+                    "Home did not merge the maximum with the minimum: \(manager.adaptiveMax)")
             #expect(manager.intensity == manager.adaptiveMax, "Auto did not land in the new range at once")
+            // One step back up opens the band by the gap, never by less; the next is 1 %.
+            try live.key(.right)
+            #expect(abs(manager.adaptiveMax - 0.15) < 1e-9 && abs(manager.adaptiveMin - 0.1) < 1e-9,
+                    "Right did not open the band by the gap: \(manager.adaptiveMin)…\(manager.adaptiveMax)")
+            try live.key(.right)
+            #expect(abs(manager.adaptiveMax - 0.16) < 1e-9, "Right did not raise the maximum by 1 %")
+            // And back down: 1 %, then across the gap onto the minimum again.
+            try live.key(.left)
+            try live.key(.left)
+            #expect(manager.adaptiveMax == manager.adaptiveMin, "Left at the gap did not merge the limits")
         }
     }
 
@@ -1056,7 +1597,10 @@ extension Raster {
             }
             @MainActor func colorGrabber() throws -> CGFloat { try grabberHeight(color, manager.intensity, Self.colorRange) }
             @MainActor func whiteGrabber() throws -> CGFloat { try grabberHeight(white, manager.whitepoint, Self.whiteRange) }
-            let rest = 14.5...17.0
+            // Drawn a fraction taller or shorter than its size, by the antialiasing at its ends.
+            let restHeight = EmberSlider.grabberSize(.rest).height
+            let rest = (restHeight - 1.5)...(restHeight + 1)
+            let focusedFloor = EmberSlider.grabberSize(.focused).height - 2
 
             let loop = live.keyViewLoop()
             note("focus on open: first responder \(live.focusDescription); keyboard navigation "
@@ -1068,7 +1612,7 @@ extension Raster {
             let startsOnRoot = live.window.firstResponder === live.scroll
             try #require(startsOnRoot, "the first responder is \(live.focusDescription)")
             let atOpen = (try colorGrabber(), try whiteGrabber())
-            note("focus on open: grabbers drawn \(atOpen.0) and \(atOpen.1) pt tall (rest 16, focused 22)")
+            note("focus on open: grabbers drawn \(atOpen.0) and \(atOpen.1) pt tall (rest \(restHeight), focused \(EmberSlider.grabberSize(.focused).height))")
             #expect(rest.contains(atOpen.0) && rest.contains(atOpen.1), "a grabber is not at rest")
 
             // Space and the arrows change nothing there, and nothing shows focus after them.
@@ -1083,12 +1627,12 @@ extension Raster {
             // The first Tab goes to the colour temp slider, which shows its focus. The arrows
             // move it by 1 % and leave the limits; End and Home take it to the ends, moving
             // the limit in the way.
-            try #require(loop.count >= 7)
+            try #require(loop.count >= 6)
             try live.key(.tab)
             #expect(live.focusFrame == color.pill, "the first Tab went to \(live.focusDescription)")
             let focused = try colorGrabber()
             note("focus: after Tab the colour temp grabber is drawn \(focused) pt tall")
-            #expect(focused > 20, "the grabber does not show the focus Tab gave it")
+            #expect(focused > focusedFloor, "the grabber does not show the focus Tab gave it")
             try live.key(.left)
             note("focus: Left on the colour temp: \(fixture.settings[3])")
             #expect(abs(manager.intensity - 0.79) < 1e-9, "Left did not lower the value by 1 %")
@@ -1105,17 +1649,18 @@ extension Raster {
             #expect(manager.intensity == 0.0 && manager.adaptiveMin == 0.0, "Home did not reach 0 %")
             try live.key(.end)
 
-            // Tab goes round every stop once and comes back: both sliders with their flags, and
-            // the bedtime field. (With keyboard navigation on, the buttons as well.)
+            // Tab goes round every stop once and comes back: both sliders with their flags.
+            // (With keyboard navigation on, the buttons as well.)
             // The keys above moved the flags: the stops as they are now.
             let loopNow = live.keyViewLoop()
             let stops = try tabRound(live) { stop in
                 guard stop == white.pill else { return }
-                #expect(try whiteGrabber() > 20, "the white point grabber does not show the focus Tab gave it")
+                #expect(try whiteGrabber() > focusedFloor, "the white point grabber does not show the focus Tab gave it")
                 #expect(rest.contains(try colorGrabber()), "the colour temp grabber still shows focus")
                 let whitepoint = manager.whitepoint
                 try live.key(.left)
-                #expect(abs(manager.whitepoint - (whitepoint - 0.01)) < 1e-9,
+                // One percent of the white point's own scale, 0.25 to 1.
+                #expect(abs(manager.whitepoint - (whitepoint - 0.0075)) < 1e-9,
                         "Left on the white point did not lower it by 1 %")
                 try live.key(.right)
             }
@@ -1123,8 +1668,8 @@ extension Raster {
             #expect(Set(stops.map { "\($0)" }) == Set(loopNow.map { "\($0)" }), "Tab did not visit every stop")
             #expect(stops.count == loopNow.count, "Tab visited a stop twice in one round")
             #expect(stops.filter { $0 == color.pill }.count == 1 && stops.filter { $0 == white.pill }.count == 1)
-            let picker = try #require(live.views().compactMap { $0 as? NSDatePicker }.first)
-            #expect(stops.contains(live.frame(of: picker)))
+            // The bedtime field is on the Settings page now: none of these stops is it.
+            #expect(live.views().compactMap { $0 as? NSDatePicker }.isEmpty)
         }
     }
 
@@ -1165,7 +1710,7 @@ extension Raster {
             let loop = live.keyViewLoop()
             let stops = try tabRound(live)
             note("focus pinned: Tab stops \(loop), a round visited \(stops)")
-            try #require(loop.count >= 7)
+            try #require(loop.count >= 6)
             #expect(Set(stops.map { "\($0)" }) == Set(loop.map { "\($0)" }), "Tab did not visit every stop")
             #expect(stops.count == Set(loop.map { "\($0)" }).count, "Tab visited a stop twice in one round")
         }
@@ -1260,7 +1805,8 @@ extension Raster {
         try inRunLoopTurn {
             let fixture = LivePopoverFixture.auto()
             defer { fixture.retire() }
-            let live = try LivePopover(fixture.view())
+            // "Deepest by" is at the top of the Settings page.
+            let live = try LivePopover(fixture.view(page: .settings))
             defer { live.close() }
             let picker = try #require(live.views().compactMap { $0 as? NSDatePicker }.first)
             let frame = live.frame(of: picker)
