@@ -512,3 +512,36 @@ import Testing
         #expect(gamma.applyCalls.last.map { abs(Double($0.intensity) - manager.intensity) < 1e-6 } == true)
     }
 }
+
+@Suite struct FlagBubbleTests {
+    let chip = CGRect(x: 0, y: 6, width: 40, height: 16)
+
+    @Test func aTipInTheMiddleLeavesBothCornersRound() {
+        let corners = FlagBubble.topCorners(chip: chip, tipX: 20)
+        #expect(corners.leading == EmberFlagFace.chipRadius)
+        #expect(corners.trailing == EmberFlagFace.chipRadius)
+    }
+
+    @Test func theCornerATipReachesSquaresOffSoTheyJoin() {
+        // Base clear of the corner: still round.
+        #expect(FlagBubble.topCorners(chip: chip, tipX: 12).leading == EmberFlagFace.chipRadius)
+        // Base reaching into the corner: the radius shrinks with it.
+        #expect(FlagBubble.topCorners(chip: chip, tipX: 8).leading == 3)
+        // At or past the chip's side: square, the tip runs into the side.
+        #expect(FlagBubble.topCorners(chip: chip, tipX: 4).leading == 0)
+        #expect(FlagBubble.topCorners(chip: chip, tipX: -3).leading == 0)
+        // The same on the other side; the far corner stays round.
+        let end = FlagBubble.topCorners(chip: chip, tipX: 38)
+        #expect(end.trailing == 0 && end.leading == EmberFlagFace.chipRadius)
+    }
+
+    @Test func theBubbleIsOnePieceFromTipToChip() {
+        let corners = FlagBubble.topCorners(chip: chip, tipX: 2)
+        let path = FlagBubble(chip: chip, tipX: 2, leading: corners.leading, trailing: corners.trailing)
+            .path(in: CGRect(x: 0, y: 0, width: 40, height: 22))
+        // The apex and the chip's top-left corner are both inside one closed shape.
+        #expect(path.contains(CGPoint(x: 2, y: 2)))
+        #expect(path.contains(CGPoint(x: 0.5, y: 6.5)))
+        #expect(path.contains(CGPoint(x: 20, y: 14)))
+    }
+}

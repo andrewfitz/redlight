@@ -172,6 +172,7 @@ struct EmberSliderFlags: View {
     @State private var showsFocus = false
 
     @Environment(\.emberPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let face = EmberFlagFace(lower: lower, upper: upper, range: range, width: width)
@@ -301,16 +302,19 @@ struct EmberSliderFlags: View {
         return chip.bound == nil || chip.bound == focused
     }
 
-    /// A chip and its tip. Lit while dragged: the text colour, its label in the panel's colour.
+    /// A chip and its tip, drawn as one bubble. Lit while dragged: the text colour, its label
+    /// in the panel's colour.
     private func flag(_ chip: EmberFlagFace.Chip) -> some View {
         let active = isActive(chip)
         let fill = active ? palette.text : palette.fillStrong
         let shape = RoundedRectangle(cornerRadius: EmberFlagFace.chipRadius, style: .continuous)
+        let corners = FlagBubble.topCorners(chip: chip.frame, tipX: chip.tipX)
         return ZStack(alignment: .topLeading) {
-            FlagTip()
+            FlagBubble(chip: chip.frame, tipX: chip.tipX, leading: corners.leading, trailing: corners.trailing)
                 .fill(fill)
-                .frame(width: EmberFlagFace.tipSize.width, height: EmberFlagFace.tipSize.height)
-                .position(x: chip.tipX, y: EmberFlagFace.tipSize.height / 2)
+                // Only the corners animate: the tip follows the pointer exactly, and the corner
+                // it reaches eases square so the two join, like bubbles meeting.
+                .animation(reduceMotion ? nil : .spring(duration: 0.22, bounce: 0.2), value: corners)
             Text(chip.text)
                 .font(.ember(EmberFlagFace.fontSize, active ? .semibold : .regular))
                 .monospacedDigit()
@@ -318,7 +322,6 @@ struct EmberSliderFlags: View {
                 .fixedSize()
                 .foregroundStyle(active ? palette.background.color : palette.secondary)
                 .frame(width: chip.width, height: EmberFlagFace.chipHeight)
-                .background(shape.fill(fill))
                 .emberFocusHalo(shape, isFocused: isFocusShown(chip), spread: 3)
                 .position(x: chip.centerX, y: chip.frame.midY)
         }
@@ -326,13 +329,62 @@ struct EmberSliderFlags: View {
     }
 }
 
-/// A flag's tip: a small triangle pointing up.
-private struct FlagTip: Shape {
+/// A flag's chip and tip as one shape. The tip points at its limit wherever that is. When the
+/// limit nears an end of the chip, as it does at the ends of the scale where the chip is held
+/// inside the row, the chip's top corner on that side squares off so the tip runs straight
+/// into the chip's side and the two stay one piece. A tip beyond the chip's edge, as when two
+/// close flags are pushed apart, leans out from the corner.
+struct FlagBubble: Shape {
+    struct Corners: Equatable {
+        var leading: CGFloat
+        var trailing: CGFloat
+    }
+
+    let chip: CGRect
+    let tipX: CGFloat
+    var leading: CGFloat
+    var trailing: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(leading, trailing) }
+        set { leading = newValue.first; trailing = newValue.second }
+    }
+
+    private static let radius = EmberFlagFace.chipRadius
+    private static let half = EmberFlagFace.tipSize.width / 2
+    private static let tipHeight = EmberFlagFace.tipSize.height
+
+    /// The top corners' radii for a tip at `tipX`: full while the tip's base clears the
+    /// corner, shrinking to square as the base reaches the chip's side.
+    static func topCorners(chip: CGRect, tipX: CGFloat) -> Corners {
+        func corner(_ room: CGFloat) -> CGFloat { min(radius, max(0, room - half)) }
+        return Corners(leading: corner(tipX - chip.minX), trailing: corner(chip.maxX - tipX))
+    }
+
     func path(in rect: CGRect) -> Path {
+        let r = Self.radius, top = chip.minY, bottom = chip.maxY
+        let left = chip.minX, right = chip.maxX
+        let apexX = tipX
+        // The tip's base sits on the chip's top edge, between the two top corners.
+        let baseLeft = min(max(apexX - Self.half, left + leading), right - trailing)
+        let baseRight = max(min(apexX + Self.half, right - trailing), left + leading)
         var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.move(to: CGPoint(x: left, y: bottom - r))
+        path.addLine(to: CGPoint(x: left, y: top + leading))
+        if leading > 0 {
+            path.addQuadCurve(to: CGPoint(x: left + leading, y: top), control: CGPoint(x: left, y: top))
+        }
+        path.addLine(to: CGPoint(x: baseLeft, y: top))
+        path.addLine(to: CGPoint(x: apexX, y: top - Self.tipHeight))
+        path.addLine(to: CGPoint(x: baseRight, y: top))
+        path.addLine(to: CGPoint(x: right - trailing, y: top))
+        if trailing > 0 {
+            path.addQuadCurve(to: CGPoint(x: right, y: top + trailing), control: CGPoint(x: right, y: top))
+        }
+        path.addLine(to: CGPoint(x: right, y: bottom - r))
+        path.addQuadCurve(to: CGPoint(x: right - r, y: bottom), control: CGPoint(x: right, y: bottom))
+        path.addLine(to: CGPoint(x: left + r, y: bottom))
+        path.addQuadCurve(to: CGPoint(x: left, y: bottom - r), control: CGPoint(x: left, y: bottom))
         path.closeSubpath()
         return path
     }
