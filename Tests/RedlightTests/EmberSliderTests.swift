@@ -525,8 +525,8 @@ import Testing
     @Test func theCornerATipReachesSquaresOffSoTheyJoin() {
         // Base clear of the corner: still round.
         #expect(FlagBubble.topCorners(chip: chip, tipX: 12).leading == EmberFlagFace.chipRadius)
-        // Base reaching into the corner: the radius shrinks with it.
-        #expect(FlagBubble.topCorners(chip: chip, tipX: 8).leading == 3)
+        // Close to the side: the corner squares off and the tail rises out of the side.
+        #expect(FlagBubble.topCorners(chip: chip, tipX: 8).leading == 0)
         // At or past the chip's side: square, the tip runs into the side.
         #expect(FlagBubble.topCorners(chip: chip, tipX: 4).leading == 0)
         #expect(FlagBubble.topCorners(chip: chip, tipX: -3).leading == 0)

@@ -357,17 +357,51 @@ struct FlagBubble: Shape {
     /// The top corners' radii for a tip at `tipX`: full while the tip's base clears the
     /// corner, shrinking to square as the base reaches the chip's side.
     static func topCorners(chip: CGRect, tipX: CGFloat) -> Corners {
-        func corner(_ room: CGFloat) -> CGFloat { min(radius, max(0, room - half)) }
-        return Corners(leading: corner(tipX - chip.minX), trailing: corner(chip.maxX - tipX))
+        Corners(leading: isNear(tipX - chip.minX) ? 0 : radius,
+                trailing: isNear(chip.maxX - tipX) ? 0 : radius)
     }
+
+    /// A tip this close to the chip's side moves its foot onto that side: the corner squares
+    /// off and the tail rises out of the side, as a chat bubble's does.
+    static func isNear(_ room: CGFloat) -> Bool { room < radius + half }
+
+    /// A chat-bubble tail from one foot on the chip's top edge to the other: each flank rises
+    /// from the edge in a soft inward curve, and the point is rounded. A flank whose foot is at
+    /// the chip's side (its corner squared off) rises straight up out of that side instead, so
+    /// the side and the tail read as one smooth line.
+    static func addTail(to path: inout Path, from footL: CGFloat, to footR: CGFloat, apexX: CGFloat,
+                        top: CGFloat, leftFlush: Bool, rightFlush: Bool) {
+        let apex = CGPoint(x: apexX, y: top - tipHeight)
+        let leftControl = leftFlush
+            ? CGPoint(x: footL, y: top - tipHeight * 0.6)
+            : CGPoint(x: footL + (apexX - footL) * 0.55, y: top)
+        let rightControl = rightFlush
+            ? CGPoint(x: footR, y: top - tipHeight * 0.6)
+            : CGPoint(x: footR - (footR - apexX) * 0.55, y: top)
+        // Stop each flank short of the point and round the point between them.
+        func toward(_ point: CGPoint, by distance: CGFloat) -> CGPoint {
+            let dx = point.x - apex.x, dy = point.y - apex.y
+            let length = max(0.001, (dx * dx + dy * dy).squareRoot())
+            let step = min(distance, length / 2)
+            return CGPoint(x: apex.x + dx / length * step, y: apex.y + dy / length * step)
+        }
+        path.addQuadCurve(to: toward(leftControl, by: tipRounding), control: leftControl)
+        path.addQuadCurve(to: toward(rightControl, by: tipRounding), control: apex)
+        path.addQuadCurve(to: CGPoint(x: footR, y: top), control: rightControl)
+    }
+
+    /// How far back from the point the rounding starts.
+    private static let tipRounding: CGFloat = 1.8
 
     func path(in rect: CGRect) -> Path {
         let r = Self.radius, top = chip.minY, bottom = chip.maxY
         let left = chip.minX, right = chip.maxX
         let apexX = tipX
         // The tip's base sits on the chip's top edge, between the two top corners.
-        let baseLeft = min(max(apexX - Self.half, left + leading), right - trailing)
-        let baseRight = max(min(apexX + Self.half, right - trailing), left + leading)
+        // Near a side, the foot rides the corner as it squares off, so the join animates with it.
+        let nearLeft = Self.isNear(apexX - left), nearRight = Self.isNear(right - apexX)
+        let baseLeft = nearLeft ? left + leading : min(max(apexX - Self.half, left + leading), right - trailing)
+        let baseRight = nearRight ? right - trailing : max(min(apexX + Self.half, right - trailing), left + leading)
         var path = Path()
         path.move(to: CGPoint(x: left, y: bottom - r))
         path.addLine(to: CGPoint(x: left, y: top + leading))
@@ -375,8 +409,8 @@ struct FlagBubble: Shape {
             path.addQuadCurve(to: CGPoint(x: left + leading, y: top), control: CGPoint(x: left, y: top))
         }
         path.addLine(to: CGPoint(x: baseLeft, y: top))
-        path.addLine(to: CGPoint(x: apexX, y: top - Self.tipHeight))
-        path.addLine(to: CGPoint(x: baseRight, y: top))
+        Self.addTail(to: &path, from: baseLeft, to: baseRight, apexX: apexX, top: top,
+                     leftFlush: nearLeft, rightFlush: nearRight)
         path.addLine(to: CGPoint(x: right - trailing, y: top))
         if trailing > 0 {
             path.addQuadCurve(to: CGPoint(x: right, y: top + trailing), control: CGPoint(x: right, y: top))
