@@ -516,32 +516,33 @@ import Testing
 @Suite struct FlagBubbleTests {
     let chip = CGRect(x: 0, y: 6, width: 40, height: 16)
 
-    @Test func aTipInTheMiddleLeavesBothCornersRound() {
-        let corners = FlagBubble.topCorners(chip: chip, tipX: 20)
-        #expect(corners.leading == EmberFlagFace.chipRadius)
-        #expect(corners.trailing == EmberFlagFace.chipRadius)
+    @Test func aTipInTheMiddleIsAnArrow() {
+        #expect(FlagBubble.hooks(chip: chip, tipX: 20) == FlagBubble.Hooks(leading: 0, trailing: 0))
+        #expect(FlagBubble.hooks(chip: chip, tipX: 12) == FlagBubble.Hooks(leading: 0, trailing: 0))
     }
 
-    @Test func theCornerATipReachesSquaresOffSoTheyJoin() {
-        // Base clear of the corner: still round.
-        #expect(FlagBubble.topCorners(chip: chip, tipX: 12).leading == EmberFlagFace.chipRadius)
-        // Close to the side: the corner squares off and the tail rises out of the side.
-        #expect(FlagBubble.topCorners(chip: chip, tipX: 8).leading == 0)
-        // At or past the chip's side: square, the tip runs into the side.
-        #expect(FlagBubble.topCorners(chip: chip, tipX: 4).leading == 0)
-        #expect(FlagBubble.topCorners(chip: chip, tipX: -3).leading == 0)
-        // The same on the other side; the far corner stays round.
-        let end = FlagBubble.topCorners(chip: chip, tipX: 38)
-        #expect(end.trailing == 0 && end.leading == EmberFlagFace.chipRadius)
+    @Test func nearASideTheTailBecomesAChatBubbleTailOnThatSide() {
+        #expect(FlagBubble.hooks(chip: chip, tipX: 8) == FlagBubble.Hooks(leading: 1, trailing: 0))
+        #expect(FlagBubble.hooks(chip: chip, tipX: -3) == FlagBubble.Hooks(leading: 1, trailing: 0))
+        #expect(FlagBubble.hooks(chip: chip, tipX: 38) == FlagBubble.Hooks(leading: 0, trailing: 1))
     }
 
-    @Test func theBubbleIsOnePieceFromTipToChip() {
-        let corners = FlagBubble.topCorners(chip: chip, tipX: 2)
-        let path = FlagBubble(chip: chip, tipX: 2, leading: corners.leading, trailing: corners.trailing)
+    @Test func aChatBubbleTailRisesStraightOutOfTheChipsSide() {
+        let path = FlagBubble(chip: chip, tipX: 7, leading: 1, trailing: 0)
             .path(in: CGRect(x: 0, y: 0, width: 40, height: 22))
-        // The apex and the chip's top-left corner are both inside one closed shape.
-        #expect(path.contains(CGPoint(x: 2, y: 2)))
+        // The side carries on up into the tail: just inside the side, above the chip's top.
+        #expect(path.contains(CGPoint(x: 0.6, y: 3)))
+        // The inner edge sweeps back down: clear above the chip's top, further along.
+        #expect(!path.contains(CGPoint(x: 8, y: 2)))
+        // The squared corner and the chip's body are filled.
         #expect(path.contains(CGPoint(x: 0.5, y: 6.5)))
         #expect(path.contains(CGPoint(x: 20, y: 14)))
+    }
+
+    @Test func anArrowIsCentredOnItsLimitAndClearOfTheCorners() {
+        let path = FlagBubble(chip: chip, tipX: 20, leading: 0, trailing: 0)
+            .path(in: CGRect(x: 0, y: 0, width: 40, height: 22))
+        #expect(path.contains(CGPoint(x: 20, y: 2)))
+        #expect(!path.contains(CGPoint(x: 0.5, y: 6.3)))
     }
 }

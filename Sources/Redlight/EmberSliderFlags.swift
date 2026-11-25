@@ -308,13 +308,13 @@ struct EmberSliderFlags: View {
         let active = isActive(chip)
         let fill = active ? palette.text : palette.fillStrong
         let shape = RoundedRectangle(cornerRadius: EmberFlagFace.chipRadius, style: .continuous)
-        let corners = FlagBubble.topCorners(chip: chip.frame, tipX: chip.tipX)
+        let hooks = FlagBubble.hooks(chip: chip.frame, tipX: chip.tipX)
         return ZStack(alignment: .topLeading) {
-            FlagBubble(chip: chip.frame, tipX: chip.tipX, leading: corners.leading, trailing: corners.trailing)
+            FlagBubble(chip: chip.frame, tipX: chip.tipX, leading: hooks.leading, trailing: hooks.trailing)
                 .fill(fill)
-                // Only the corners animate: the tip follows the pointer exactly, and the corner
-                // it reaches eases square so the two join, like bubbles meeting.
-                .animation(reduceMotion ? nil : .spring(duration: 0.22, bounce: 0.2), value: corners)
+                // The tail follows the pointer exactly; only its change of shape animates, as it
+                // turns from an arrow into a chat-bubble tail at the chip's side and back.
+                .animation(reduceMotion ? nil : .spring(duration: 0.26, bounce: 0.18), value: hooks)
             Text(chip.text)
                 .font(.ember(EmberFlagFace.fontSize, active ? .semibold : .regular))
                 .monospacedDigit()
@@ -329,13 +329,17 @@ struct EmberSliderFlags: View {
     }
 }
 
-/// A flag's chip and tip as one shape. The tip points at its limit wherever that is. When the
-/// limit nears an end of the chip, as it does at the ends of the scale where the chip is held
-/// inside the row, the chip's top corner on that side squares off so the tip runs straight
-/// into the chip's side and the two stay one piece. A tip beyond the chip's edge, as when two
-/// close flags are pushed apart, leans out from the corner.
+/// A flag's chip and tail as one shape.
+///
+/// Away from the chip's sides the tail is a small arrow with soft flanks and a rounded point,
+/// centred on its limit. When the limit nears a side of the chip, as it does at the ends of the
+/// scale where the chip is held inside the row, or when two close flags are pushed apart, the
+/// tail turns into a chat-bubble tail on that side: the chip's corner squares off, the side runs
+/// straight up into the tail's point, and the inner edge sweeps back down to the chip's top in
+/// one concave curve. `leading` and `trailing` say how far the tail has turned on each side,
+/// 0 to 1, so the change can animate.
 struct FlagBubble: Shape {
-    struct Corners: Equatable {
+    struct Hooks: Equatable {
         var leading: CGFloat
         var trailing: CGFloat
     }
@@ -353,67 +357,74 @@ struct FlagBubble: Shape {
     private static let radius = EmberFlagFace.chipRadius
     private static let half = EmberFlagFace.tipSize.width / 2
     private static let tipHeight = EmberFlagFace.tipSize.height
-
-    /// The top corners' radii for a tip at `tipX`: full while the tip's base clears the
-    /// corner, shrinking to square as the base reaches the chip's side.
-    static func topCorners(chip: CGRect, tipX: CGFloat) -> Corners {
-        Corners(leading: isNear(tipX - chip.minX) ? 0 : radius,
-                trailing: isNear(chip.maxX - tipX) ? 0 : radius)
-    }
-
-    /// A tip this close to the chip's side moves its foot onto that side: the corner squares
-    /// off and the tail rises out of the side, as a chat bubble's does.
-    static func isNear(_ room: CGFloat) -> Bool { room < radius + half }
-
-    /// A chat-bubble tail from one foot on the chip's top edge to the other: each flank rises
-    /// from the edge in a soft inward curve, and the point is rounded. A flank whose foot is at
-    /// the chip's side (its corner squared off) rises straight up out of that side instead, so
-    /// the side and the tail read as one smooth line.
-    static func addTail(to path: inout Path, from footL: CGFloat, to footR: CGFloat, apexX: CGFloat,
-                        top: CGFloat, leftFlush: Bool, rightFlush: Bool) {
-        let apex = CGPoint(x: apexX, y: top - tipHeight)
-        let leftControl = leftFlush
-            ? CGPoint(x: footL, y: top - tipHeight * 0.6)
-            : CGPoint(x: footL + (apexX - footL) * 0.55, y: top)
-        let rightControl = rightFlush
-            ? CGPoint(x: footR, y: top - tipHeight * 0.6)
-            : CGPoint(x: footR - (footR - apexX) * 0.55, y: top)
-        // Stop each flank short of the point and round the point between them.
-        func toward(_ point: CGPoint, by distance: CGFloat) -> CGPoint {
-            let dx = point.x - apex.x, dy = point.y - apex.y
-            let length = max(0.001, (dx * dx + dy * dy).squareRoot())
-            let step = min(distance, length / 2)
-            return CGPoint(x: apex.x + dx / length * step, y: apex.y + dy / length * step)
-        }
-        path.addQuadCurve(to: toward(leftControl, by: tipRounding), control: leftControl)
-        path.addQuadCurve(to: toward(rightControl, by: tipRounding), control: apex)
-        path.addQuadCurve(to: CGPoint(x: footR, y: top), control: rightControl)
-    }
-
+    /// How far along the chip's top a chat-bubble tail's inner edge reaches.
+    private static let hookReach: CGFloat = 11
     /// How far back from the point the rounding starts.
-    private static let tipRounding: CGFloat = 1.8
+    private static let tipRounding: CGFloat = 1.6
+
+    /// Where the tail is a chat-bubble tail: on the side the limit is close to, if either.
+    static func hooks(chip: CGRect, tipX: CGFloat) -> Hooks {
+        let roomLeading = tipX - chip.minX, roomTrailing = chip.maxX - tipX
+        guard min(roomLeading, roomTrailing) < radius + half else { return Hooks(leading: 0, trailing: 0) }
+        return roomLeading <= roomTrailing ? Hooks(leading: 1, trailing: 0) : Hooks(leading: 0, trailing: 1)
+    }
+
+    private struct Tail {
+        var footL: CGFloat, footR: CGFloat, apexX: CGFloat
+        var controlL: CGPoint, controlR: CGPoint
+
+        func mixed(_ other: Tail, _ t: CGFloat) -> Tail {
+            func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * t }
+            func mix(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: mix(a.x, b.x), y: mix(a.y, b.y)) }
+            return Tail(footL: mix(footL, other.footL), footR: mix(footR, other.footR),
+                        apexX: mix(apexX, other.apexX),
+                        controlL: mix(controlL, other.controlL), controlR: mix(controlR, other.controlR))
+        }
+    }
 
     func path(in rect: CGRect) -> Path {
-        let r = Self.radius, top = chip.minY, bottom = chip.maxY
+        let r = Self.radius, h = Self.tipHeight, top = chip.minY, bottom = chip.maxY
         let left = chip.minX, right = chip.maxX
-        let apexX = tipX
-        // The tip's base sits on the chip's top edge, between the two top corners.
-        // Near a side, the foot rides the corner as it squares off, so the join animates with it.
-        let nearLeft = Self.isNear(apexX - left), nearRight = Self.isNear(right - apexX)
-        let baseLeft = nearLeft ? left + leading : min(max(apexX - Self.half, left + leading), right - trailing)
-        let baseRight = nearRight ? right - trailing : max(min(apexX + Self.half, right - trailing), left + leading)
+        let tl = min(1, max(0, leading)), tr = min(1, max(0, trailing))
+
+        // The arrow, centred on the limit and clear of the corners.
+        let apex0 = min(max(tipX, left + r + Self.half), right - r - Self.half)
+        let footL0 = apex0 - Self.half, footR0 = apex0 + Self.half
+        var tail = Tail(footL: footL0, footR: footR0, apexX: apex0,
+                        controlL: CGPoint(x: footL0 + (apex0 - footL0) * 0.55, y: top),
+                        controlR: CGPoint(x: footR0 - (footR0 - apex0) * 0.55, y: top))
+        // A chat-bubble tail on either side.
+        if tl > 0 {
+            tail = tail.mixed(Tail(footL: left, footR: left + Self.hookReach, apexX: left + 0.5,
+                                   controlL: CGPoint(x: left, y: top - h * 0.55),
+                                   controlR: CGPoint(x: left + 3.2, y: top - 0.2)), tl)
+        } else if tr > 0 {
+            tail = tail.mixed(Tail(footL: right - Self.hookReach, footR: right, apexX: right - 0.5,
+                                   controlL: CGPoint(x: right - 3.2, y: top - 0.2),
+                                   controlR: CGPoint(x: right, y: top - h * 0.55)), tr)
+        }
+        let leadR = r * (1 - tl), trailR = r * (1 - tr)
+        let apex = CGPoint(x: tail.apexX, y: top - h)
+        func towardApex(_ point: CGPoint) -> CGPoint {
+            let dx = point.x - apex.x, dy = point.y - apex.y
+            let length = max(0.001, (dx * dx + dy * dy).squareRoot())
+            let step = min(Self.tipRounding, length / 2)
+            return CGPoint(x: apex.x + dx / length * step, y: apex.y + dy / length * step)
+        }
+
         var path = Path()
         path.move(to: CGPoint(x: left, y: bottom - r))
-        path.addLine(to: CGPoint(x: left, y: top + leading))
-        if leading > 0 {
-            path.addQuadCurve(to: CGPoint(x: left + leading, y: top), control: CGPoint(x: left, y: top))
+        path.addLine(to: CGPoint(x: left, y: top + leadR))
+        if leadR > 0.01 {
+            path.addQuadCurve(to: CGPoint(x: left + leadR, y: top), control: CGPoint(x: left, y: top))
         }
-        path.addLine(to: CGPoint(x: baseLeft, y: top))
-        Self.addTail(to: &path, from: baseLeft, to: baseRight, apexX: apexX, top: top,
-                     leftFlush: nearLeft, rightFlush: nearRight)
-        path.addLine(to: CGPoint(x: right - trailing, y: top))
-        if trailing > 0 {
-            path.addQuadCurve(to: CGPoint(x: right, y: top + trailing), control: CGPoint(x: right, y: top))
+        path.addLine(to: CGPoint(x: max(tail.footL, left + leadR), y: top))
+        path.addQuadCurve(to: towardApex(tail.controlL), control: tail.controlL)
+        path.addQuadCurve(to: towardApex(tail.controlR), control: apex)
+        path.addQuadCurve(to: CGPoint(x: min(tail.footR, right - trailR), y: top), control: tail.controlR)
+        path.addLine(to: CGPoint(x: right - trailR, y: top))
+        if trailR > 0.01 {
+            path.addQuadCurve(to: CGPoint(x: right, y: top + trailR), control: CGPoint(x: right, y: top))
         }
         path.addLine(to: CGPoint(x: right, y: bottom - r))
         path.addQuadCurve(to: CGPoint(x: right - r, y: bottom), control: CGPoint(x: right, y: bottom))
