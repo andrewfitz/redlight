@@ -10,9 +10,9 @@ final class DisplayReconfigurationObserver {
     private static var nextID: UInt = 1
     private static let observers = NSMapTable<NSNumber, DisplayReconfigurationObserver>.strongToWeakObjects()
     private let id: UInt
-    private let changed: @MainActor @Sendable (CGDisplayChangeSummaryFlags) -> Void
+    private let changed: @MainActor @Sendable (CGDirectDisplayID, CGDisplayChangeSummaryFlags) -> Void
 
-    init(changed: @escaping @MainActor @Sendable (CGDisplayChangeSummaryFlags) -> Void) {
+    init(changed: @escaping @MainActor @Sendable (CGDirectDisplayID, CGDisplayChangeSummaryFlags) -> Void) {
         self.changed = changed
         id = Self.nextID
         Self.nextID += 1
@@ -37,11 +37,11 @@ final class DisplayReconfigurationObserver {
         return !flags.contains(.beginConfigurationFlag) && !flags.intersection(hardwareChanges).isEmpty
     }
 
-    nonisolated private static let callback: CGDisplayReconfigurationCallBack = { _, flags, context in
+    nonisolated private static let callback: CGDisplayReconfigurationCallBack = { display, flags, context in
         guard let context, DisplayReconfigurationObserver.isHardwareChange(flags) else { return }
         let id = UInt(bitPattern: context)
         DispatchQueue.main.async {
-            observers.object(forKey: NSNumber(value: id))?.changed(flags)
+            observers.object(forKey: NSNumber(value: id))?.changed(display, flags)
         }
     }
 }

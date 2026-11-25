@@ -963,7 +963,11 @@ final class DisplayManager {
             guard names[id] == nil else { return false }
             let name = getDisplayName(id)
             names[id] = name
-            return !name.localizedCaseInsensitiveContains("backstage")
+            guard !Self.isIgnoredDisplayName(name) else {
+                ignoredDisplayIDs.insert(id)
+                return false
+            }
+            return true
         }
         let currentIDs = Set(ids)
         let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
@@ -1273,8 +1277,8 @@ final class DisplayManager {
     // MARK: - System Events
 
     private func startListening() {
-        displayReconfigurationObserver = DisplayReconfigurationObserver { [weak self] flags in
-            self?.handleDisplayReconfiguration(flags)
+        displayReconfigurationObserver = DisplayReconfigurationObserver { [weak self] display, flags in
+            self?.handleDisplayReconfiguration(flags, display: display)
         }
         displayWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
@@ -1335,9 +1339,29 @@ final class DisplayManager {
         scheduleDisplayRecovery()
     }
 
-    func handleDisplayReconfiguration(_ flags: CGDisplayChangeSummaryFlags) {
+    func handleDisplayReconfiguration(_ flags: CGDisplayChangeSummaryFlags, display: CGDirectDisplayID? = nil) {
         guard !isTerminating, DisplayReconfigurationObserver.isHardwareChange(flags) else { return }
+        // A display Redlight never tints, such as an agent's hidden virtual display, comes
+        // and goes without touching the real ones. Recovering would reset every display's
+        // ColorSync table and flash the screens unfiltered for a moment.
+        if let display, isIgnoredDisplay(display) { return }
         scheduleDisplayRecovery()
+    }
+
+    /// Displays left out of the list by name. Remembered by ID, because a display that has
+    /// just been removed no longer has a name to check.
+    @ObservationIgnored private var ignoredDisplayIDs = Set<CGDirectDisplayID>()
+
+    static func isIgnoredDisplayName(_ name: String) -> Bool {
+        name.localizedCaseInsensitiveContains("backstage")
+    }
+
+    private func isIgnoredDisplay(_ id: CGDirectDisplayID) -> Bool {
+        if ignoredDisplayIDs.contains(id) { return true }
+        guard !displays.contains(where: { $0.id == id }) else { return false }
+        guard Self.isIgnoredDisplayName(getDisplayName(id)) else { return false }
+        ignoredDisplayIDs.insert(id)
+        return true
     }
 
     private func scheduleDisplayRecovery() {

@@ -162,6 +162,28 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.restoreAllCount == 2)
     }
 
+    @Test func aHiddenVirtualDisplayComingAndGoingLeavesTheRealDisplaysAlone() {
+        var ids: [CGDirectDisplayID] = [1]
+        let names: [CGDirectDisplayID: String] = [1: "Monitor", 9: "Backstage (agent display)"]
+        let manager = DisplayManager(
+            gamma: mock, getDisplayIDs: { ids }, getDisplayName: { names[$0] ?? "" },
+            getDisplayPersistenceKey: { String($0) }, defaults: freshDefaults(), location: fakeLocation)
+        // Added: no recovery, so no ColorSync reset of the monitor.
+        ids = [1, 9]
+        manager.handleDisplayReconfiguration(.addFlag, display: 9)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 0)
+        // Removed, when its name can no longer be read: still recognised by its ID.
+        ids = [1]
+        manager.handleDisplayReconfiguration(.removeFlag, display: 9)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 0)
+        // A real display's mode change still recovers.
+        manager.handleDisplayReconfiguration(.setModeFlag, display: 1)
+        manager.completeDisplayRecovery()
+        #expect(mock.restoreAllCount == 1)
+    }
+
     @Test func sameIDHardwareModeChangesCoalesceIntoOneRecovery() {
         let manager = makeManager()
         manager.handleDisplayReconfiguration(.setModeFlag)
