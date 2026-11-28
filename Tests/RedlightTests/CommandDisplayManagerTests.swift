@@ -229,7 +229,7 @@ import CoreGraphics
         #expect(manager.commandIsFading)
         uptime = 1
         manager.tickTransitions()
-        #expect(manager.commandTargetOutput == .init(intensity: 0.4, whitepoint: 0.5))
+        #expect(manager.commandTargetOutput == .init(intensity: 0.4, whitepoint: WhitepointScale.output(percent: 33)))
         let midFrame = try #require(gamma.applyCalls.last)
         #expect(abs(Double(midFrame.intensity) - 0.7) < 0.0001)
         manager.completeDisplayTransitions()
@@ -263,7 +263,7 @@ import CoreGraphics
         manager.intensity = 0.7
         let call = try #require(gamma.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
         // The UI tests this token before writing any further values from the old drag.
         if manager.isSliderInteractionCurrent(token) { manager.intensity = 0.1 }
         #expect(manager.intensity == 0.7)

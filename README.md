@@ -1,9 +1,12 @@
 # Redlight
 
-A Mac app that filters and blocks blue light from your screen and reduce brightness without PWM, based on circadian rhythm time of day. Modern alternative to Flux and Iris and Night Shift.
+A Mac app that filters blue light from your screen and reduces brightness without PWM, following the circadian rhythm of your day. A modern alternative to f.lux, Iris and Night Shift.
 
-A new macOS menu bar app with independent control of each display, including Sidecar iPads. Adaptive mode follows the local sun. Control it from
-the popover, keyboard shortcuts, the command line, Siri and Shortcuts, or Control Center.
+A macOS menu bar app with independent control of each display, including Sidecar iPads. Auto follows the local sun. Control it from
+the popover, keyboard shortcuts, the command line, Siri and Shortcuts, Control Center or a Stream Deck.
+
+The tint never shows up in screenshots, screen recordings or screen sharing: they keep your
+screen's true colours (see [Screenshots, recordings and screen sharing](#screenshots-recordings-and-screen-sharing)).
 
 See the [changelog](CHANGELOG.md) for release history.
 
@@ -15,6 +18,11 @@ See the [changelog](CHANGELOG.md) for release history.
 Free open source blue light filter mac app that:
 - goes total red (way past night shift limits)
 - white point reduction
+- saturation down to grayscale
+- color temp as % or as real kelvin, calibrated to your display's profile
+- per-app rules: pause, hold or shift the tint while an app is in front
+- learns how you like it at each time of day
+- invisible to screenshots, screen recording and screen sharing
 - multi monitor support / disable and invert
 - ipad sidecar support
 - dark and light mode toggle
@@ -25,21 +33,25 @@ Free open source blue light filter mac app that:
 - command center and shortcut support
 - assignable keyboard shortcuts
 - cli & command line controllable (ai agent accessible)
+- stream deck plugin
 - no tracking data sent, fully private
 
 ## What it does
 
 **Filter**
 
-- **Color Temp** goes from a normal screen (100%) to pure red (0%), passing through warm orange. Blue drops faster than green, so it never turns purple
+- **Color Temp** goes from a normal screen (100%) to pure red (0%), passing through warm orange. Blue drops faster than green, so it never turns purple. Show it as a percent or in kelvin: 100% is your display's own white, D65 or about 6,500 K on a standard or Apple display
 - **White Point** dims bright areas while leaving darks mostly unchanged, like iOS Reduce White Point but adjustable. It runs from 100% (no reduction) to 0%, the strongest reduction Redlight allows, which still leaves a quarter of the white point so the screen stays readable
+- **Saturation** takes colour out of the screen, down to grayscale at 0%, before the red filter and White point. It has its own switch and is off until you turn it on
 - **Presets**: one-click Day, Warm, Sunset, Night and Late, each fading in over two seconds. In Manual, **Save to a preset…** overwrites a preset with the current sliders
 - **Invert** per display flips light and dark beneath the red filter
+- **Not captured**: screenshots, screen recordings and screen sharing show your true colours, not the tint
 
 **Adaptive**
 
 - Follows the real sun: warming starts before sunset, passes the golden-hour and twilight markers, reaches deepest red at solar midnight, mirrors back through dawn, and clears within about half an hour of sunrise. Your location never leaves your Mac
-- The **sun arc** graphs today's solar elevation and the sun's position, with sunrise and sunset times and your bedtime
+- The **sun arc** graphs today's solar elevation and the sun's position, with sunrise and sunset times and your bedtime. It is drawn in the tint Auto will show at each time of day, as bright as White Point will be then
+- **Learn my adjustments**, in Settings and on by default: Auto learns how you set each slider at each time of day and starts doing it for you, ignores big one-off changes, and moves the limit flags to where you leave them
 - **Deepest by**, in Settings, sets a bedtime: the filter ramps to your deepest setting over the two hours before it, however late the sun sets
 - **Clear by**, in Settings, sets a wake time: the filter is back at its clearest by then, however late the sun rises, and a bedtime holds through the night until it
 - Works at any latitude: under the midnight sun and through the polar night the curve still reaches Day at solar noon and Late at solar midnight
@@ -57,63 +69,51 @@ Free open source blue light filter mac app that:
 **Controls**
 
 - **Pause** suspends the tint for 30 minutes, with the time left counting down in the Pause button. Invert stays on. Other lengths, up to 24 hours or until sunrise, are one click away
-- **Pause for apps** suspends the tint while an app you choose, such as a photo or video editor, is in front
+- **Per-App**: a rule for each app you choose, while it is in front. **Pause** hides the tint for a photo or video editor, **Hold** keeps one setting of its own, **Shift** makes it a little warmer or cooler than the rest
 - **Keyboard shortcuts** that work in any app, with no Accessibility or Input Monitoring permission
 - **Light/dark switch** for the system appearance
-- **Command line**, **Siri and Shortcuts** actions, and a **Control Center** toggle
+- **Command line**, **Siri and Shortcuts** actions, a **Control Center** toggle and a **Stream Deck** plugin
 
 **App**
 
 - Lives in the menu bar only, with no Dock icon
 - Remembers your settings across launches
-- Optional **Launch at Login**, off by default and never registered behind your back
+- **Launch at Login**, on for a new install in Applications (switch it off in Settings and it stays off)
 - **Automatic updates** through Sparkle, plus **Check for updates** in Settings
 
-## New in 1.6
+## New in 2.0
 
-- Type coordinates directly into the menu bar popover and press Return to save. On shorter displays, scroll to reach all the controls.
-- Adjust a focused slider or band limit with the arrow keys. Drag the center of an existing pinned slider to move its fixed value.
-- **Until sunrise** follows the actual sunrise deadline across sleep, relaunch, and clock changes.
-- Display fades reuse calibration samples. Global shortcuts and Control Center toggles handle repeated input more reliably.
+- **Redesign**: a new popover, a setting-sun menu bar icon that shows how deep the filter is, a new app icon, the same colours in light and dark, and slides between Auto, Manual and Settings that stay smooth on fast displays
+- **Saturation**: take colour out of the screen, down to grayscale
+- **Kelvin**: show Color Temp as the colour temperature your display actually shows, calibrated to its colour profile, and set it as `redlight color 3400K`
+- **Per-App** rules on the popover: Pause, Hold or Shift the tint while an app is in front
+- **Learn my adjustments**: Auto learns how you set each slider at each time of day
+- **Clear by**: a wake time for Auto, alongside Deepest by
+- **Keep Night Shift off**, so the two tints do not stack
+- **Stream Deck** plugin with Toggle, Pause / Peek, Preset, Adjust and Status keys
+- White Point now runs from 0 to 100%, and Auto works at any latitude
 
-## New in 1.5
-
-- **Pause for apps**: the tint steps aside while color-critical apps are in front, and returns when you switch away
-- **Pause lengths**: 30 minutes, 1 hour, 2 hours or until sunrise from the popover; any length from the command line and Shortcuts
-- **Bedtime for Adaptive**: reach your deepest setting by a set time, whatever the sun is doing
-- **Manual location** for Macs that cannot get a fix, or if you prefer not to share Location
-- **Next solar event** countdown under the Adaptive status
-- **Presets fade** over two seconds instead of jumping
-- New commands: `redlight pause 90`, `redlight pause until sunrise`, `redlight location`, `redlight adaptive bedtime` and `redlight apps`
-
-## New in 1.4
-
-- **Sidecar support**: iPads are filtered in the Mac's compositor, including the pointer
-- **Pause** for 30 minutes from a button beside the main switch
-- **Keyboard shortcuts** for on/off, Pause, Warmer/Cooler, White Point, Light/Dark, Adaptive and each preset
-- **Command line steps and pause**: `redlight color down 5`, `redlight pause`, `redlight resume`
-- **Siri**: “Pause Redlight”, “Resume Redlight”, and “Make Redlight warmer” (or cooler, dimmer, brighter)
-- **Smoother sliders**: clicking the track moves the value, and limits no longer stick after release
-- **Fixed values under Adaptive**: set equal minimum and maximum limits to pin a value
-- The Color slider is now called **Color Temp**
+See the [changelog](CHANGELOG.md) for everything, and for earlier releases.
 
 ## Using it
 
-Click the menu bar icon (a setting sun) to open the popover. The sun is an outlined ring
-when no filter or inversion is showing. While one is, it is solid, with one line across it
-for Day and Warm, two for Sunset and Night, and three for Late. The part of the sun under
-each line is drawn at half strength. With only Invert showing it is solid with no line.
+Click the menu bar icon (a setting sun) to open the popover. The sun is whole when there is
+no filter to show: when Redlight is off, when Color temp is at 100%, and when only Invert is
+showing. From 99% down it has one line across it, from 66% two, and from 33% three. Under the lines is the sea, drawn faded: with each line the sun above is a little
+smaller and the sea a little wider, like a sun going down over the water.
 
 - The header switch turns the filter off everywhere, then back on for the displays you had enabled
 - Your displays are listed at the top: switch each one on or off, and click **Invert** to flip its colors
 - Choose **Auto** to let the sun drive the filter, or **Manual** to hold a setting
 - In **Auto**, the sun arc shows the day. Drag **Color Temp** to remove blue and green light and **White Point** to reduce peak brightness. Press anywhere on a slider to set it there; drag to either end for exactly 0% or 100%. The flags under each slider are Auto's minimum and maximum: drag one to change it, or onto the other to fix the slider at one value
-- The sliders are filled with the color they set: Color Temp from white at 100% to red at 0% (in dark appearance), and White Point in the same color, dimmer and less vivid the lower it goes
+- The sliders are filled with the color they set: Color Temp from white at 100% to red at 0%, and White Point in the same color, dimmer and less vivid the lower it goes. Light and dark appearance use the same colors
+- **Saturation**, under White Point, has its own switch: turn it on, then drag toward 0% for less color, down to grayscale
 - In **Manual**, click a preset to jump to it, or drag the sliders. **Save to a preset…** turns the presets into overwrite targets
 - A reset button (a circular arrow) appears beside a slider's value when it differs from the default; it restores the value and clears its limits
 - The **pause** button beside the header switch suspends the tint for 30 minutes and turns into a play button that resumes it. Its chevron offers 1 hour, 2 hours and Until sunrise
 - The moon or sun button beside it switches the system appearance
-- **Settings** at the bottom opens location for Auto, Launch at login, Update automatically, Pause for apps, Keyboard shortcuts, updates, About and Quit. It says **Update available** when an update is waiting, and shows a dot when a login item needs approval
+- **Per-App**, above Settings, shows the icons of the apps with a rule. Click it to change their rules or add another app
+- **Settings** at the bottom opens Deepest by, Clear by, Learn my adjustments, location for Auto, **Show color temp as** % or K, Launch at login, Update automatically, Keep Night Shift off, Keyboard shortcuts, updates, About and Quit. It says **Update available** when an update is waiting, and shows a dot when a login item needs approval
 - Press Tab to move between controls, the arrow keys to adjust a focused slider (Shift for 10% steps, Home and End for the ends), and Esc to close the popover
 
 ### Pause
@@ -124,21 +124,70 @@ survives sleep and relaunch. A fixed-duration pause lasts from 1 minute to 24 ho
 clock change cannot extend it beyond the length you chose. **Until sunrise** needs a
 location and looks up to 25 hours ahead to allow for changes in sunrise time between days.
 
-While paused, Control Center and `redlight status` show off. The menu bar icon becomes an
-outlined ring once the fade finishes unless a display still uses Invert. Turning Redlight on ends the pause.
+While paused, Control Center and `redlight status` show off. The menu bar icon becomes the
+whole sun once the fade finishes. Turning Redlight on ends the pause.
 Slider and preset changes made while paused are saved and appear on resume. Pause is unavailable while Redlight is off.
 
-### Pause for apps
+### Saturation
 
-Open **Pause for apps** in Settings and add any running app. While a chosen app is in
-front, the tint fades out and the header shows “Off for” and its name; it fades back
-when you switch to another app. Invert stays on. The menu bar icon becomes an outlined ring
-unless a display uses Invert.
+**Saturation** sits under White Point with a switch of its own. Turn it on and drag the
+slider toward 0% to take colour out of everything on the screen, down to grayscale; 100% is
+full colour. It works before the red filter and White Point, so a grayscale screen is then
+tinted like any other. Turning the switch off keeps the level for next time. From the
+command line: `redlight saturation on`, `redlight saturation 40`, `redlight saturation down 10`.
 
-Unlike Pause, this does not count as off: Control Center and `redlight status` still show
-on, and turning Redlight off and on again while the app is in front leaves the tint
-suspended. Pause works independently. Slider, preset and Adaptive changes made meanwhile
-appear when the suspension ends.
+### Color temp in kelvin
+
+Under **Units** in Settings, **Show color temp as** switches Color Temp and its limit flags
+between a percent and kelvin. Kelvin is worked out for your display, not looked up in a table: Redlight
+takes the colour it sends the display at each setting through the display's own ColorSync
+profile and finds the nearest colour temperature on the blackbody curve. 100% is the
+display's own white, which is D65, about 6,500 K, on standard and Apple displays. 0% is the
+display's red primary, near the curve's red end: about 990 K on an sRGB display, 820 K on
+Display P3 and lower on wider-gamut displays. The command line takes kelvin too
+(`redlight color 3400K`, `redlight limits color 1200K 5000K`), and `redlight status` shows
+it beside the percent.
+
+### Per-App
+
+Open **Per-App** on the popover, above Settings, and add any running app; it starts with
+**Pause**. Pick its rule beside its name:
+
+- **Pause**: the tint fades out while the app is in front, and the header shows “Off for”
+  and its name. Invert stays on and the menu bar icon becomes the whole sun. Unlike Pause in
+  the header, this does not count as off: Control Center and `redlight status` still show on,
+  and turning Redlight off and on again while the app is in front leaves the tint hidden.
+- **Hold**: the app gets a Color temp and White point of its own, whatever Auto or Manual
+  is doing. Settings shows both values, each with − and + in steps of 5%.
+- **Shift**: a signed amount is added to whatever Auto or Manual shows, so the app follows
+  the sun a little warmer or cooler than everything else. In Auto it stays inside the limit
+  flags, and a Fixed slider is left alone.
+
+Color temp, white point, and saturation use whole percentages in the sliders, saved presets,
+per-app rules, CLI status, and Shortcuts. Fractional CLI inputs and settings from older
+versions round to the nearest whole percent. Auto and display fades interpolate smoothly.
+
+In either rule, lower **Saturation** below 100% to apply it while the app is in front.
+Set it back to 100% to follow global saturation. For grayscale in just one app, choose
+Shift, leave Color temp and White point at 0, and set Saturation to 0%. The Shift editor
+shows the resulting level and saves the difference from the current global level. The CLI
+and Shortcuts accept that difference directly in percentage points.
+
+Switching to or from an app with a rule fades in 0.4 seconds from what is on screen, however
+quickly you switch. Pause in the header, a held Pause shortcut (peek) and Off still win: a
+peek always shows the screen with no tint. A rule applies to the displays that are on, as
+Pause does.
+
+Open the popover while an app with a Hold or Shift is in front, and the line above the
+sliders says so, for example “Photoshop: Hold”: the sliders now set that app's rule. Choose
+**Edit Auto instead** (or Edit Manual instead) to set Auto or Manual; if the app quits, the
+sliders go back to them. The Warmer, Cooler, Dimmer and Brighter keyboard shortcuts change
+the rule of the app in front too, since a change to Auto would not show under a Hold. The
+command line and Shortcuts never depend on the app in front: `redlight color 40` changes
+Auto or Manual, and a rule changes only with `redlight apps set`.
+
+Changes to Auto or Manual made while an app with a Pause or Hold is in front are kept, and
+show when you switch away; under a Shift they show at once, shifted.
 
 ### Bedtime
 
@@ -162,6 +211,42 @@ With Clear by on, Deepest by holds through the night until the wake time instead
 lifting from solar midnight, and a bedtime after solar midnight counts, as long as it is at
 least an hour before the wake time. A wake time must fall between solar midnight and solar
 noon; one outside that has no effect.
+
+### Learning
+
+**Learn my adjustments** in Settings, on by default, lets Auto learn how you like each
+slider at each time of day. With it on, a slider change in Auto belongs to the part of the
+sun's day you made it in.
+Go redder around sunset on a few evenings and that stretch of the curve stays redder, while
+midday is left alone. Because it follows the sun and not the clock, it moves with the
+seasons and with you to another time zone.
+
+- The first change you make still moves the whole curve, as it does without learning.
+- Where Auto already knows your habit (you have sat through that part of the day on four
+  days or more), a change of more than 8% has to be made on two days to stick. A guest's
+  change or a film night is gone the next morning. A smaller change is kept at once.
+- The limit flags under the sliders follow where you leave the sliders at midday and late at
+  night. Leave
+  Color temp at 90% by day and the max flag moves to 90%: in Auto it then never goes higher.
+  A flag you drag yourself always wins, and pushing the slider past a learned flag lifts it.
+- Only time at the screen counts: not while the tint is paused, an app with a Pause or Hold
+  is in front, the screen is asleep or locked, or nothing has been typed or moved for ten
+  minutes. Time in an app with a Shift counts as if the shift were not there, and changing a
+  rule is never learned.
+- What was learned is applied overnight, at 04:00 or the next time nobody is at the screen
+  (asleep, locked, or half an hour with no input and no video playing), so the picture does
+  not change in front of you. The one exception: if someone is there the whole time, the
+  day closes anyway once it is 12 hours past its 04:00.
+
+Settings draws what was learned: a line for each slider through the twelve parts of the day,
+over a faint line for Auto's own curve, with a dot filled where that part of the day was
+learned. `redlight status` and the Shortcuts status say it in a sentence for each slider.
+**Reset learning** asks first, then forgets both sliders' learning and keeps your limits;
+the reset button beside a slider forgets that slider's learning as well. Neither deletes it:
+the last five resets are kept, and `redlight learn restore` brings back the newest (run it
+again to undo the restore). The sun arc is drawn in
+the tint and brightness Auto will show through the day, so a learned evening or a moved
+limit shows there too.
 
 ### Night Shift
 
@@ -221,9 +306,14 @@ points to the app executable and stops working if you delete the app.
 ```bash
 redlight on
 redlight color 30                # Color Temp, 0–100
+redlight color 3400K             # or as a colour temperature, on the first tinted display
 redlight whitepoint 50           # 0–100; 0 is the strongest reduction Redlight allows
+redlight saturation 0             # 0–100; 0 is grayscale, 100 is full color
 redlight color down 5            # warmer; steps default to 5
 redlight whitepoint up 10
+redlight saturation on           # apply the saved level (off by default)
+redlight saturation up 10
+redlight peek on                 # true colours for a few seconds, as holding Pause does; peek renew keeps them, peek off ends it
 redlight pause                   # 30 minutes
 redlight pause 90                # minutes, 1–1440
 redlight pause until sunrise
@@ -233,15 +323,20 @@ redlight preset save night
 redlight adaptive on
 redlight adaptive bedtime 22:30  # or: off
 redlight adaptive wake 07:00     # or: off
+redlight learn on                # or: off, toggle, reset, restore
 redlight location 51.5 -0.12     # or: auto
 redlight limits color 10 80
+redlight limits color 1200K 5000K    # Color Temp limits in kelvin
 redlight limits whitepoint 30 90
 redlight limits whitepoint 100 100   # pin White Point: Adaptive only changes Color Temp
 redlight display list
 redlight display 2 on
 redlight display "Studio" invert toggle
 redlight display all off
-redlight apps add com.adobe.Photoshop
+redlight apps set com.apple.FinalCut pause
+redlight apps set com.adobe.Photoshop hold 85 90
+redlight apps set com.apple.Safari shift -10 0
+redlight apps set com.apple.Preview shift 0 0 -100  # grayscale, keeping the current warmth and white point
 redlight apps list               # also: remove <bundle-id>, clear
 redlight appearance dark
 redlight login on
@@ -256,8 +351,10 @@ redlight --version
 - Applying a preset turns Adaptive off and fades over two seconds. Setting a level while Adaptive is on shifts its curve within the limits
 - `on`, `toggle` and `resume` end a pause. While paused, `status` reports off and the minutes left
 - `pause <minutes>` while already paused replaces the running pause
-- `apps` takes bundle identifiers. `status` adds “suspended for” and the app's name while a chosen app is in front, and still reports on
+- `apps` takes bundle identifiers. `hold` takes Color temp then White point, 0 to 100; `shift` takes them signed, −100 to 100. Both take an optional third number for saturation. `apps list` prints one app per line, its bundle ID first. While an app with a rule is in front, the status line of `status` ends with its name and rule, such as “ · Photoshop: hold”, and `status` still reports on; `status --json` has it as `activeApp`, and every rule as `appRules`
+- `color`, `whitepoint` and `saturation` and their steps change Auto or Manual, never an app's rule. Saturation runs from grayscale at 0% to full color at 100%, before the red filter and white point. In `status`, `set` is that value and `target` what the displays are given, an app's Hold or Shift included
 - `status --json` reports the location source (`auto`, `manual` or `timeZone`), never the coordinates
+- `status --json` reports learning as `enabled`, the parts of the day learned (`anchors`, and `colorAnchors` and `whitepointAnchors` for each slider) `summary`, a sentence for each slider, and `backups`, the resets `learn restore` can bring back
 - A command that changes settings interrupts a slider drag in progress, so the drag cannot overwrite it
 
 `status`, `off`, `pause` (with or without a length) and `quit` leave a stopped app stopped.
@@ -274,8 +371,8 @@ needed in System Settings → Login Items.
 
 Redlight provides Shortcuts app actions for its commands, including Pause (with an optional
 length, or until sunrise) and Resume, Adjust (warmer, cooler, dimmer or brighter by any
-amount), display selection, preset editing, limits, bedtime, wake time, location, pause for apps,
-system appearance and status. These Siri phrases work out of the box:
+amount, including more or less color), direct saturation control, display selection, preset editing, limits, bedtime, wake time, learning, location,
+app rules (Set, Remove, List and Clear Redlight App Rules), system appearance and status. These Siri phrases work out of the box:
 
 - “Turn on Redlight” / “Turn off Redlight”
 - “Pause Redlight” / “Resume Redlight”
@@ -287,6 +384,36 @@ On macOS 26 or later, open **Control Center → Edit Controls → Add Controls**
 **Redlight**, and add its toggle. It uses the same master switch and can launch the app.
 It shows off while Redlight is paused or has quit, and your display selections are kept
 for next time.
+
+## Stream Deck
+
+The Stream Deck plugin is in [`StreamDeck/`](StreamDeck). Double-click
+`StreamDeck/dist/com.redlight.app.streamdeck.streamDeckPlugin` to install it in the Stream
+Deck app (7.1 or later, on macOS 14 or later), then drag Redlight's actions onto keys:
+
+- **Toggle Redlight**: on or off; the key shows the state and the current values
+- **Pause / Peek**: tap to pause or resume; hold to see true colours until you let go, like
+  the Pause shortcut
+- **Redlight Preset**: Day, Warm, Sunset, Night or Late, chosen in the key's settings
+- **Adjust Redlight**: Color Temp or White Point by a set step per press; on Stream Deck +,
+  turn a dial to adjust and press it to reset
+- **Redlight Status**: a live readout of Color Temp (in kelvin where it has one), White Point,
+  Auto, Pause and the app in front
+
+It works through the `redlight` command, so the command line must be installed (see
+[Command line](#command-line)). To build it: `cd StreamDeck && npm install && npm run build && npm run pack`.
+
+## Screenshots, recordings and screen sharing
+
+The tint is not in the picture other apps get of your screen. On a monitor or a Mac's own
+screen, Color Temp, White Point and Invert live in the display's gamma table, which turns
+pixels into light after macOS has composed the screen, after anything that captures it.
+Saturation's grayscale pass is drawn in a window that macOS leaves out of every capture. So
+screenshots, screen recordings, screen sharing and video calls show your true colours, while
+you see the tint.
+
+The one exception is a **Sidecar iPad**: its picture is the captured screen itself, so its
+tint is drawn into that picture, and a capture of the iPad's screen shows it.
 
 ## Install
 
@@ -317,7 +444,7 @@ REDLIGHT_BUILD_OUTPUT_DIR="$PWD/.build/dist" ./build.sh
 A local build may ask again for Location and Automation permission after each rebuild.
 
 Each build advances its build number automatically. The release version comes from the
-[VERSION](VERSION) file, and About shows both, for example `1.4 (58)`. Set `VERSION=1.5`
+[VERSION](VERSION) file, and About shows both, for example `2.0.0 (127)`. Set `VERSION=2.0.1`
 to override it for one build. CI can set `BUILD_NUMBER` to a positive integer greater than
 the previous build; lower or repeated values are rejected. The counter lives in
 `.build/redlight-build-number.json` and is seeded from Git history and existing Redlight
@@ -366,9 +493,11 @@ REDLIGHT_TEST_POPOVER_KEYBOARD=1 swift test --filter PopoverKeyboardSmokeTests
 ```
 
 Swift tests cover display behavior with mock gamma, Sidecar routing and pointer handling,
-pause and peek, pause for apps, bedtime, manual location, keyboard shortcut validation and dispatch, commands, the parser and
+pause and peek, app rules and their switching fades, bedtime, manual location, keyboard shortcut validation and dispatch, commands, the parser and
 transport, popover and intent parity, slider interaction, installer safeguards, and solar
-calculations and chart geometry. Python tests cover release versions, concurrent
+calculations and chart geometry. Learning is tested against runs of its reference model,
+replayed from `Tests/RedlightTests/Fixtures/LearnedAuto`: through the model alone, and
+through the app with scripted users over several weeks. Python tests cover release versions, concurrent
 build-number allocation, and changelog release notes. `build.sh` verifies both bundles'
 metadata, versions, extension entry point, entitlements and code signatures.
 

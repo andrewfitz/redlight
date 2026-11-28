@@ -27,6 +27,9 @@ struct EmberRGB: Equatable, Sendable {
     static let white = EmberRGB(255, 255, 255)
 
     var color: Color { Color(.sRGB, red: r / 255, green: g / 255, blue: b / 255) }
+    func cgColor(alpha: Double = 1) -> CGColor {
+        CGColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: alpha)
+    }
 
     func opacity(_ alpha: Double) -> Color {
         Color(.sRGB, red: r / 255, green: g / 255, blue: b / 255, opacity: alpha)
@@ -43,6 +46,7 @@ struct EmberRGB: Equatable, Sendable {
 enum EmberTone: Hashable, Sendable {
     /// The accent itself: the colour temp slider.
     case accent
+    case neutral
     /// The accent at a brightness, 0…1: the white point slider. 1 is the accent itself; lower
     /// is dimmer and less vivid, down to `EmberPalette.dimmestFill` at 0.
     case level(Double)
@@ -59,7 +63,7 @@ enum EmberTone: Hashable, Sendable {
 /// `score` is the worse of the two. A cue has to pass both, so candidates are ranked by it.
 enum EmberContrast {
     /// The Late preset's white point. Its colour temp of 0 is what removes green and blue.
-    static let lateWhitepoint = 0.3
+    static let lateWhitepoint = Preset.defaults[4].whitepoint
 
     private static func linear(_ encoded: Double) -> Double {
         encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4)
@@ -169,24 +173,23 @@ enum EmberContrast {
 /// The one accent: a flat colour for the colour-temp value on screen right now.
 /// 1 = unfiltered (white, in dark), 0 = the Late preset (deep red).
 enum EmberTint {
-    private static let dark: [(Double, EmberRGB)] = [
+    /// One scale for both appearances: the colours the displays go through, from a barely warm
+    /// white at 100% through peach and orange to the red of Late. On the pale panel a fill as
+    /// pale as the top of it is given an edge (`EmberPalette.edge(for:)`), as a white control
+    /// is on a light Mac, rather than a darker colour of its own.
+    private static let scale: [(Double, EmberRGB)] = [
         (0, EmberRGB(204, 44, 26)), (0.34, EmberRGB(232, 84, 46)),
-        (0.7, EmberRGB(248, 156, 86)), (1, .white),
+        (0.7, EmberRGB(248, 156, 86)), (1, top),
     ]
-    /// Deeper than the dark scale, and with no white: white does not show on the pale panel,
-    /// and the accent has to stay darker than it. Its red end is as deep as it can go with a
-    /// black mark on it still at 3:1.
-    private static let light: [(Double, EmberRGB)] = [
-        (0, EmberRGB(166, 52, 32)), (0.34, EmberRGB(176, 74, 34)),
-        (0.7, EmberRGB(190, 108, 38)), (1, EmberRGB(196, 146, 48)),
-    ]
+    /// 100%: white with the least warmth, so it reads as white on either panel.
+    static let top = EmberRGB(255, 249, 236)
 
     /// A pale warm tone: what an action fill moves toward when the live accent is too deep
     /// for its label. Not white, so a lifted red stays an ember red and not a pink.
     static let palest = EmberRGB(255, 226, 180)
 
     static func rgb(intensity: Double, scheme: ColorScheme) -> EmberRGB {
-        let stops = scheme == .dark ? dark : light
+        let stops = scale
         let value = intensity.isFinite ? min(1, max(0, intensity)) : 1
         for index in 1..<stops.count where value <= stops[index].0 {
             let (lowerAt, lower) = stops[index - 1]
@@ -261,6 +264,11 @@ struct EmberPalette: Equatable, Sendable {
     var focusRingRGB: EmberRGB { textRGB }
     var focusRing: Color { focusRingRGB.color }
 
+    /// A restrained amber for states that need attention without reading as an error.
+    var warning: Color {
+        (isDark ? EmberRGB(248, 190, 82) : EmberRGB(150, 86, 18)).color
+    }
+
     // MARK: Surfaces as numbers
 
     /// A card, or a slider track, on the panel.
@@ -273,6 +281,9 @@ struct EmberPalette: Equatable, Sendable {
 
     /// The allowed range of a slider: `fillStrong` on the track.
     var sliderBand: EmberRGB { strong(onCard: true) }
+
+    /// `nightArea` on the panel.
+    var nightAreaRGB: EmberRGB { wash.mixed(nightAlpha, over: background) }
 
     // MARK: Marks
 
@@ -316,7 +327,49 @@ struct EmberPalette: Equatable, Sendable {
         return (colors.background.color, colors.foreground.color)
     }
 
+    /// The hairline around a fill that is nearly the colour of what it lies on: the barely
+    /// warm white at the top of the tint scale on the pale panel. Nil where the fill shows by
+    /// itself, and always in dark, where every tint stands out from the panel.
+    func edge(for fill: EmberRGB, on surface: EmberRGB) -> Color? {
+        guard !isDark, EmberContrast.wcag(fill, surface) < Self.edgeBelow else { return nil }
+        return ink.opacity(isIncreasedContrast ? 0.28 : 0.16)
+    }
+
+    /// Below this contrast with what it lies on, a fill in light gets an edge.
+    static let edgeBelow = 1.3
+
+    /// The edge of a slider's fill: where it is too close to the track or to the band of
+    /// Auto's limits to keep `bandWCAG` from either, which only the palest tints are, in light.
+    func sliderEdge(for fill: EmberRGB) -> Color? {
+        guard !isDark,
+              min(EmberContrast.wcag(fill, card), EmberContrast.wcag(fill, sliderBand)) < Self.bandWCAG else { return nil }
+        return ink.opacity(isIncreasedContrast ? 0.28 : 0.16)
+    }
+
     func arcLine(accent: EmberRGB) -> Color { isDark ? accent.color : ink.opacity(0.82) }
+
+    /// The least contrast the sun arc's line keeps on the panel and on the night area once
+    /// White point has dimmed it.
+    static let arcLineContrast = 3.0
+
+    /// The sun arc's line at one time of day: `dimmed`, the white point slider's fill for
+    /// that time's `tint`, brought back toward the tint where it would fall under
+    /// `arcLineContrast` on the panel or the night area. Never brighter than the tint: where
+    /// even the tint falls short, the tint.
+    ///
+    /// In light the tint itself can be as pale as the panel (white by day), so there the line
+    /// is then taken toward the ink until it shows: the same colour, deepened only as far as
+    /// it has to be.
+    func arcLineRGB(dimmed: EmberRGB, tint: EmberRGB) -> EmberRGB {
+        let night = nightAreaRGB
+        func shows(_ color: EmberRGB) -> Bool {
+            EmberContrast.wcag(color, background) >= Self.arcLineContrast
+                && EmberContrast.wcag(color, night) >= Self.arcLineContrast
+        }
+        let line = EmberContrast.lifted(dimmed, toward: tint, until: shows)
+        guard !isDark, !shows(line) else { return line }
+        return EmberContrast.lifted(line, toward: ink, until: shows)
+    }
     func arcDot(accent: EmberRGB) -> Color { isDark ? accent.color : ink.color }
     func arcHalo(accent: EmberRGB) -> Color { accent.opacity(0.3) }
     func dayArea(accent: EmberRGB) -> Color { accent.opacity(isDark ? 0.20 : 0.30) }
@@ -329,6 +382,8 @@ struct EmberPalette: Equatable, Sendable {
         switch tone {
         case .accent:
             return accent
+        case .neutral:
+            return EmberContrast.grey(matching: textRGB.mixed(secondaryAlpha, over: card))
         case .level(let level):
             return accent.mixed(level.isFinite ? level : 1, over: dimmestFill(accent: accent))
         }
@@ -337,27 +392,18 @@ struct EmberPalette: Equatable, Sendable {
     /// The white point slider's fill at the bottom of its range: the accent with less colour
     /// and less light. White becomes a grey; a red becomes a slightly duller, dimmer red.
     ///
-    /// Dark dims toward black. Light has no room to: its accent is already as deep as a mark
-    /// on it allows, so there the fill fades toward the panel instead.
-    ///
-    /// Dark stops dimming where the fill would no longer carry the accent's mark at
-    /// `notchTarget` or would come too close to the band under it. At the red end that is
-    /// early: under Late only red reaches the screen, and a black mark needs a bright red to
-    /// stand on. Light stops fading where the fill would come too close to the band; a mark
-    /// only gains from a paler fill.
+    /// It dims toward black in both appearances, as the tint scale is the same in both, and
+    /// stops where the fill would no longer carry the accent's mark at `notchTarget` or would
+    /// come too close to the band under it. At the red end that is early: under Late only red
+    /// reaches the screen, and a black mark needs a bright red to stand on.
     func dimmestFill(accent: EmberRGB) -> EmberRGB {
         let muted = EmberContrast.grey(matching: accent).mixed(dimMuting, over: accent)
         let band = sliderBand
-        guard isDark else {
-            return EmberContrast.lifted(muted.mixed(dimFraction, over: background), toward: muted) {
-                EmberContrast.wcag($0, band) >= Self.bandWCAG
-            }
-        }
         let ink = EmberContrast.best(of: [.black, .white], on: accent)
         return EmberContrast.lifted(muted.mixed(dimFraction, over: .black), toward: muted) { fill in
             EmberContrast.score(ink, fill) >= notchTarget + 0.1
                 && EmberContrast.wcag(fill, band) >= Self.bandWCAG
-                && EmberContrast.late(fill, band) >= Self.bandLate
+                && (!isDark || EmberContrast.late(fill, band) >= Self.bandLate)
         }
     }
 

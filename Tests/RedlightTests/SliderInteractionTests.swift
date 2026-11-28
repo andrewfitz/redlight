@@ -137,7 +137,7 @@ import Testing
         manager.previewWhitepoint(0.4)
         #expect(gamma.applyCalls.last?.intensity == Float(0.6))
         _ = manager.beginSliderInteraction()
-        #expect(gamma.applyCalls.last?.whitepoint == Float(0.8))
+        #expect(gamma.applyCalls.last?.whitepoint == Float(WhitepointScale.output(percent: 73)))
     }
 
     @Test func standaloneSliderWithoutInteractionCallbacksStillAcceptsEdits() {

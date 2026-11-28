@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+  "id": "redlight-status",
+  "items": [
+    { "key": "title", "type": "text", "rect": [10, 2, 180, 24], "font": { "size": 17, "weight": 600 } },
+    { "key": "color", "type": "text", "rect": [10, 27, 180, 22], "alignment": "left", "font": { "size": 16 } },
+    { "key": "indicator1", "type": "bar", "rect": [10, 51, 180, 5], "value": 0, "bar_fill_c": "#e88c61" },
+    { "key": "whitepoint", "type": "text", "rect": [10, 60, 180, 22], "alignment": "left", "font": { "size": 16 } },
+    { "key": "indicator2", "type": "bar", "rect": [10, 84, 180, 5], "value": 0, "bar_fill_c": "#e7c3a2" }
+  ]
+}

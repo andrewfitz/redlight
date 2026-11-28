@@ -1,7 +1,19 @@
 import CoreGraphics
+import Foundation
 
 protocol GammaControlling {
     func applyFilter(to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool)
+    /// Applies the filter with a saturation value. `1` keeps the existing color path and
+    /// `0` produces grayscale. Backends that do not support cross-channel color transforms
+    /// may use the legacy method as a fallback.
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float
+    )
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    )
     func restore(_ displayID: CGDirectDisplayID)
     func restoreAll()
     func resetForDisplayRecovery()
@@ -9,8 +21,55 @@ protocol GammaControlling {
 }
 
 extension GammaControlling {
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float
+    ) {
+        applyFilter(to: displayID, intensity: intensity, whitepoint: whitepoint, invert: invert)
+    }
+
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    ) {
+        applyFilter(
+            to: displayID, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: saturation)
+    }
+
     func resetForDisplayRecovery() { restoreAll() }
     func displaysDidChange() {}
+}
+
+/// The matrix used by a compositor grayscale pass. `saturation` is the amount of the
+/// original color retained, so 1 is full color and 0 is luminance-only output.
+enum SaturationColorMatrix {
+    private static let redLuminance: Float = 0.2126
+    private static let greenLuminance: Float = 0.7152
+    private static let blueLuminance: Float = 0.0722
+
+    static func values(saturation raw: Float) -> [Float] {
+        let saturation = min(1, max(0, raw))
+        let desaturation = 1 - saturation
+        let r = desaturation * redLuminance
+        let g = desaturation * greenLuminance
+        let b = desaturation * blueLuminance
+        return [
+            saturation + r, g, b, 0, 0,
+            r, saturation + g, b, 0, 0,
+            r, g, saturation + b, 0, 0,
+            0, 0, 0, 1, 0,
+        ]
+    }
+
+    /// CAFilter's private color-matrix input is an NSValue wrapping its native 4×5
+    /// `CAColorMatrix` struct, rather than an array of NSNumber values.
+    static func value(saturation: Float) -> NSValue {
+        var matrix = values(saturation: saturation)
+        return matrix.withUnsafeMutableBytes { bytes in
+            NSValue(bytes: bytes.baseAddress!, objCType: "{CAColorMatrix=ffffffffffffffffffff}")
+        }
+    }
 }
 
 /// Builds Redlight's transfer table on top of the display's existing ColorSync table.

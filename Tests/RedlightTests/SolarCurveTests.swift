@@ -21,7 +21,7 @@ import Testing
     @Test func sunsetAnchorIsAtTheHorizon() {
         let t = SolarCurve.target(elevation: 0, minElevation: -70, presets: presets)
         #expect(abs(t.intensity - 0.5) < 0.0001)
-        #expect(abs(t.whitepoint - 0.65) < 0.0001)
+        #expect(abs(t.whitepoint - presets[2].whitepoint) < 0.0001)
     }
 
     @Test func fortyFiveMinutesBeforeSunsetIsAlreadyWarming() {
@@ -34,25 +34,25 @@ import Testing
     @Test func civilDuskUsesFirstTwilightStep() {
         let t = SolarCurve.target(elevation: -6, minElevation: -70, presets: presets)
         #expect(abs(t.intensity - (0.5 + (0.25 - 0.5) / 3)) < 0.0001)
-        #expect(abs(t.whitepoint - (0.65 + (0.45 - 0.65) / 3)) < 0.0001)
+        #expect(abs(t.whitepoint - (presets[2].whitepoint + (presets[3].whitepoint - presets[2].whitepoint) / 3)) < 0.0001)
     }
 
     @Test func nauticalDuskUsesSecondTwilightStep() {
         let t = SolarCurve.target(elevation: -12, minElevation: -70, presets: presets)
         #expect(abs(t.intensity - (0.5 + 2 * (0.25 - 0.5) / 3)) < 0.0001)
-        #expect(abs(t.whitepoint - (0.65 + 2 * (0.45 - 0.65) / 3)) < 0.0001)
+        #expect(abs(t.whitepoint - (presets[2].whitepoint + 2 * (presets[3].whitepoint - presets[2].whitepoint) / 3)) < 0.0001)
     }
 
     @Test func astronomicalDuskReachesNight() {
         let t = SolarCurve.target(elevation: -18, minElevation: -70, presets: presets)
         #expect(abs(t.intensity - 0.25) < 0.0001)
-        #expect(abs(t.whitepoint - 0.45) < 0.0001)
+        #expect(abs(t.whitepoint - presets[3].whitepoint) < 0.0001)
     }
 
     @Test func solarMidnightReachesLate() {
         let t = SolarCurve.target(elevation: -70, minElevation: -70, presets: presets)
         #expect(abs(t.intensity - 0.0) < 0.0001)
-        #expect(abs(t.whitepoint - 0.3) < 0.0001)
+        #expect(abs(t.whitepoint - presets[4].whitepoint) < 0.0001)
     }
 
     @Test func civilTwilightBetweenSunsetAndNight() {
@@ -73,7 +73,7 @@ import Testing
         // lowest point is Late, and it still passes Night on the way down.
         let t = SolarCurve.target(elevation: -10, minElevation: -10, presets: presets)
         #expect(abs(t.intensity - 0.0) < 0.0001)
-        #expect(abs(t.whitepoint - 0.3) < 0.0001)
+        #expect(abs(t.whitepoint - presets[4].whitepoint) < 0.0001)
         let night = SolarCurve.target(elevation: -7.5, minElevation: -10, presets: presets)
         #expect(abs(night.intensity - 0.25) < 0.0001)
         let sunset = SolarCurve.target(elevation: 0, minElevation: -10, presets: presets)
@@ -114,7 +114,7 @@ import Testing
                     let noon = target(range.max, range, rising: rising)
                     #expect(noon.intensity == 1 && noon.whitepoint == 1, "noon at \(latitude)°, \(range)")
                     let midnight = target(range.min, range, rising: rising)
-                    #expect(abs(midnight.intensity) < 1e-9 && abs(midnight.whitepoint - 0.3) < 1e-9,
+                    #expect(abs(midnight.intensity) < 1e-9 && abs(midnight.whitepoint - presets[4].whitepoint) < 1e-9,
                             "midnight at \(latitude)°, \(range)")
                 }
             }

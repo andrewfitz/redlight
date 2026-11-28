@@ -3,6 +3,28 @@ import Testing
 @testable import Redlight
 
 @Suite struct GammaControllerTests {
+    @Test func saturationMatrixBlendsBetweenColorAndLuminance() {
+        let full = SaturationColorMatrix.values(saturation: 1)
+        #expect(full == [
+            1, 0, 0, 0, 0,
+            0, 1, 0, 0, 0,
+            0, 0, 1, 0, 0,
+            0, 0, 0, 1, 0,
+        ])
+
+        let gray = SaturationColorMatrix.values(saturation: 0)
+        #expect(gray[0] == gray[5] && gray[5] == gray[10])
+        #expect(gray[0] == 0.2126)
+        #expect(gray[1] == 0.7152)
+        #expect(gray[2] == 0.0722)
+        #expect(abs(gray[0] + gray[1] + gray[2] - 1) < 0.0001)
+    }
+
+    @Test func saturationMatrixClampsItsInput() {
+        #expect(SaturationColorMatrix.values(saturation: -1) == SaturationColorMatrix.values(saturation: 0))
+        #expect(SaturationColorMatrix.values(saturation: 2) == SaturationColorMatrix.values(saturation: 1))
+    }
+
     @Test func transientCaptureFailureDoesNotCompoundTheFilterOnLaterFrames() {
         var reads = 0
         var currentTable: GammaTableComposer.Table?

@@ -38,6 +38,25 @@ import Testing
         #expect(!LaunchAtLogin.isRegistered(.notFound))
     }
 
+    /// Start at login is switched on for a new install in Applications, and for nothing else.
+    @Test @MainActor func startAtLoginIsOnlyForANewInstallInApplications() {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        #expect(LaunchAtLogin.isFreshInstall(defaults))
+        // Another app's or the system's settings do not count; any of Redlight's does.
+        defaults.set(true, forKey: "SUEnableAutomaticChecks")
+        #expect(LaunchAtLogin.isFreshInstall(defaults))
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        #expect(!LaunchAtLogin.isFreshInstall(defaults))
+
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        #expect(LaunchAtLogin.isInApplications(URL(fileURLWithPath: "/Applications/Redlight.app")))
+        #expect(LaunchAtLogin.isInApplications(home.appendingPathComponent("Applications/Redlight.app")))
+        #expect(!LaunchAtLogin.isInApplications(home.appendingPathComponent("Projects/redlight/Redlight.app")))
+        #expect(!LaunchAtLogin.isInApplications(URL(fileURLWithPath: "/Volumes/Redlight/Redlight.app")))
+        #expect(!LaunchAtLogin.isInApplications(URL(fileURLWithPath: "/ApplicationsOld/Redlight.app")))
+    }
+
     @Test @MainActor func terminationNotificationAndRunLoopExitFinishTheSessionOnce() {
         let original = AppDelegate.finishDisplaySession
         defer { AppDelegate.finishDisplaySession = original }

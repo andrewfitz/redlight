@@ -158,7 +158,9 @@ final class ShortcutStore {
         for action in ShortcutAction.allCases {
             guard let suggested = action.suggested, suggested.problem(reserved: reserved) == nil else { continue }
             // As in `set`: a combination belongs to one action, so take it from another.
-            for (owner, shortcut) in shortcuts where shortcut == suggested && owner != action {
+            // Mutating a dictionary while traversing its live key/value view can
+            // invalidate the iterator. Snapshot the matching owners first.
+            for (owner, shortcut) in Array(shortcuts) where shortcut == suggested && owner != action {
                 shortcuts[owner] = nil
             }
             shortcuts[action] = suggested

@@ -73,6 +73,49 @@ enum SolarCurve {
         -> (intensity: Double, whitepoint: Double)
     {
         guard presets.count >= 5 else { return (1.0, 1.0) }
+        let phase = phase(elevation: elevation, minElevation: minElevation,
+                          maxElevation: maxElevation, rising: rising)
+        let values = anchorValues(presets: presets)
+        return lerp(values[phase.from.kind], values[phase.to.kind], phase.fraction)
+    }
+
+    /// A point of the curve that a learned adjustment can belong to. Day and Late are shared
+    /// by the two halves of the cycle; the five between them exist once for the evening and
+    /// once for the morning, where the same values fall at different times and elevations.
+    enum Anchor: Int, CaseIterable, Codable, Sendable {
+        case day = 0
+        case eveningWarm, eveningSunset, eveningCivil, eveningNautical, eveningNight
+        case late
+        case morningWarm, morningSunset, morningCivil, morningNautical, morningNight
+
+        /// Index into `anchorValues`: Day, Warm, Sunset, Civil, Nautical, Night, Late.
+        var kind: Int { rawValue <= Anchor.late.rawValue ? rawValue : rawValue - Anchor.late.rawValue }
+        var isMorning: Bool { rawValue > Anchor.late.rawValue }
+    }
+
+    /// Where the sun is between two anchors of the curve. `fraction` is already eased:
+    /// 0 is all `from`, 1 is all `to`. On an anchor, and above Day, both ends are that anchor.
+    struct Phase: Equatable, Sendable {
+        let from: Anchor
+        let to: Anchor
+        let fraction: Double
+
+        /// The one or two anchors around the sun and their shares, which add up to 1.
+        var weights: [(anchor: Anchor, weight: Double)] {
+            if from == to || fraction <= 0 { return [(from, 1)] }
+            if fraction >= 1 { return [(to, 1)] }
+            return [(from, 1 - fraction), (to, fraction)]
+        }
+
+        /// The anchor with the larger share; `from` when they are equal.
+        var lead: Anchor { fraction > 0.5 ? to : from }
+    }
+
+    /// The anchors around a sun elevation, with the same moves `target` documents: the two
+    /// slides, the short-night stretch and the evening's moving Day anchor.
+    static func phase(elevation: Double, minElevation: Double, maxElevation: Double = highNoon,
+                      rising: Bool = false) -> Phase
+    {
         // Within a few degrees of the poles both slides apply and the sun's whole range is
         // narrower than the curve: the result stays continuous but covers only part of it.
         let slide = max(0, morningDayElevation - maxElevation)
@@ -84,42 +127,61 @@ enum SolarCurve {
             elevation *= shortNightFloor / minElevation
             minElevation = shortNightFloor
         }
-        let day = values(presets[0]), warm = values(presets[1]), sunset = values(presets[2])
-        let night = values(presets[3]), deep = values(presets[4])
-
-        // The intermediate twilight values preserve a smooth Sunset…Night progression while
-        // making the physical −6° and −12° boundaries real easing anchors in the curve.
-        let civil = lerp(sunset, night, 1.0 / 3.0)
-        let nautical = lerp(sunset, night, 2.0 / 3.0)
 
         if rising, elevation >= sunsetElevation {
-            if elevation >= morningDayElevation { return day }
+            if elevation >= morningDayElevation { return Phase(from: .day, to: .day, fraction: 0) }
             if elevation >= morningWarmElevation {
-                return lerp(day, warm, segment(elevation, from: morningDayElevation, to: morningWarmElevation))
+                return Phase(from: .day, to: .morningWarm,
+                             fraction: segment(elevation, from: morningDayElevation, to: morningWarmElevation))
             }
-            return lerp(warm, sunset, segment(elevation, from: morningWarmElevation, to: sunsetElevation))
+            return Phase(from: .morningWarm, to: .morningSunset,
+                         fraction: segment(elevation, from: morningWarmElevation, to: sunsetElevation))
         }
+
+        // Below the horizon dawn mirrors dusk, on the morning's own anchors.
+        let warm: Anchor = rising ? .morningWarm : .eveningWarm
+        let sunset: Anchor = rising ? .morningSunset : .eveningSunset
+        let civil: Anchor = rising ? .morningCivil : .eveningCivil
+        let nautical: Anchor = rising ? .morningNautical : .eveningNautical
+        let night: Anchor = rising ? .morningNight : .eveningNight
 
         // At +12° and +4° these are the fixed evening and morning anchors.
         let eveningDay = min(dayElevation, max(morningDayElevation, maxElevation))
         let eveningWarm = eveningDay / 2
         if elevation >= eveningDay {
-            return day
+            return Phase(from: .day, to: .day, fraction: 0)
         } else if elevation >= eveningWarm {
-            return lerp(day, warm, segment(elevation, from: eveningDay, to: eveningWarm))
+            return Phase(from: .day, to: warm,
+                         fraction: segment(elevation, from: eveningDay, to: eveningWarm))
         } else if elevation >= sunsetElevation {
-            return lerp(warm, sunset, segment(elevation, from: eveningWarm, to: sunsetElevation))
+            return Phase(from: warm, to: sunset,
+                         fraction: segment(elevation, from: eveningWarm, to: sunsetElevation))
         } else if elevation >= civilDuskElevation {
-            return lerp(sunset, civil, segment(elevation, from: sunsetElevation, to: civilDuskElevation))
+            return Phase(from: sunset, to: civil,
+                         fraction: segment(elevation, from: sunsetElevation, to: civilDuskElevation))
         } else if elevation >= nauticalDuskElevation {
-            return lerp(civil, nautical, segment(elevation, from: civilDuskElevation, to: nauticalDuskElevation))
+            return Phase(from: civil, to: nautical,
+                         fraction: segment(elevation, from: civilDuskElevation, to: nauticalDuskElevation))
         } else if elevation >= nightElevation {
-            return lerp(nautical, night, segment(elevation, from: nauticalDuskElevation, to: nightElevation))
+            return Phase(from: nautical, to: night,
+                         fraction: segment(elevation, from: nauticalDuskElevation, to: nightElevation))
         } else {
             let denom = nightElevation - minElevation
-            guard denom > 0 else { return (night.intensity, night.whitepoint) }
-            return lerp(night, deep, ease((nightElevation - elevation) / denom))
+            guard denom > 0 else { return Phase(from: night, to: night, fraction: 0) }
+            return Phase(from: night, to: .late, fraction: ease((nightElevation - elevation) / denom))
         }
+    }
+
+    /// The curve's values at Day, Warm, Sunset, Civil, Nautical, Night and Late, by
+    /// `Anchor.kind`. Needs the five presets.
+    static func anchorValues(presets: [Preset]) -> [(intensity: Double, whitepoint: Double)] {
+        let day = values(presets[0]), warm = values(presets[1]), sunset = values(presets[2])
+        let night = values(presets[3]), deep = values(presets[4])
+        // The intermediate twilight values preserve a smooth Sunset…Night progression while
+        // making the physical −6° and −12° boundaries real easing anchors in the curve.
+        let civil = lerp(sunset, night, 1.0 / 3.0)
+        let nautical = lerp(sunset, night, 2.0 / 3.0)
+        return [day, warm, sunset, civil, nautical, night, deep]
     }
 
     static func phaseLabel(elevation: Double) -> String {

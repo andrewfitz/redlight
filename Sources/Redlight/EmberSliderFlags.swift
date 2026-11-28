@@ -54,19 +54,20 @@ struct EmberFlagFace: Equatable {
     let chips: [Chip]
 
     init(lower: Double, upper: Double, range: ClosedRange<Double>, width: CGFloat,
+         unit: SliderUnit = .percent,
          textWidth: (String) -> CGFloat = EmberFlagFace.textWidth) {
         func chipWidth(_ text: String) -> CGFloat { ceil(textWidth(text)) + 2 * Self.chipPadding }
         let lo = min(lower, upper), hi = max(lower, upper)
         let loX = EmberSliderFace.x(for: lo, width: width, range: range)
         let hiX = EmberSliderFace.x(for: hi, width: width, range: range)
         if lo == hi {
-            let text = Self.pinnedText(lo, in: range)
+            let text = Self.pinnedText(lo, in: range, unit: unit)
             let w = chipWidth(text)
             chips = [Chip(bound: nil, text: text, tipX: loX,
                           centerX: Self.clamp(loX, half: w / 2, row: width), width: w)]
             return
         }
-        let loText = SliderCore.percentText(lo, in: range), hiText = SliderCore.percentText(hi, in: range)
+        let loText = unit.text(lo, in: range), hiText = unit.text(hi, in: range)
         let wl = chipWidth(loText), wu = chipWidth(hiText)
         let gap = max(Self.minGap, (wl + wu) / 2 + 6)
         var a = loX, b = hiX
@@ -85,8 +86,8 @@ struct EmberFlagFace: Equatable {
                  Chip(bound: .upper, text: hiText, tipX: hiX, centerX: b, width: wu)]
     }
 
-    static func pinnedText(_ value: Double, in range: ClosedRange<Double> = 0...1) -> String {
-        "Fixed \(SliderCore.percentText(value, in: range))"
+    static func pinnedText(_ value: Double, in range: ClosedRange<Double> = 0...1, unit: SliderUnit = .percent) -> String {
+        "Fixed \(unit.text(value, in: range))"
     }
 
     /// The chip whose hit area holds `point`, the nearer one where both do.
@@ -196,9 +197,10 @@ struct EmberSliderFlags: View {
     @Environment(\.emberPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.emberIsLeaving) private var isLeaving
+    @Environment(\.emberSliderUnit) private var unit
 
     var body: some View {
-        let face = EmberFlagFace(lower: lower, upper: upper, range: range, width: width)
+        let face = EmberFlagFace(lower: lower, upper: upper, range: range, width: width, unit: unit)
         ZStack(alignment: .topLeading) {
             // The keyboard's stops, one per limit, a fixed size around each chip so the Tab
             // order stays put. A pinned band's chip carries both.

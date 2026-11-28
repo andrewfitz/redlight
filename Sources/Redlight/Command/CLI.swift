@@ -18,18 +18,24 @@ enum CLIParser {
       on | off | toggle | status | resume
       pause [minutes|until sunrise]
         Use 1–1440 minutes (default 30) or the next sunrise within 25 hours.
-      color <0-100> | whitepoint <0-100>
+      peek <on|off|tap|renew>
+        Renew extends an active Peek lease.
+      color <0-100 | kelvin like 3400K> | whitepoint <0-100> | saturation <0-100>
       color <up|down> [step] | whitepoint <up|down> [step]
+      saturation <up|down> [step] | saturation <on|off|toggle>
       reset <color|whitepoint>
       preset [save] <day|warm|sunset|night|late>
       adaptive <on|off|toggle>
       adaptive bedtime <HH:MM|off>
       adaptive wake <HH:MM|off>
+      learn <on|off|toggle|reset|restore>
       location <latitude> <longitude> | location auto
-      limits <color|whitepoint> <min> <max>
+      limits <color|whitepoint> <min> <max>   (color temp limits also in kelvin, like 1200K 6500K)
       display list
       display <number|name|all> [invert] <on|off|toggle>
-      apps list | apps clear | apps <add|remove> <bundle-id>
+      apps list | apps clear | apps remove <bundle-id>
+      apps set <bundle-id> pause | hold <color> <white> [saturation] | shift <±color> <±white> [±saturation]
+        While that app is in front: no tint, these values, or this much added to the sliders.
       appearance <light|dark|toggle>
       login <on|off> | update | quit
     Use --json for machine-readable output, --help for help, --version for version.
@@ -47,6 +53,14 @@ enum CLIParser {
         let tail = Array(values.dropFirst())
         func count(_ expected: Int, _ usage: String) throws {
             guard tail.count == expected else { throw CommandError.invalidInput("Usage: redlight \(usage)") }
+        }
+        /// "3400K" or "3400k": a colour temperature, or nil for anything without the K.
+        func kelvin(_ text: String) throws -> Double? {
+            guard let last = text.last, last == "K" || last == "k" else { return nil }
+            guard let value = Double(text.dropLast()), value.isFinite, value > 0 else {
+                throw CommandError.invalidInput("A colour temperature is written like 3400K.")
+            }
+            return value
         }
         func level(_ text: String, channel: CommandChannel) throws -> Double {
             guard let value = Double(text), value.isFinite, (0...100).contains(value) else {
@@ -66,10 +80,32 @@ enum CLIParser {
             }
             try count(0, verb)
             command = .pause(verb == "pause" ? .on : .off)
+        case "peek":
+            try count(1, "peek <on|off|tap|renew>")
+            command = .peek(try enumeration(tail[0], valid: CommandPeek.allCases))
         case "status", "update", "quit":
             try count(0, verb)
             command = verb == "status" ? .status : verb == "update" ? .update : .quit
-        case "color", "whitepoint":
+        case "color", "whitepoint", "saturation":
+            if verb == "saturation" {
+                if let word = tail.first, let state = CommandSwitch(rawValue: word) {
+                    try count(1, "saturation <on|off|toggle>")
+                    command = .saturationEnabled(state)
+                    break
+                }
+                if let direction = tail.first, direction == "up" || direction == "down" {
+                    guard tail.count <= 2 else { throw CommandError.invalidInput("Usage: redlight saturation <up|down> [step]") }
+                    let amount = try tail.count == 2 ? stepAmount(tail[1]) : 5
+                    command = .saturationStep(direction == "up" ? amount : -amount)
+                    break
+                }
+                try count(1, "saturation <percentage>")
+                guard let value = Double(tail[0]), value.isFinite, (0...100).contains(value) else {
+                    throw CommandError.invalidInput("Saturation must be a finite percentage from 0 to 100.")
+                }
+                command = .saturation(value)
+                break
+            }
             let channel: CommandChannel = verb == "color" ? .color : .whitepoint
             if let direction = tail.first, direction == "up" || direction == "down" {
                 // Words rather than +5/-5: a leading minus would parse as an option.
@@ -78,7 +114,11 @@ enum CLIParser {
                 command = .step(channel, direction == "up" ? amount : -amount)
                 break
             }
-            try count(1, "\(verb) <percentage>")
+            try count(1, verb == "color" ? "color <percentage | kelvin like 3400K>" : "\(verb) <percentage>")
+            if verb == "color", let kelvin = try kelvin(tail[0]) {
+                command = .colorKelvin(kelvin)
+                break
+            }
             let value = try level(tail[0], channel: channel)
             command = verb == "color" ? .color(value) : .whitepoint(value)
         case "reset":
@@ -109,6 +149,9 @@ enum CLIParser {
             }
             try count(1, "adaptive <on|off|toggle>")
             command = .adaptive(try enumeration(tail[0], valid: CommandSwitch.allCases))
+        case "learn":
+            try count(1, "learn <on|off|toggle|reset|restore>")
+            command = .learn(try enumeration(tail[0], valid: CommandLearn.allCases))
         case "location":
             if tail == ["auto"] { command = .location(.automatic); break }
             try count(2, "location <latitude> <longitude>, or location auto")
@@ -117,6 +160,17 @@ enum CLIParser {
         case "limits":
             try count(3, "limits <color|whitepoint> <min> <max>")
             let channel = try enumeration(tail[0], valid: CommandChannel.allCases)
+            if channel == .color {
+                let low = try kelvin(tail[1]), high = try kelvin(tail[2])
+                if let low, let high {
+                    guard low <= high else { throw CommandError.invalidInput("Limits require min ≤ max.") }
+                    command = .limitsKelvin(min: low, max: high)
+                    break
+                }
+                guard low == nil, high == nil else {
+                    throw CommandError.invalidInput("Give both color temp limits in percent, or both in kelvin.")
+                }
+            }
             let minimum = try level(tail[1], channel: channel)
             let maximum = try level(tail[2], channel: channel)
             guard minimum <= maximum else { throw CommandError.invalidInput("Limits require min ≤ max.") }
@@ -140,17 +194,18 @@ enum CLIParser {
             let state = try enumeration(tail.last!, valid: CommandSwitch.allCases)
             command = tail.count == 3 ? .invert(selector, state) : .display(selector, state)
         case "apps":
-            let usage = "apps list | apps clear | apps <add|remove> <bundle-id>"
             switch tail.first {
             case "list", "clear":
-                try count(1, usage)
+                try count(1, appsUsage)
                 command = tail[0] == "list" ? .appsList : .apps(.clear)
-            case "add", "remove":
-                try count(2, usage)
-                let bundleID = try AppBundleID.validate(tail[1])
-                command = .apps(tail[0] == "add" ? .add(bundleID) : .remove(bundleID))
+            case "remove":
+                try count(2, "apps remove <bundle-id>")
+                command = .apps(.remove(try AppBundleID.validate(tail[1])))
+            case "set":
+                guard tail.count >= 3 else { throw CommandError.invalidInput("Usage: redlight \(appRuleUsage)") }
+                command = .apps(.set(try AppBundleID.validate(tail[1]), try appRule(tail.dropFirst(2))))
             default:
-                throw CommandError.invalidInput("Usage: redlight \(usage)")
+                throw CommandError.invalidInput("Usage: redlight \(appsUsage)")
             }
         case "appearance":
             try count(1, "appearance <light|dark|toggle>")
@@ -162,6 +217,28 @@ enum CLIParser {
         default: throw CommandError.invalidInput("Unknown command '\(verb)'. \(help)")
         }
         return ParsedCLICommand(command: command, json: json)
+    }
+
+    static let appsUsage = "apps list | apps clear | apps set <bundle-id> <rule> | apps remove <bundle-id>"
+    static let appRuleUsage = "apps set <bundle-id> pause | hold <color> <white> [saturation] | shift <±color> <±white> [±saturation]"
+
+    /// `pause`, `hold 40 70` or `shift -10 +5`: the words after `apps set <bundle-id>`.
+    private static func appRule(_ words: ArraySlice<String>) throws -> AppRule {
+        let words = Array(words)
+        switch words.first {
+        case "pause" where words.count == 1:
+            return .pause
+        case "hold", "shift":
+            let values = words.dropFirst().compactMap(Double.init)
+            guard (2...3).contains(values.count), values.count == words.count - 1 else {
+                throw CommandError.invalidInput("Usage: redlight \(appRuleUsage)")
+            }
+            let saturation = values.count == 3 ? values[2] : nil
+            return try AppRule(kind: words.first == "hold" ? .hold : .shift,
+                               color: values[0], whitepoint: values[1], saturation: saturation)
+        default:
+            throw CommandError.invalidInput("Usage: redlight \(appRuleUsage)")
+        }
     }
 
     /// Whole minutes keep `pause 90` unambiguous; "until sunrise" is two words.
@@ -214,8 +291,8 @@ enum RedlightCLI {
                 writeOutput(status.displays.map {
                     "\($0.number): \($0.name) — \($0.enabled ? "on" : "off"), invert \($0.inverted ? "on" : "off")"
                 }.joined(separator: "\n"))
-            } else if parsed.command == .appsList, !status.apps.isEmpty {
-                writeOutput(status.apps.joined(separator: "\n"))
+            } else if parsed.command == .appsList, !status.appRules.isEmpty {
+                writeOutput(status.appRules.map(appRuleLine).joined(separator: "\n"))
             }
             return 0
         } catch CLIInformation.help {
@@ -250,14 +327,21 @@ enum RedlightCLI {
         )
     }
 
-    private static func describe(_ status: Status) -> String {
+    /// "com.adobe.Photoshop (Photoshop): hold color temp 40%, white point 70%". The bundle ID
+    /// leads, so a script can take the first word.
+    static func appRuleLine(_ app: Status.App) -> String {
+        "\(app.bundleID)\(app.name == app.bundleID ? "" : " (\(app.name))"): \(app.rule.text)"
+    }
+
+    static func describe(_ status: Status) -> String {
         guard status.running else { return "not running" }
         return """
-        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")\(status.suspendedFor.map { "; suspended for \($0)" } ?? "")
-        Color temp: \(status.color.text)
+        Redlight \(status.version): \(status.on ? "on" : "off")\(status.pausedUntil.map { "; paused, \(DisplayManager.pauseMinutesLeft(until: $0, now: Date())) min left" } ?? "")
+        Color temp: \(status.color.text)\(status.colorKelvin.map { ", \($0.text)" } ?? "")
         White point: \(status.whitepoint.text)
+        Saturation: \(status.saturationText)
         Limits: color temp \(status.limits.color.text), white point \(status.limits.whitepoint.text)
-        Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.wake.map { "; wake \($0)" } ?? "")\(status.fading ? "; fading" : "")
+        Preset: \(status.activePreset?.cliName ?? "custom"); Adaptive: \(status.adaptive ? "on" : "off")\(status.bedtime.map { "; bedtime \($0)" } ?? "")\(status.wake.map { "; wake \($0)" } ?? "")\(status.learning?.enabled == true ? "; learning" : "")\(status.fading ? "; fading" : "")\(status.learning.flatMap { $0.enabled ? "\nLearned: \($0.text)" : nil } ?? "")
         Elevation: \(status.elevation.map { "\($0)°" } ?? "unavailable")
         Appearance: \(status.appearance.rawValue); Launch at login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval required)" : "")
         \(status.statusLine)

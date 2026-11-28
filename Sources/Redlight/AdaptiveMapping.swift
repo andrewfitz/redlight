@@ -103,6 +103,33 @@ enum AdaptiveMapping {
                 remap(t.whitepoint, day: presets[0].whitepoint, deep: presets[4].whitepoint, lo: wLo, hi: wHi))
     }
 
+    /// The sun curve's value at each of the twelve anchors, remapped into the bands: what
+    /// `target` returns when the sun is exactly on that anchor, with no bedtime floor or wake
+    /// lift. Indexed by `SolarCurve.Anchor.rawValue`. Learning uses these to tell how far an
+    /// anchor moves when a band or a preset changes; the live target does not come from them.
+    static func anchorTargets(
+        presets: [Preset],
+        intensityMin: Double, intensityMax: Double,
+        whitepointMin: Double, whitepointMax: Double
+    ) -> (intensity: [Double], whitepoint: [Double]) {
+        let count = SolarCurve.Anchor.allCases.count
+        guard presets.count >= 5 else {
+            return (Array(repeating: 1, count: count), Array(repeating: 1, count: count))
+        }
+        let values = SolarCurve.anchorValues(presets: presets)
+        let iLo = min(intensityMin, intensityMax), iHi = max(intensityMin, intensityMax)
+        let wLo = min(whitepointMin, whitepointMax), wHi = max(whitepointMin, whitepointMax)
+        var intensity: [Double] = [], whitepoint: [Double] = []
+        for anchor in SolarCurve.Anchor.allCases {
+            let value = values[anchor.kind]
+            intensity.append(remap(value.intensity, day: presets[0].intensity,
+                                   deep: presets[4].intensity, lo: iLo, hi: iHi))
+            whitepoint.append(remap(value.whitepoint, day: presets[0].whitepoint,
+                                    deep: presets[4].whitepoint, lo: wLo, hi: wHi))
+        }
+        return (intensity, whitepoint)
+    }
+
     /// Normalize a curve value from its Day…Late anchors onto the band. When the user
     /// has saved identical anchors (a flat curve) there is no fraction to take — fall back
     /// to clamping the raw value into the band instead of pinning to either end.

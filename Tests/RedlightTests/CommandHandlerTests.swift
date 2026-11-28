@@ -24,7 +24,8 @@ private struct CommandFixture {
     let defaults: UserDefaults
 
     init(defaults: UserDefaults, location: LocationProviding? = nil, fadeDuration: TimeInterval = 0,
-         now: Date = Date(timeIntervalSince1970: 1_780_000_000)) {
+         now: Date = Date(timeIntervalSince1970: 1_780_000_000),
+         peekNow: @escaping () -> ContinuousClock.Instant = { ContinuousClock().now }) {
         let gamma = MockGammaController()
         let state = CommandServiceState()
         let manager = DisplayManager(
@@ -53,7 +54,7 @@ private struct CommandFixture {
             update: { state.updateCount += 1 }, quit: { state.quitCount += 1 },
             version: { "1.2.3-test" }, deferAction: { state.pending.append($0) },
             canUpdate: { state.canUpdate }
-        ))
+        ), peekNow: peekNow)
     }
 }
 
@@ -81,7 +82,7 @@ private struct CommandFixture {
         let f = makeFixture()
         _ = try f.handler.execute(.color(40))
         var status = try f.handler.execute(.step(.color, 5))
-        #expect(abs(status.color.set - 45) < 1e-9)
+        #expect(status.color.set == 45)
         status = try f.handler.execute(.step(.color, 100))
         #expect(status.color.set == 100)
         status = try f.handler.execute(.step(.whitepoint, -100))
@@ -103,13 +104,32 @@ private struct CommandFixture {
         #expect(f.defaults.bool(forKey: "redlight.isOn"))
     }
 
-    @Test func fractionalStepsPreserveDirectionAndPrecision() throws {
+    @Test func olderSettingsMigrateToIntegerPercentagesAndRoundTrip() throws {
+        let defaults = defaultsRegistry.makeDefaults(prefix: "WholeSliderValues")
+        defaults.set(0.374, forKey: "redlight.intensity")
+        defaults.set(0.53125, forKey: "redlight.whitepoint") // 37.5% of the white point scale
+        defaults.set(0.995, forKey: "redlight.saturation")
+        let f = CommandFixture(defaults: defaults, location: nil, fadeDuration: 0)
+        #expect(f.manager.colorPercent == 37 && f.manager.whitepointPercent == 38)
+        #expect(f.manager.saturationPercent == 100 && f.manager.saturationEnabled)
+        _ = try f.handler.execute(.color(20.5))
+        _ = try f.handler.execute(.whitepoint(61.4))
+        _ = try f.handler.execute(.saturation(19.8))
+        let restored = CommandFixture(defaults: defaults, location: nil, fadeDuration: 0)
+        #expect(restored.manager.colorPercent == 21 && restored.manager.whitepointPercent == 61)
+        #expect(restored.manager.saturationPercent == 20)
+        #expect(defaults.integer(forKey: "redlight.colorPercent") == 21)
+        #expect(defaults.integer(forKey: "redlight.whitepointPercent") == 61)
+        #expect(defaults.integer(forKey: "redlight.saturationPercent") == 20)
+    }
+
+    @Test func fractionalInputsRoundToWholePercentages() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.color(40.0004))
         let increased = try f.handler.execute(.step(.color, 0.00005))
-        #expect(abs(increased.color.set - 40.00045) < 1e-10)
+        #expect(increased.color.set == 40)
         let decreased = try f.handler.execute(.step(.color, -0.00005))
-        #expect(abs(decreased.color.set - 40.0004) < 1e-10)
+        #expect(decreased.color.set == 40)
     }
 
     @Test func timedAndSunrisePausesUseTheirOwnLength() throws {
@@ -139,6 +159,116 @@ private struct CommandFixture {
         status = try f.handler.execute(.pause(.off))
         #expect(status.on)
         #expect(status.pausedUntil == nil)
+    }
+
+    @Test func commandPeekPreservesPauseAndTapOrdering() throws {
+        let f = makeFixture()
+        expectError(.invalidInput) { _ = try f.handler.execute(.peek(.on)) }
+
+        _ = try f.handler.execute(.master(.on))
+        var status = try f.handler.execute(.peek(.on))
+        #expect(status.peeking == true)
+        #expect(!f.manager.isPaused)
+        status = try f.handler.execute(.peek(.off))
+        #expect(status.peeking == false)
+        #expect(!f.manager.isPaused)
+
+        status = try f.handler.execute(.peek(.on))
+        #expect(status.peeking == true)
+        status = try f.handler.execute(.peek(.tap))
+        #expect(status.pausedUntil != nil)
+        #expect(status.peeking == false)
+
+        status = try f.handler.execute(.pause(.on))
+        #expect(status.pausedUntil != nil)
+        status = try f.handler.execute(.peek(.on))
+        #expect(status.peeking == true)
+        status = try f.handler.execute(.peek(.tap))
+        #expect(status.pausedUntil == nil)
+        #expect(status.peeking == false)
+        #expect(status.on)
+    }
+
+    @Test func commandAndShortcutPeekSourcesDoNotReleaseEachOther() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.master(.on))
+        f.manager.setPeeking(true)
+        _ = try f.handler.execute(.peek(.on))
+        #expect(f.manager.isPeeking(source: .shortcut))
+        #expect(f.manager.isPeeking(source: .command))
+        _ = try f.handler.execute(.peek(.off))
+        #expect(f.manager.isPeeking(source: .shortcut))
+        f.manager.setPeeking(false)
+        #expect(!f.manager.isPeeking(source: .shortcut))
+        #expect(!f.manager.isPeeking(source: .command))
+    }
+
+    @Test func commandPeekRenewalExtendsTheLeaseAndKeepsTheOriginalPauseState() throws {
+        var now = ContinuousClock().now
+        let f = CommandFixture(defaults: defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests"),
+                               peekNow: { now })
+        _ = try f.handler.execute(.master(.on))
+        _ = try f.handler.execute(.pause(.on))
+        _ = try f.handler.execute(.peek(.on))
+
+        now = now.advanced(by: .seconds(3))
+        f.manager.resume()
+        #expect(try f.handler.execute(.peek(.renew)).peeking == true)
+        now = now.advanced(by: .seconds(2))
+        #expect(f.handler.snapshot().peeking == true)
+        let status = try f.handler.execute(.peek(.tap))
+        #expect(status.peeking == false)
+        #expect(status.pausedUntil == nil)
+    }
+
+    @Test func commandPeekRenewalCannotReacquireAfterCancellationOrExpiry() throws {
+        var now = ContinuousClock().now
+        let f = CommandFixture(defaults: defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests"),
+                               peekNow: { now })
+        _ = try f.handler.execute(.master(.on))
+        #expect(try f.handler.execute(.peek(.renew)).peeking == false)
+        _ = try f.handler.execute(.peek(.on))
+        _ = f.manager.pause()
+        f.manager.resume()
+        for _ in 0..<2 {
+            #expect(try f.handler.execute(.peek(.renew)).peeking == false)
+        }
+
+        #expect(try f.handler.execute(.peek(.on)).peeking == true)
+        f.manager.setPeeking(true, source: .shortcut)
+        now = now.advanced(by: .seconds(4))
+        #expect(try f.handler.execute(.peek(.renew)).peeking == true)
+        #expect(!f.manager.isPeeking(source: .command))
+        #expect(f.manager.isPeeking(source: .shortcut))
+        #expect(try f.handler.execute(.peek(.tap)).pausedUntil == nil)
+        f.manager.setPeeking(false, source: .shortcut)
+        #expect(f.handler.snapshot().peeking == false)
+    }
+
+    @Test func commandPeekLeaseExpiresWithoutAnotherCommand() async throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.master(.on))
+        #expect(try f.handler.execute(.peek(.on)).peeking == true)
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(8))
+        while f.manager.isPeeking(source: .command), clock.now < deadline {
+            try await clock.sleep(for: .milliseconds(50))
+        }
+        #expect(!f.manager.isPeeking(source: .command))
+        #expect(f.handler.snapshot().peeking == false)
+    }
+
+    @Test func commandPeekOnlyInterruptsSliderInteractionWhenTapped() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.master(.on))
+        let token = f.manager.beginSliderInteraction()
+        for action: CommandPeek in [.on, .renew, .off, .tap, .on] {
+            _ = try f.handler.execute(.peek(action))
+            #expect(f.manager.isSliderInteractionCurrent(token))
+        }
+        _ = try f.handler.execute(.peek(.tap))
+        #expect(!f.manager.isSliderInteractionCurrent(token))
     }
 
     @Test func untilSunriseWithoutASunriseOrLocationIsAClearErrorAndDoesNotPause() throws {
@@ -265,6 +395,53 @@ private struct CommandFixture {
         #expect(f.defaults.object(forKey: "redlight.adaptiveWakeTime") == nil)
     }
 
+    @Test func learnCommandsSwitchLearningAndResetIt() throws {
+        let location = FakeLocationProvider()
+        location.coordinate = (latitude: 41.88, longitude: -87.63)
+        let f = makeFixture(location: location)
+        // On until switched off.
+        #expect(f.handler.snapshot().learning == Status.Learning(enabled: true, colorAnchors: 0, whitepointAnchors: 0, backups: 0))
+        var status = try f.handler.execute(.learn(.off))
+        #expect(status.learning?.enabled == false && !f.manager.learningEnabled)
+        #expect(f.defaults.object(forKey: "redlight.learningEnabled") as? Bool == false)
+        status = try f.handler.execute(.learn(.on))
+        #expect(status.learning?.enabled == true && status.learning?.anchors == 0)
+        #expect(f.manager.learningEnabled)
+        #expect(f.defaults.bool(forKey: "redlight.learningEnabled"))
+        status = try f.handler.execute(.learn(.toggle))
+        #expect(status.learning?.enabled == false && !f.manager.learningEnabled)
+        status = try f.handler.execute(.learn(.toggle))
+        #expect(status.learning?.enabled == true)
+        // A nudge in Auto is something learned, on that slider.
+        _ = try f.handler.execute(.adaptive(.on))
+        status = try f.handler.execute(.step(.color, -10))
+        #expect(status.learning?.anchors == 1 && status.learning?.colorAnchors == 1)
+        #expect(status.learning?.whitepointAnchors == 0 && status.learning?.summary.count == 1)
+        status = try f.handler.execute(.learn(.reset))
+        #expect(status.learning?.enabled == true, "a reset forgets; it does not switch off")
+        #expect(status.learning?.anchors == 0 && status.learning?.summary == [])
+        status = try f.handler.execute(.learn(.off))
+        #expect(status.learning?.enabled == false)
+        #expect(!f.defaults.bool(forKey: "redlight.learningEnabled"))
+    }
+
+    @Test func learnRestoreBringsBackWhatAResetKeptAndRefusesWhenThereIsNone() throws {
+        let f = makeFixture()
+        _ = try f.handler.execute(.learn(.on))
+        do {
+            _ = try f.handler.execute(.learn(.restore))
+            Issue.record("Restored with nothing kept")
+        } catch let error as CommandError {
+            #expect(error.code == .invalidInput)
+            #expect(error.message.contains("no earlier learning"))
+        }
+        // A reset with nothing learned keeps nothing, so there is still nothing to restore.
+        let status = try f.handler.execute(.learn(.reset))
+        #expect(status.learning?.backups == 0)
+        #expect(throws: CommandError.self) { _ = try f.handler.execute(.learn(.restore)) }
+        // What a restore brings back is tested through the manager in LearnedAutoTests.
+    }
+
     @Test func invalidBedtimesAreRejectedBeforeInterrupting() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.bedtime(.at(hour: 21, minute: 0)))
@@ -292,7 +469,7 @@ private struct CommandFixture {
         #expect(f.manager.intensity == 0.42)
         #expect(f.manager.whitepoint == WhitepointScale.output(percent: 67))
         #expect(abs(f.manager.whitepoint - 0.7525) < 1e-12)
-        #expect(f.defaults.double(forKey: "redlight.intensity") == 0.42)
+        #expect(f.defaults.integer(forKey: "redlight.colorPercent") == 42)
         _ = try f.handler.execute(.limits(.color, min: 20, max: 70))
         _ = try f.handler.execute(.limits(.whitepoint, min: 40, max: 80))
         #expect(f.manager.intensityBand == 0.2...0.7)
@@ -317,7 +494,7 @@ private struct CommandFixture {
         var last = -1.0
         for percent in 0...100 {
             let status = try f.handler.execute(.whitepoint(Double(percent)))
-            #expect(status.whitepoint.set == Double(percent), "\(percent) reads \(status.whitepoint.set)")
+            #expect(status.whitepoint.set == percent, "\(percent) reads \(status.whitepoint.set)")
             #expect(abs(f.manager.whitepoint - (0.25 + 0.0075 * Double(percent))) < 1e-12)
             #expect(f.manager.whitepoint > last)
             last = f.manager.whitepoint
@@ -336,35 +513,35 @@ private struct CommandFixture {
         // Status text writes one decimal, whatever is behind it.
         #expect(Status.Limits.factory.whitepoint.text == "50.0–100.0%")
         #expect(Status.Band(min: 100.0 / 15, max: 100).text == "6.7–100.0%")
-        #expect(Status.Level(set: 80.0 / 3, target: 100.0 / 15).text == "26.7% (target 6.7%)")
+        #expect(Status.Level(set: 27, target: 7).text == "27% (target 7%)")
         #expect(Status.Band(min: 50, max: 50).text == "fixed at 50.0%")
     }
 
     @Test func whitePointStepsAreSoManyPercentOfTheScaleAndComeBackTheSameWay() throws {
         let f = makeFixture()
         _ = try f.handler.execute(.whitepoint(100))
-        var seen: [Double] = [100]
+        var seen: [Int] = [100]
         // Down in fives to the floor: each step lands five lower, and the floor holds.
         for _ in 0..<22 {
             let status = try f.handler.execute(.step(.whitepoint, -5))
             seen.append(status.whitepoint.set)
         }
         for (index, value) in seen.prefix(21).enumerated() {
-            #expect(abs(value - Double(100 - 5 * index)) < 1e-6, "step \(index): \(value)")
+            #expect(value == 100 - 5 * index, "step \(index): \(value)")
         }
         #expect(seen.suffix(3) == [0, 0, 0])
         #expect(f.manager.whitepoint == 0.25)
         // And up again through the same values.
-        var back: [Double] = [0]
+        var back: [Int] = [0]
         for _ in 0..<20 { back.append(try f.handler.execute(.step(.whitepoint, 5)).whitepoint.set) }
-        for (down, up) in zip(seen.prefix(21).reversed(), back) { #expect(abs(down - up) < 1e-6) }
+        for (down, up) in zip(seen.prefix(21).reversed(), back) { #expect(down == up) }
         #expect(f.manager.whitepoint == 1)
         // A fractional step never moves the wrong way.
         for step in [0.3, 1.5, 7.25] {
             let before = f.handler.snapshot().whitepoint.set
             let lower = try f.handler.execute(.step(.whitepoint, -step)).whitepoint.set
-            #expect(lower < before)
-            #expect(try f.handler.execute(.step(.whitepoint, step)).whitepoint.set > lower)
+            #expect(lower == before - Int(step.rounded()))
+            #expect(try f.handler.execute(.step(.whitepoint, step)).whitepoint.set == before)
         }
     }
 
@@ -378,16 +555,16 @@ private struct CommandFixture {
             let wanted = Preset.defaults[preset.index]
             #expect(f.manager.whitepoint == wanted.whitepoint)
             #expect(f.manager.intensity == wanted.intensity)
-            #expect(abs(status.whitepoint.set - (wanted.whitepoint - 0.25) / 0.75 * 100) < 1e-8)
+            #expect(status.whitepoint.set == wanted.whitepointPercent)
         }
-        #expect(Preset.defaults.map(\.whitepoint) == [1.0, 0.85, 0.65, 0.45, 0.3])
+        #expect(Preset.defaults.map(\.whitepointPercent) == [100, 80, 53, 27, 7])
         // A white point saved by an earlier version loads as the output value it was.
         let defaults = defaultsRegistry.makeDefaults(prefix: "CommandHandlerTests")
         defaults.set(0.45, forKey: "redlight.whitepoint")
         defaults.set(0.4, forKey: "redlight.adaptiveWpMin")
         let loaded = CommandFixture(defaults: defaults, location: nil, fadeDuration: 0)
-        #expect(loaded.manager.whitepoint == 0.45 && loaded.manager.adaptiveWpMin == 0.4)
-        #expect(abs(loaded.handler.snapshot().whitepoint.set - 80.0 / 3) < 1e-8)
+        #expect(loaded.manager.whitepointPercent == 27 && loaded.manager.adaptiveWpMin == 0.4)
+        #expect(loaded.handler.snapshot().whitepoint.set == 27)
         #expect(abs(loaded.handler.snapshot().limits.whitepoint.min - 20) < 1e-8)
         // The minimum an earlier version started with, 0.3, is kept as a limit someone has:
         // only Reset, which now shows for it, takes it to the new default.
@@ -606,7 +783,7 @@ private struct CommandFixture {
         #expect(status.fading)
         #expect(status.color.target == 0)
         // Late's white point, 0.3 on the displays, is a fifteenth of the way up its scale.
-        #expect(abs(status.whitepoint.target - 100.0 / 15) < 1e-8)
+        #expect(status.whitepoint.target == 7)
         #expect(status.elevation != nil)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)
@@ -619,9 +796,9 @@ private struct CommandFixture {
         #expect(status.fading)
         #expect(!status.adaptive)
         #expect(status.activePreset == .night)
-        #expect(abs(status.color.target - 25) < 1e-9)
+        #expect(status.color.target == 25)
         // Night's 0.45 on the displays.
-        #expect(abs(status.whitepoint.target - 80.0 / 3) < 1e-8)
+        #expect(status.whitepoint.target == 27)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)
         // Re-applying the preset already on screen has nothing to fade.
@@ -630,7 +807,7 @@ private struct CommandFixture {
         _ = try f.handler.execute(.preset(.day))
         let level = try f.handler.execute(.color(60))
         #expect(level.activePreset == nil)
-        #expect(abs(level.color.target - 60) < 1e-9)
+        #expect(level.color.target == 60)
         #expect(level.fading)
         f.manager.completeOutputTransition()
         #expect(!f.handler.snapshot().fading)

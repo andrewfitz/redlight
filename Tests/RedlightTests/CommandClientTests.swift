@@ -20,7 +20,10 @@ private final class ClientProbe: @unchecked Sendable {
 
 @Suite struct CommandClientTests {
     @Test func stoppedReadAndStopCommandsNeverLaunch() async throws {
-        for command: RedlightCommand in [.status, .master(.off), .pause(.on), .pauseFor(.minutes(90)), .pauseFor(.untilSunrise), .quit] {
+        let commands: [RedlightCommand] = [
+            .status, .master(.off), .pause(.on), .pauseFor(.minutes(90)), .pauseFor(.untilSunrise), .quit,
+        ] + CommandPeek.allCases.map(RedlightCommand.peek)
+        for command in commands {
             let probe = ClientProbe()
             let client = CommandClient(hasPort: { probe.hasPort() }, isAppRunning: { false },
                                        launch: { probe.started() }, send: { probe.sent($0) })
@@ -49,7 +52,8 @@ private final class ClientProbe: @unchecked Sendable {
             .displayList, .display(.all, .on), .invert(.all, .on), .appearance(.dark), .login(true), .update,
             .location(.manual(latitude: 51.5, longitude: -0.13)), .location(.automatic),
             .bedtime(.at(hour: 22, minute: 30)), .bedtime(.off),
-            .appsList, .apps(.add("com.adobe.Photoshop")), .apps(.remove("com.adobe.Photoshop")), .apps(.clear),
+            .appsList, .apps(.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))),
+            .apps(.remove("com.adobe.Photoshop")), .apps(.clear),
         ]
         for command in commands {
             let probe = ClientProbe()
@@ -167,7 +171,7 @@ private final class ClientProbe: @unchecked Sendable {
         let client = CommandClient(hasPort: { true }, send: { _ in status })
         var output = ""
         #expect(await RedlightCLI.run(arguments: ["status"], client: client, writeOutput: { output = $0 }) == 0)
-        for field in ["Redlight 1.2: on", "42.0% (target 43.0%)", "70.0% (target 71.0%)",
+        for field in ["Redlight 1.2: on", "42% (target 43%)", "70% (target 71%)",
                       "color temp 10.0–80.0%", "white point 30.0–90.0%", "Preset: night", "Adaptive: on",
                       "fading", "Elevation: -10.5°", "Appearance: dark", "Launch at login: on (approval required)",
                       "Night below horizon", "1: Studio", "invert on"] {

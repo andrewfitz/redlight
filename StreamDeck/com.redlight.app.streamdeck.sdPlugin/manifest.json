@@ -1,0 +1,152 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Actions": [
+    {
+      "Name": "Toggle Redlight",
+      "UUID": "com.redlight.app.streamdeck.toggle",
+      "Icon": "imgs/list/toggle",
+      "Tooltip": "Turn Redlight on or off",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/toggle"
+        }
+      ],
+      "PropertyInspectorPath": "ui/display.html"
+    },
+    {
+      "Name": "Hold to Peek",
+      "UUID": "com.redlight.app.streamdeck.pause-peek",
+      "Icon": "imgs/list/pause-peek",
+      "Tooltip": "Hold to reveal true colors. Release to restore the prior state.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "ui/display.html",
+      "States": [
+        {
+          "Image": "imgs/actions/pause-peek"
+        }
+      ]
+    },
+    {
+      "Name": "Redlight Preset",
+      "UUID": "com.redlight.app.streamdeck.preset",
+      "Icon": "imgs/list/preset",
+      "Tooltip": "Apply a Redlight preset",
+      "Controllers": [
+        "Keypad"
+      ],
+      "PropertyInspectorPath": "ui/preset.html",
+      "States": [
+        {
+          "Image": "imgs/actions/preset"
+        }
+      ]
+    },
+    {
+      "Name": "Adjust Redlight",
+      "UUID": "com.redlight.app.streamdeck.adjust",
+      "Icon": "imgs/list/adjust",
+      "Tooltip": "Adjust Color Temp or White Point",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "PropertyInspectorPath": "ui/adjust.html",
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Push": "Reset channel",
+          "Rotate": "Adjust value"
+        }
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/adjust"
+        }
+      ]
+    },
+    {
+      "Name": "Redlight Status",
+      "UUID": "com.redlight.app.streamdeck.status",
+      "Icon": "imgs/list/status",
+      "Tooltip": "Show live Redlight status",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "PropertyInspectorPath": "ui/display.html",
+      "Encoder": {
+        "layout": "layouts/status.json"
+      },
+      "States": [
+        {
+          "Image": "imgs/actions/status"
+        }
+      ]
+    },
+    {
+      "Name": "Pause Redlight",
+      "UUID": "com.redlight.app.streamdeck.pause",
+      "Icon": "imgs/list/pause",
+      "Tooltip": "Start a timed pause",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "ui/display.html",
+      "States": [
+        {
+          "Image": "imgs/actions/pause"
+        }
+      ]
+    },
+    {
+      "Name": "Resume Redlight",
+      "UUID": "com.redlight.app.streamdeck.resume",
+      "Icon": "imgs/list/resume",
+      "Tooltip": "End a timed pause",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "ui/display.html",
+      "States": [
+        {
+          "Image": "imgs/actions/resume"
+        }
+      ]
+    }
+  ],
+  "ApplicationsToMonitor": {
+    "mac": [
+      "com.redlight.app"
+    ]
+  },
+  "Author": "Redlight",
+  "Category": "Redlight",
+  "CategoryIcon": "imgs/list/category",
+  "CodePath": "bin/plugin.js",
+  "Description": "Control Redlight and monitor its live display state from Stream Deck.",
+  "Icon": "imgs/plugin",
+  "Name": "Redlight",
+  "Nodejs": {
+    "Version": "24"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "14"
+    }
+  ],
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "UUID": "com.redlight.app.streamdeck",
+  "Version": "0.2.1.0"
+}

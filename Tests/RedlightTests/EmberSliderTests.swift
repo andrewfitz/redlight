@@ -689,6 +689,8 @@ import Testing
 
     @Test func aPushPartwayDownTheCurveKeepsTheValueOnTheNextTick() {
         let (manager, _, _) = makeManager(Self.auto, at: Self.evening)
+        // Without Learn my adjustments: a push is one offset for the whole curve.
+        manager.setLearning(false)
         let start = manager.intensity
         #expect(start > 0.2 + 1e-6 && start < 0.8 - 1e-6, "the evening is not partway down the band: \(start)")
         manager.setIntensityPushingBand(0.95)
@@ -731,7 +733,7 @@ import Testing
         let (pinned, _, _) = makeManager(Self.auto.merging(
             ["redlight.adaptiveWpMin": 1.0, "redlight.adaptiveWpMax": 1.0]) { $1 })
         pinned.setWhitepointPushingBand(0.5)
-        #expect(pinned.whitepoint == 0.5 && pinned.adaptiveWpMin == 0.5 && pinned.adaptiveWpMax == 0.5)
+        #expect(pinned.whitepointPercent == 33 && pinned.adaptiveWpMin == pinned.whitepoint && pinned.adaptiveWpMax == pinned.whitepoint)
     }
 
     @Test func manualTakesAnyValueAndLeavesTheLimits() {

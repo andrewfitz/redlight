@@ -75,10 +75,11 @@ enum RedlightChannel: String, AppEnum {
 
 /// Spoken as "Make Redlight warmer". Lower Color Temp is redder, so warmer steps down.
 enum RedlightAdjustment: String, AppEnum {
-    case warmer, cooler, dimmer, brighter
+    case warmer, cooler, dimmer, brighter, moreColor, lessColor
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Adjustment"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
         .warmer: "warmer", .cooler: "cooler", .dimmer: "dimmer", .brighter: "brighter",
+        .moreColor: "more color", .lessColor: "less color",
     ]
     func command(amount: Double) -> RedlightCommand {
         switch self {
@@ -86,6 +87,8 @@ enum RedlightAdjustment: String, AppEnum {
         case .cooler: .step(.color, amount)
         case .dimmer: .step(.whitepoint, -amount)
         case .brighter: .step(.whitepoint, amount)
+        case .moreColor: .saturationStep(amount)
+        case .lessColor: .saturationStep(-amount)
         }
     }
 }
@@ -200,17 +203,17 @@ struct AdjustRedlightIntent: AppIntent {
         "Makes the filter warmer or cooler (Color Temp), or dimmer or brighter (White Point), from its current setting.")
     static let openAppWhenRun = false
     @Parameter(title: "Adjustment", default: .warmer) var adjustment: RedlightAdjustment
-    @Parameter(title: "Amount", default: 5, inclusiveRange: (1, 100)) var amount: Double
+    @Parameter(title: "Amount", default: 5, inclusiveRange: (1, 100)) var amount: Int
     static var parameterSummary: some ParameterSummary {
         Summary("Make Redlight \(\.$adjustment) by \(\.$amount)%")
     }
     init() {}
-    init(adjustment: RedlightAdjustment, amount: Double = 5) {
+    init(adjustment: RedlightAdjustment, amount: Int = 5) {
         self.adjustment = adjustment
         self.amount = amount
     }
     @MainActor func perform() async throws -> some IntentResult {
-        _ = try IntentBridge.execute(adjustment.command(amount: amount))
+        _ = try IntentBridge.execute(adjustment.command(amount: Double(amount)))
         return .result()
     }
 }
@@ -218,11 +221,11 @@ struct AdjustRedlightIntent: AppIntent {
 struct SetRedlightColorIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Redlight Color Temp"
     static let openAppWhenRun = false
-    @Parameter(title: "Color Temp", inclusiveRange: (0, 100)) var value: Double
+    @Parameter(title: "Color Temp", inclusiveRange: (0, 100)) var value: Int
     init() {}
-    init(value: Double) { self.value = value }
+    init(value: Int) { self.value = value }
     @MainActor func perform() async throws -> some IntentResult {
-        _ = try IntentBridge.execute(.color(value))
+        _ = try IntentBridge.execute(.color(Double(value)))
         return .result()
     }
 }
@@ -230,11 +233,37 @@ struct SetRedlightColorIntent: AppIntent {
 struct SetRedlightWhitepointIntent: AppIntent {
     static let title: LocalizedStringResource = "Set Redlight White Point"
     static let openAppWhenRun = false
-    @Parameter(title: "White Point", inclusiveRange: (0, 100)) var value: Double
+    @Parameter(title: "White Point", inclusiveRange: (0, 100)) var value: Int
     init() {}
-    init(value: Double) { self.value = value }
+    init(value: Int) { self.value = value }
     @MainActor func perform() async throws -> some IntentResult {
-        _ = try IntentBridge.execute(.whitepoint(value))
+        _ = try IntentBridge.execute(.whitepoint(Double(value)))
+        return .result()
+    }
+}
+
+struct SetRedlightSaturationIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Saturation"
+    static let description = IntentDescription(
+        "Sets the display color from grayscale at 0 percent to full color at 100 percent. Redlight's red filter and white point still apply over it.")
+    static let openAppWhenRun = false
+    @Parameter(title: "Saturation", inclusiveRange: (0, 100)) var value: Int
+    init() {}
+    init(value: Int) { self.value = value }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.saturation(Double(value)))
+        return .result()
+    }
+}
+
+struct SetRedlightSaturationEnabledIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Saturation Filter"
+    static let openAppWhenRun = false
+    @Parameter(title: "State", default: .off) var mode: RedlightMode
+    init() {}
+    init(mode: RedlightMode) { self.mode = mode }
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.saturationEnabled(mode.command))
         return .result()
     }
 }
@@ -283,6 +312,33 @@ struct SetRedlightAdaptiveIntent: AppIntent {
     init(mode: RedlightMode) { self.mode = mode }
     @MainActor func perform() async throws -> some IntentResult {
         _ = try IntentBridge.execute(.adaptive(mode.command))
+        return .result()
+    }
+}
+
+struct SetRedlightLearningIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight Learning"
+    static let description = IntentDescription(
+        "Turns \"Learn my adjustments\" on or off: Auto learns how you set each slider at each time of day and starts doing it for you.")
+    static let openAppWhenRun = false
+    @Parameter(title: "State", default: .on) var mode: RedlightMode
+    init() {}
+    init(mode: RedlightMode) { self.mode = mode }
+    @MainActor func perform() async throws -> some IntentResult {
+        let change: CommandLearn = switch mode.command { case .on: .on; case .off: .off; case .toggle: .toggle }
+        _ = try IntentBridge.execute(.learn(change))
+        return .result()
+    }
+}
+
+struct ResetRedlightLearningIntent: AppIntent {
+    static let title: LocalizedStringResource = "Reset Redlight Learning"
+    static let description = IntentDescription(
+        "Forgets what Auto has learned from your adjustments. Your limits and Auto's own offset are kept.")
+    static let openAppWhenRun = false
+    init() {}
+    @MainActor func perform() async throws -> some IntentResult {
+        _ = try IntentBridge.execute(.learn(.reset))
         return .result()
     }
 }
@@ -394,22 +450,83 @@ struct TurnOffRedlightWakeTimeIntent: AppIntent {
     }
 }
 
-struct PauseRedlightForAppIntent: AppIntent {
-    static let title: LocalizedStringResource = "Pause Redlight for an App"
+enum RedlightAppRuleKind: String, AppEnum {
+    case pause, hold, shift
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "App Rule"
+    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .pause: "Pause", .hold: "Hold", .shift: "Shift",
+    ]
+}
+
+/// A Hold and a Shift each have their own two amounts, with their own range and default, so
+/// the editor offers only values the rule takes and a Hold starts with no tint. The ranges
+/// are literals: the metadata extraction reads them from the source.
+struct SetRedlightAppRuleIntent: AppIntent {
+    static let title: LocalizedStringResource = "Set Redlight App Rule"
     static let description = IntentDescription(
-        "Suspends the color filter whenever this app is in front. Use its bundle ID, such as com.apple.Photos. Invert stays on.")
+        "While this app is in front: Pause hides the color filter, Hold shows its own Color Temp and White Point (0 to 100; 100 is no tint), and Shift adds its amounts (-100 to 100) to what Auto or Manual shows. Leave saturation empty to follow the global setting. Use the app's bundle ID, such as com.adobe.Photoshop.")
     static let openAppWhenRun = false
     @Parameter(title: "Bundle ID") var bundleID: String
+    @Parameter(title: "Rule", default: .pause) var rule: RedlightAppRuleKind
+    @Parameter(title: "Color Temp", default: 100, inclusiveRange: (0, 100)) var holdColor: Int
+    @Parameter(title: "White Point", default: 100, inclusiveRange: (0, 100)) var holdWhitepoint: Int
+    @Parameter(title: "Saturation", inclusiveRange: (0, 100)) var holdSaturation: Int?
+    @Parameter(title: "Color Temp Shift", default: 0, inclusiveRange: (-100, 100)) var shiftColor: Int
+    @Parameter(title: "White Point Shift", default: 0, inclusiveRange: (-100, 100)) var shiftWhitepoint: Int
+    @Parameter(title: "Saturation Shift", inclusiveRange: (-100, 100)) var shiftSaturation: Int?
+    static var parameterSummary: some ParameterSummary {
+        Switch(\.$rule) {
+            Case(.hold) {
+                Summary("Set Redlight rule for \(\.$bundleID) to \(\.$rule)") {
+                    \.$holdColor
+                    \.$holdWhitepoint
+                    \.$holdSaturation
+                }
+            }
+            Case(.shift) {
+                Summary("Set Redlight rule for \(\.$bundleID) to \(\.$rule)") {
+                    \.$shiftColor
+                    \.$shiftWhitepoint
+                    \.$shiftSaturation
+                }
+            }
+            DefaultCase {
+                Summary("Set Redlight rule for \(\.$bundleID) to \(\.$rule)")
+            }
+        }
+    }
     init() {}
-    init(bundleID: String) { self.bundleID = bundleID }
+    /// Amounts left out keep the rule's defaults.
+    init(bundleID: String, rule: RedlightAppRuleKind, color: Int? = nil, whitepoint: Int? = nil, saturation: Int? = nil) {
+        self.bundleID = bundleID
+        self.rule = rule
+        switch rule {
+        case .pause: break
+        case .hold:
+            if let color { holdColor = color }
+            if let whitepoint { holdWhitepoint = whitepoint }
+            holdSaturation = saturation
+        case .shift:
+            if let color { shiftColor = color }
+            if let whitepoint { shiftWhitepoint = whitepoint }
+            shiftSaturation = saturation
+        }
+    }
+    var appRule: AppRule {
+        switch rule {
+        case .pause: .pause
+        case .hold: .hold(color: holdColor, whitepoint: holdWhitepoint, saturation: holdSaturation)
+        case .shift: .shift(color: shiftColor, whitepoint: shiftWhitepoint, saturation: shiftSaturation)
+        }
+    }
     @MainActor func perform() async throws -> some IntentResult {
-        _ = try IntentBridge.execute(.apps(.add(bundleID)))
+        _ = try IntentBridge.execute(.apps(.set(bundleID, appRule)))
         return .result()
     }
 }
 
-struct StopPausingRedlightForAppIntent: AppIntent {
-    static let title: LocalizedStringResource = "Stop Pausing Redlight for an App"
+struct RemoveRedlightAppRuleIntent: AppIntent {
+    static let title: LocalizedStringResource = "Remove Redlight App Rule"
     static let openAppWhenRun = false
     @Parameter(title: "Bundle ID") var bundleID: String
     init() {}
@@ -420,17 +537,18 @@ struct StopPausingRedlightForAppIntent: AppIntent {
     }
 }
 
-struct ListRedlightPauseAppsIntent: AppIntent {
-    static let title: LocalizedStringResource = "List Apps That Pause Redlight"
+/// One line per app, as `redlight apps list` prints them.
+struct ListRedlightAppRulesIntent: AppIntent {
+    static let title: LocalizedStringResource = "List Redlight App Rules"
     static let openAppWhenRun = false
     init() {}
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<[String]> {
-        .result(value: try IntentBridge.execute(.appsList).apps)
+        .result(value: try IntentBridge.execute(.appsList).appRules.map(RedlightCLI.appRuleLine))
     }
 }
 
-struct ClearRedlightPauseAppsIntent: AppIntent {
-    static let title: LocalizedStringResource = "Clear Apps That Pause Redlight"
+struct ClearRedlightAppRulesIntent: AppIntent {
+    static let title: LocalizedStringResource = "Clear Redlight App Rules"
     static let openAppWhenRun = false
     init() {}
     @MainActor func perform() async throws -> some IntentResult {
@@ -534,10 +652,10 @@ func redlightStatusText(_ status: Status) -> String {
     if let pausedUntil = status.pausedUntil {
         text += " (paused, \(DisplayManager.pauseMinutesLeft(until: pausedUntil, now: Date())) min left)"
     }
-    if let app = status.suspendedFor { text += " (suspended for \(app))" }
-    text += "\nColor Temp: \(status.color.text)\nWhite Point: \(status.whitepoint.text)\nAdaptive: \(status.adaptive ? "on" : "off")"
+    text += "\nColor Temp: \(status.color.text)\nWhite Point: \(status.whitepoint.text)\nSaturation: \(status.saturationText)\nAdaptive: \(status.adaptive ? "on" : "off")"
     if let bedtime = status.bedtime { text += "\nBedtime: \(bedtime)" }
     if let wake = status.wake { text += "\nWake time: \(wake)" }
+    if let learning = status.learning, learning.enabled { text += "\nLearning: on\nLearned: \(learning.text)" }
     text += "\nPreset: \(status.activePreset?.cliName ?? "custom")\nLimits: Color Temp \(status.limits.color.text), White Point \(status.limits.whitepoint.text)"
     text += "\nAppearance: \(status.appearance.rawValue)\nLaunch at Login: \(status.login.enabled ? "on" : "off")\(status.login.requiresApproval ? " (approval needed)" : "")\nVersion: \(status.version)"
     if let elevation = status.elevation { text += "\nSolar elevation: \(elevation)°" }
@@ -556,5 +674,7 @@ struct RedlightShortcuts: AppShortcutsProvider {
         AppShortcut(intent: PauseRedlightIntent(), phrases: ["Pause \(.applicationName)"], shortTitle: "Pause", systemImageName: "pause.fill")
         AppShortcut(intent: ResumeRedlightIntent(), phrases: ["Resume \(.applicationName)"], shortTitle: "Resume", systemImageName: "play.fill")
         AppShortcut(intent: AdjustRedlightIntent(), phrases: ["Make \(.applicationName) \(\.$adjustment)"], shortTitle: "Adjust", systemImageName: "thermometer.sun")
+        AppShortcut(intent: SetRedlightSaturationIntent(), phrases: ["Set \(.applicationName) saturation to \(\.$value)%"], shortTitle: "Set Saturation", systemImageName: "circle.lefthalf.filled")
+        AppShortcut(intent: SetRedlightSaturationEnabledIntent(), phrases: ["Turn \(.applicationName) saturation \(\.$mode)"], shortTitle: "Saturation Filter", systemImageName: "circle.lefthalf.filled")
     }
 }

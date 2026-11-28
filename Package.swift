@@ -37,6 +37,9 @@ let package = Package(
             ],
             swiftSettings: appMetadataSettings
         ),
-        .testTarget(name: "RedlightTests", dependencies: ["Redlight"]),
+        .testTarget(
+            name: "RedlightTests", dependencies: ["Redlight"],
+            // Runs of the learned-Auto reference, replayed by HabitParityTests.
+            resources: [.copy("Fixtures")]),
     ]
 )

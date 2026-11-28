@@ -28,13 +28,13 @@ private final class PopoverServicesState {
 @MainActor @Suite struct CommandPopoverTests {
     let defaultsRegistry = TestDefaultsRegistry()
 
-    private func makeManager() -> DisplayManager {
+    private func makeManager(location: FakeLocationProvider = FakeLocationProvider()) -> DisplayManager {
         DisplayManager(
             gamma: MockGammaController(), getDisplayIDs: { [41, 92] },
             getDisplayName: { "Display \($0)" },
             getDisplayPersistenceKey: { "stable-\($0)" }, getMainDisplayID: { 41 },
             defaults: defaultsRegistry.makeDefaults(prefix: "CommandPopoverTests"),
-            location: FakeLocationProvider(),
+            location: location,
             adaptiveTransitionDuration: 0, displayTransitionDuration: 0
         )
     }
@@ -141,6 +141,22 @@ private final class PopoverServicesState {
         #expect(manager.wakeTime == Bedtime(hour: 7, minute: 0))
         #expect(dispatch.execute(.wake(.off)) == nil)
         #expect(manager.wakeTime == nil)
+    }
+
+    @Test func learnActionsReachTheModel() {
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(location: location)
+        let dispatch = PopoverCommandDispatch(handler: CommandHandler(manager: manager, services: PopoverServicesState().services))
+        #expect(dispatch.execute(.learn(.on)) == nil)
+        #expect(manager.learningEnabled)
+        manager.adaptiveEnabled = true
+        manager.setIntensityPushingBand(manager.intensity > 0.5 ? 0.2 : 0.8)
+        #expect(manager.learnedAnchorCount == 1)
+        #expect(dispatch.execute(.learn(.reset)) == nil)
+        #expect(manager.learningEnabled && manager.learnedAnchorCount == 0)
+        #expect(dispatch.execute(.learn(.off)) == nil)
+        #expect(!manager.learningEnabled)
     }
 
     @Test func previewsWithoutAHandlerShowAnActionableError() {

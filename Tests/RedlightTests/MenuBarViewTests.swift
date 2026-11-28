@@ -508,7 +508,7 @@ struct AccessibilityTree {
             manager.setWhitepointPushingBand(output)
             tree = await accessibility(of: hosted.document)
             let status = handler.snapshot().whitepoint.set
-            #expect(tree.first("White point")?.value == "\(Int(status.rounded())) percent", "at \(output)")
+            #expect(tree.first("White point")?.value == "\(status) percent", "at \(output)")
         }
         manager.setWhitepointPushingBand(0.25)
         tree = await accessibility(of: hosted.document)
@@ -694,6 +694,72 @@ struct AccessibilityTree {
         #expect(manager.wakeTime == nil)
         #expect(BedtimeDraft(defaults: defaults, kind: .wake).bedtime == Bedtime(hour: 7, minute: 0))
         #expect(BedtimeDraft.wakeKey == "redlight.adaptiveWakeTimeDraft")
+    }
+
+    @Test func learnMyAdjustmentsIsTheThirdRowOfAutoAndSaysWhatItLearned() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        // Switched off before, to be switched on here.
+        defaults.set(false, forKey: "redlight.learningEnabled")
+        defaults.set(true, forKey: "redlight.adaptiveEnabled")
+        defaults.set(true, forKey: "redlight.display.1.enabled")
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location,
+                                  now: { Self.evening }, calendar: Self.chicagoCalendar)
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                               initialPage: .settings)
+        let hosted = try await host(view)
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+
+        let title = LearningRows.title
+        #expect(tree.named(title).count == 1)
+        #expect(tree.first(title)?.role == NSAccessibility.Role.checkBox.rawValue)
+        #expect(tree.first(title)?.value == "0")
+        let clearIndex = try #require(tree.index(BedtimeRow.Kind.wake.title))
+        let learnIndex = try #require(tree.index(title))
+        let locationIndex = try #require(tree.index("Location"))
+        #expect(clearIndex < learnIndex && learnIndex < locationIndex)
+        // Off, it says nothing and offers nothing to reset.
+        #expect(!tree.names.contains(LearningRows.nothingYet))
+        #expect(tree.named(LearningRows.resetTitle).isEmpty)
+
+        tree = try await press(title, in: hosted.document)
+        #expect(manager.learningEnabled)
+        #expect(tree.first(title)?.value == "1")
+        #expect(tree.names.contains(LearningRows.nothingYet))
+        #expect(tree.named(LearningRows.resetTitle).isEmpty)
+
+        // A nudge is something learned: the hint goes, the row says what, and the reset appears.
+        manager.setIntensityPushingBand(max(0, manager.intensity - 0.2))
+        #expect(manager.learnedAnchorCount > 0)
+        let said = try #require(manager.learningSummary.first)
+        #expect(said.hasPrefix("Color temp is about 20% redder "), "\(said)")
+        await settle(hosted.document)
+        tree = await accessibility(of: hosted.document)
+        #expect(!tree.names.contains(LearningRows.nothingYet))
+        // The learned day is drawn; VoiceOver reads it in words.
+        let chart = try #require(tree.first("Color temp through the day"))
+        #expect(chart.value == said)
+        #expect(tree.named(LearningRows.resetTitle).count == 1)
+        // Reset asks first. Cancel leaves everything as it was.
+        tree = try await press(LearningRows.resetTitle, in: hosted.document)
+        #expect(manager.learnedAnchorCount > 0)
+        #expect(tree.names.contains(LearningRows.confirmText))
+        #expect(tree.named(LearningRows.resetTitle).isEmpty)
+        tree = try await press(LearningRows.cancelTitle, in: hosted.document)
+        #expect(manager.learnedAnchorCount > 0 && manager.learningBackupCount == 0)
+        #expect(!tree.names.contains(LearningRows.confirmText))
+        // Confirmed, both sliders are reset and what they had is kept for a restore.
+        tree = try await press(LearningRows.resetTitle, in: hosted.document)
+        tree = try await press(LearningRows.confirmTitle, in: hosted.document)
+        #expect(manager.learnedAnchorCount == 0 && manager.learningEnabled)
+        #expect(manager.learningBackupCount == 1)
+        #expect(tree.names.contains(LearningRows.nothingYet))
+
+        tree = try await press(title, in: hosted.document)
+        #expect(!manager.learningEnabled)
     }
 
     @Test func keepNightShiftOffIsShownOnlyWhereThereIsANightShift() async throws {
@@ -936,6 +1002,12 @@ struct AccessibilityTree {
         #expect(try toggle("Invert colors on Display 2", in: tree).value == "0")
         #expect(tree.named("Invert").isEmpty)
 
+        #expect(tree.first("Saturation")?.value == "0 percent")
+        #expect(try toggle("Saturation filter", in: tree).value == "0")
+        tree = try await press("Saturation filter", in: hosted.document)
+        #expect(manager.saturationEnabled)
+        #expect(try toggle("Saturation filter", in: tree).value == "1")
+
         // A press reaches the model, and the value follows it.
         tree = try await press("Display 2", in: hosted.document)
         #expect(manager.displays.first { $0.id == 2 }?.isEnabled == true)
@@ -953,6 +1025,11 @@ struct AccessibilityTree {
         #expect(manager.adaptiveEnabled)
         #expect(tree.first("Mode")?.value == "Auto")
         #expect(tree.first("Auto")?.isSelected == true)
+
+        #expect(try toggle("Saturation filter", in: tree).value == "1")
+        tree = try await press("Saturation filter", in: hosted.document)
+        #expect(!manager.saturationEnabled)
+        #expect(tree.first("Saturation")?.value == "0 percent")
 
         tree = try await press("Settings", in: hosted.document)
         #expect(try toggle("Launch at login", in: tree).value == (LaunchAtLogin().isEnabled ? "1" : "0"))
@@ -1021,13 +1098,63 @@ struct AccessibilityTree {
         }
     }
 
+    /// The same, outside `excluded`, in bitmap pixels.
+    private func pixels(of color: EmberRGB, in raster: Raster, outside excluded: CGRect) -> [Int] {
+        pixels(of: color, in: raster).filter { index in
+            let pixel = index / 4
+            return !excluded.contains(CGPoint(x: pixel % raster.width, y: pixel / raster.width))
+        }
+    }
+
+    /// The sun arc's canvas in bitmap pixels, top-left origin, and its sun dot's centre.
+    /// The arc is drawn in the tint of each time of day, at the white point of each, so
+    /// somewhere on it is almost any colour the accent can take, the old one included: a
+    /// check for a stale colour leaves its rectangle out. Its accessibility element spans
+    /// the row; the canvas reaches `SunArcView.bleed` past it on either side.
+    private func sunArc(
+        in popover: OffscreenPopover, latitude: Double, longitude: Double, scale: CGFloat = 2
+    ) async throws -> (rect: CGRect, sun: CGPoint) {
+        AccessibilityTree.enable()
+        _ = popover.document.accessibilityChildren()
+        await popover.settle()
+        let tree = AccessibilityTree(popover.document)
+        let node = try #require(tree.nodes.first { $0.name.contains("Solar elevation") }, "no sun arc")
+        let selector = Selector(("accessibilityFrame"))
+        try #require(node.object.responds(to: selector))
+        typealias Frame = @convention(c) (AnyObject, Selector) -> NSRect
+        let screen = unsafeBitCast(node.object.method(for: selector), to: Frame.self)(node.object, selector)
+        let document = popover.document
+        var row = document.convert(popover.window.convertFromScreen(screen), from: nil)
+        if !document.isFlipped { row.origin.y = document.bounds.height - row.maxY }
+        let bleed = SunArcView.bleed
+        let canvas = row.insetBy(dx: -bleed, dy: 0)
+        // The arc follows the wall clock, on the calendar of the view's environment.
+        let cycle = SunCycle(now: Date(), latitude: latitude, longitude: longitude, calendar: .autoupdatingCurrent)
+        let centre = SunArcView.sunCentre(for: cycle, rowWidth: row.width)
+        return (CGRect(x: canvas.minX * scale, y: canvas.minY * scale,
+                       width: canvas.width * scale, height: canvas.height * scale).integral,
+                CGPoint(x: ((canvas.minX + centre.x) * scale).rounded(.down),
+                        y: ((canvas.minY + centre.y) * scale).rounded(.down)))
+    }
+
+    private func colour(at point: CGPoint, in raster: Raster) -> EmberRGB {
+        let index = (Int(point.y) * raster.width + Int(point.x)) * 4
+        return EmberRGB(Double(raster.pixels[index]), Double(raster.pixels[index + 1]), Double(raster.pixels[index + 2]))
+    }
+
+    private func isClose(_ a: EmberRGB, _ b: EmberRGB) -> Bool {
+        abs(a.r - b.r.rounded()) <= 2 && abs(a.g - b.g.rounded()) <= 2 && abs(a.b - b.b.rounded()) <= 2
+    }
+
     /// Draws one dark popover at a low and then a higher colour temp and checks every colour
     /// made from the accent: the accent itself, the committed-action fill and the white point
     /// slider's fill.
     /// Dark, because there all three are made of the accent.
+    /// `arc` is where the sun arc is drawn for, when the popover has one.
     private func expectTheAccentToFollow(
         _ manager: DisplayManager, defaults: UserDefaults,
-        initialState: MenuBarInitialState = MenuBarInitialState(), minimumBands: Int
+        initialState: MenuBarInitialState = MenuBarInitialState(), minimumBands: Int,
+        arc: (latitude: Double, longitude: Double)? = nil
     ) async throws {
         let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager), initialState: initialState)
             .environment(\.colorScheme, .dark)
@@ -1036,6 +1163,9 @@ struct AccessibilityTree {
         defer { popover.close() }
         await popover.settle()
         let palette = EmberPalette.dark
+        var sunArc: (rect: CGRect, sun: CGPoint)?
+        if let arc { sunArc = try await self.sunArc(in: popover, latitude: arc.latitude, longitude: arc.longitude) }
+        let excluded = sunArc?.rect ?? .null
         func capture(_ intensity: Double) async throws -> (accent: EmberRGB, raster: Raster) {
             manager.intensity = intensity
             await popover.settle()
@@ -1060,12 +1190,13 @@ struct AccessibilityTree {
         let newColors = derived.map { $0.color(high.accent) }
         for (name, color) in derived {
             let old = color(low.accent), new = color(high.accent)
-            let painted = pixels(of: old, in: low.raster)
+            let painted = pixels(of: old, in: low.raster, outside: excluded)
             #expect(painted.count > 400, "\(name) was drawn on only \(painted.count) pixels")
             #expect(pixels(of: new, in: high.raster).count > 400, "\(name) is not drawn in its new colour")
             // Nothing is left behind in the old colour.
             if !newColors.contains(old) {
-                #expect(pixels(of: old, in: high.raster).isEmpty, "\(name) is still drawn in its old colour")
+                let stale = pixels(of: old, in: high.raster, outside: excluded)
+                #expect(stale.isEmpty, "\(name) is still drawn in its old colour on \(stale.count) pixels")
             }
             // And each pixel that had it has the new one.
             let wanted = [Int(new.r.rounded()), Int(new.g.rounded()), Int(new.b.rounded())]
@@ -1084,6 +1215,11 @@ struct AccessibilityTree {
             last = row
         }
         #expect(bands >= minimumBands, "the accent is drawn in \(bands) places")
+        // The sun dot is the live accent itself, whatever the arc's tint and dimming.
+        if let sunArc {
+            let dot = colour(at: sunArc.sun, in: high.raster)
+            #expect(isClose(dot, high.accent), "the sun dot is \(dot), not the accent \(high.accent)")
+        }
     }
 
     @Test func theAccentFollowsTheColourTempLiveWhereverItIsPainted() async throws {
@@ -1101,7 +1237,7 @@ struct AccessibilityTree {
         manager.setEnabled(true, for: 1)
         manager.setInverted(true, for: 1)
         // The header's switch, the display's, the arc and the colour temp slider.
-        try await expectTheAccentToFollow(manager, defaults: defaults, minimumBands: 4)
+        try await expectTheAccentToFollow(manager, defaults: defaults, minimumBands: 4, arc: (41.88, -87.63))
 
         // Manual and paused: Resume is the action fill, and the Settings button has its dot.
         defaults = registry.makeDefaults()
@@ -1151,6 +1287,8 @@ struct AccessibilityTree {
         #expect(value > 0.3 && white == 0.7)
         let resting = EmberTint.rgb(intensity: value, scheme: .dark)
         #expect(pixels(of: resting, in: try draw()).count > 400)
+        // Found once: the arc's place does not change while the flags move.
+        let arc = try await sunArc(in: popover, latitude: 41.88, longitude: -87.63)
 
         // The minimum flag dragged to 10 %, the value untouched.
         manager.adaptiveMin = 0.1
@@ -1159,7 +1297,8 @@ struct AccessibilityTree {
         var raster = try draw()
         let previewed = EmberTint.rgb(intensity: 0.1, scheme: .dark)
         #expect(pixels(of: previewed, in: raster).count > 400)
-        #expect(pixels(of: resting, in: raster).isEmpty)
+        #expect(pixels(of: resting, in: raster, outside: arc.rect).isEmpty)
+        #expect(isClose(colour(at: arc.sun, in: raster), previewed), "the sun dot shows the limit")
         // The white point slider keeps the colour temp's hue at its own brightness.
         #expect(pixels(of: fill(intensity: 0.1, whitepoint: white), in: raster).count > 400)
 
@@ -1169,7 +1308,7 @@ struct AccessibilityTree {
         #expect(manager.whitepoint == white)
         raster = try draw()
         #expect(pixels(of: fill(intensity: 0.1, whitepoint: 0.25), in: raster).count > 400)
-        #expect(pixels(of: fill(intensity: 0.1, whitepoint: white), in: raster).isEmpty)
+        #expect(pixels(of: fill(intensity: 0.1, whitepoint: white), in: raster, outside: arc.rect).isEmpty)
 
         // Released: back to the value's own colours, wherever the wider bands put it.
         manager.endPreview()
@@ -1177,9 +1316,47 @@ struct AccessibilityTree {
         #expect(manager.intensity > 0.3)
         let released = EmberTint.rgb(intensity: manager.intensity, scheme: .dark)
         #expect(pixels(of: released, in: raster).count > 400)
-        #expect(pixels(of: previewed, in: raster).isEmpty)
+        #expect(pixels(of: previewed, in: raster, outside: arc.rect).isEmpty)
+        #expect(isClose(colour(at: arc.sun, in: raster), released), "the sun dot is back on the value")
         #expect(pixels(of: fill(intensity: manager.intensity, whitepoint: manager.whitepoint),
                        in: raster).count > 400)
+    }
+
+    @Test func theSunArcDimsAtOnceWhenWhitePointChanges() async throws {
+        for learning in [false, true] {
+            let defaults = TestDefaultsRegistry().makeDefaults()
+            defaults.set(true, forKey: "redlight.adaptiveEnabled")
+            defaults.set(learning, forKey: "redlight.learningEnabled")
+            let location = FakeLocationProvider()
+            location.coordinate = (41.88, -87.63)
+            let manager = makeManager(defaults: defaults, location: location,
+                                      now: { Self.evening }, calendar: Self.chicagoCalendar)
+            manager.setEnabled(true, for: 1)
+            let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager))
+                .environment(\.colorScheme, .dark)
+                .preferredColorScheme(.dark)
+            let popover = try OffscreenPopover(content: AnyView(view), appearance: NSAppearance(named: .darkAqua))
+            defer { popover.close() }
+            await popover.settle()
+            let arc = try await sunArc(in: popover, latitude: 41.88, longitude: -87.63)
+            func arcPixels() throws -> [UInt8] {
+                let bitmap = try popover.makeBitmap()
+                popover.draw(into: bitmap)
+                let raster = try Raster(bitmap)
+                var pixels: [UInt8] = []
+                for y in Int(arc.rect.minY)..<Int(arc.rect.maxY) {
+                    let start = (y * raster.width + Int(arc.rect.minX)) * 4
+                    pixels += raster.pixels[start..<(start + Int(arc.rect.width) * 4)]
+                }
+                return pixels
+            }
+            let before = try arcPixels()
+            // Down to the white point's floor: Auto's own offset, or a nudge it learns.
+            manager.whitepoint = 0.25
+            #expect(manager.whitepoint == manager.whitepointBand.lowerBound)
+            await popover.settle()
+            #expect(try arcPixels() != before, "learning \(learning): the arc still shows the old white point")
+        }
     }
 
     @Test func aLiveAccentGivesTheSameColoursAsTheAccentItself() {
@@ -1241,6 +1418,35 @@ struct AccessibilityTree {
         tree = try await press("Coordinates", in: hosted.document)
         #expect(textFields(in: hosted.document).latitude == "")
         #expect(manager.manualLocation == nil)
+    }
+
+    /// A page or a mode pane is kept once built, out of sight: it is not in what VoiceOver
+    /// reads, and none of its controls take the keyboard.
+    @Test func aPageOutOfSightIsNotReadAndTakesNoKeyboard() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let location = FakeLocationProvider()
+        location.coordinate = (41.88, -87.63)
+        let manager = makeManager(defaults: defaults, location: location)
+        let view = MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager))
+        let hosted = try await host(view)
+        defer { hosted.window.close() }
+        _ = try await press("Settings", in: hosted.document)
+        var tree = try await press("Back", in: hosted.document)
+        // Settings is still built: its time pickers are in the window, refusing the keyboard.
+        let pickers = allViews(hosted.document).compactMap { $0 as? NSDatePicker }
+        #expect(!pickers.isEmpty, "Settings was not kept")
+        let refusing = pickers.filter(\.refusesFirstResponder).count
+        #expect(refusing == pickers.count)
+        #expect(!tree.names.contains("Location for Auto"), "a page out of sight is read")
+        #expect(tree.named("Settings").count == 1)
+        // Both modes built, one read.
+        manager.adaptiveEnabled.toggle()
+        await settle(hosted.document)
+        manager.adaptiveEnabled.toggle()
+        await settle(hosted.document)
+        tree = await accessibility(of: hosted.document)
+        #expect(tree.named("Color temp").count == 1, "\(tree.named("Color temp").count) Color temp sliders are read")
     }
 
     @Test func editingASavedCoordinateSurvivesAboutButNotLeavingSettings() async throws {
@@ -1604,10 +1810,151 @@ extension AccessibilityTree {
         for minutes in 0...(25 * 60) { #expect(PauseCountdown.text(minutes: minutes).count <= 3) }
     }
 
-    /// The row shows the chosen apps; VoiceOver is told them too, not only that it is folded.
-    @Test func pauseForAppsSaysWhichAppsAreChosen() {
-        #expect(PauseForAppsControl.accessibilityValue(chosen: [], isExpanded: false) == "None, collapsed")
-        #expect(PauseForAppsControl.accessibilityValue(chosen: ["Safari", "Preview"], isExpanded: true)
-                == "Safari, Preview, expanded")
+    /// The row shows the apps with a rule; VoiceOver is told them and their rules too, not
+    /// only that it is folded.
+    @Test func appsSaysWhichAppsHaveWhichRule() {
+        #expect(AppsControl.accessibilityValue(chosen: [], isExpanded: false) == "None, collapsed")
+        #expect(AppsControl.accessibilityValue(
+            chosen: [("Safari", .pause), ("Preview", .hold(color: 40, whitepoint: 70))], isExpanded: true)
+                == "Safari: Pause, Preview: Hold, expanded")
+    }
+}
+
+/// The app rules in the hosted popover, with `MenuBarViewTests`' helpers.
+extension MenuBarViewTests {
+    /// The main menu's per-app settings: each app with its rule, a picker, its amounts as
+    /// adjustable values, a remove button, then the running apps to add.
+    @Test func appsRowsNameEachRuleAndStepItsAmounts() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        let source = FakeAppSource(frontmost: .safari)
+        source.names = ["com.apple.Safari": "Safari", "com.apple.Preview": "Preview"]
+        source.runningApps = [.safari, .preview, .script]
+        let apps = AppRulesController(source: source, defaults: defaults,
+                                      ownBundleID: "com.redlight.app", ownProcessID: 999)
+        apps.onChange = { manager.setActiveApp($0) }
+        try apps.set("com.apple.Safari", .hold(color: 40, whitepoint: 70))
+        let handler = CommandHandler(manager: manager, services: CommandServices(
+            appearance: { false }, setAppearance: { _ in },
+            login: { Status.Login(enabled: false, requiresApproval: false) },
+            setLogin: { _ in }, update: {}, quit: {}, version: { "Test" },
+            appRules: { apps.statusRules }, changeApps: { try apps.apply($0) }))
+        let hosted = try await host(MenuBarView(manager: manager, defaults: defaults, handler: handler, apps: apps,
+                                                initialState: MenuBarInitialState(updateAvailable: false),
+                                                initialPage: .controls))
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+        #expect(tree.first(AppsControl.title)?.value == "Safari: Hold, collapsed")
+        #expect(tree.first("Rule for Safari") == nil, "folded")
+
+        tree = try await press(AppsControl.title, in: hosted.document)
+        #expect(tree.first(AppsControl.title)?.value == "Safari: Hold, expanded")
+        #expect(tree.first("Rule for Safari")?.value == "Hold")
+        let color = try #require(tree.first("Safari color temp hold"))
+        #expect(color.value == "40%")
+        #expect(tree.first("Safari white point hold")?.value == "70%")
+        #expect(AccessibilityTree.increment(color))
+        #expect(apps.rule(for: "com.apple.Safari") == .hold(color: 45, whitepoint: 70))
+        tree = await accessibility(of: hosted.document)
+        #expect(tree.first("Safari color temp hold")?.value == "45%")
+        #expect(AccessibilityTree.decrement(try #require(tree.first("Safari white point hold"))))
+        #expect(apps.rule(for: "com.apple.Safari") == .hold(color: 45, whitepoint: 65))
+
+        // The running app without a rule is offered; the one without a bundle ID is not.
+        #expect(tree.first("Add Safari, paused") == nil)
+        #expect(tree.first("Add Script, paused") == nil)
+        tree = try await press("Add Preview, paused", in: hosted.document)
+        #expect(apps.rule(for: "com.apple.Preview") == .pause)
+        #expect(tree.first("Rule for Preview")?.value == "Pause")
+        #expect(tree.first("Preview color temp pause") == nil, "a Pause has no amounts")
+
+        tree = try await press("Remove the rule for Safari", in: hosted.document)
+        #expect(apps.rule(for: "com.apple.Safari") == nil)
+        #expect(tree.first(AppsControl.title)?.value == "Preview: Pause, expanded")
+    }
+
+    /// Opened over an app with a Hold, the sliders set that Hold and say so, until "Edit
+    /// Auto instead"; the model is left alone.
+    @Test func thePopoverOpenedOverAnAppWithAHoldEditsItsRule() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        defaults.set(0.6, forKey: "redlight.intensity")
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        let source = FakeAppSource(frontmost: .photoshop)
+        let apps = AppRulesController(source: source, defaults: defaults,
+                                      ownBundleID: "com.redlight.app", ownProcessID: 999)
+        apps.onChange = { manager.setActiveApp($0) }
+        try apps.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))
+        source.activate(.redlight)
+        let hosted = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                                                apps: apps))
+        defer { hosted.window.close() }
+        var tree = await accessibility(of: hosted.document)
+        #expect(tree.first("The sliders set the Hold for Photoshop") != nil)
+        let color = try #require(tree.first("Color temp for Photoshop"))
+        #expect(color.role == NSAccessibility.Role.slider.rawValue)
+        #expect(color.value == SliderCore.spokenPercent(0.4))
+        #expect(AccessibilityTree.increment(color))
+        let held = try #require(apps.rule(for: "com.adobe.Photoshop")?.amount(.color))
+        #expect(held > 40)
+        #expect(manager.intensity == 0.6, "the Hold, not the model")
+
+        tree = try await press("Edit Manual instead", in: hosted.document)
+        #expect(tree.first("Color temp for Photoshop") == nil)
+        let global = try #require(tree.first("Color temp"))
+        #expect(global.value == SliderCore.spokenPercent(0.6))
+        #expect(tree.first("Photoshop has a Hold; the sliders set Manual") != nil)
+        // Each step takes its own target as it begins: Manual here, the rule untouched.
+        let rule = apps.rule(for: "com.adobe.Photoshop")
+        #expect(AccessibilityTree.increment(global))
+        #expect(manager.intensity > 0.6)
+        #expect(apps.rule(for: "com.adobe.Photoshop") == rule)
+        tree = try await press("Edit Photoshop", in: hosted.document)
+        #expect(tree.first("Color temp for Photoshop") != nil)
+
+        // The app quitting takes the line away; the sliders are Manual's again.
+        source.terminate(.photoshop)
+        tree = await accessibility(of: hosted.document)
+        #expect(tree.first("Color temp for Photoshop") == nil)
+        #expect(tree.first("Color temp") != nil)
+        #expect(tree.first("Edit Manual instead") == nil)
+        let before = manager.intensity
+        #expect(AccessibilityTree.increment(try #require(tree.first("Color temp"))))
+        #expect(manager.intensity > before, "a step after the rule went sets Manual")
+    }
+
+    /// Editing a rule hides Save to a preset, and with it the only Cancel, so choosing a
+    /// preset to overwrite ends there rather than staying on behind the rule.
+    @Test func editingARuleEndsChoosingAPresetToSaveTo() async throws {
+        let registry = TestDefaultsRegistry()
+        let defaults = registry.makeDefaults()
+        let manager = makeManager(defaults: defaults, location: FakeLocationProvider())
+        let source = FakeAppSource(frontmost: .photoshop)
+        let apps = AppRulesController(source: source, defaults: defaults,
+                                      ownBundleID: "com.redlight.app", ownProcessID: 999)
+        apps.onChange = { manager.setActiveApp($0) }
+        try apps.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))
+        source.activate(.redlight)
+        let hosted = try await host(MenuBarView(manager: manager, defaults: defaults, handler: makeHandler(manager),
+                                                apps: apps))
+        defer { hosted.window.close() }
+        func overwriting(_ tree: AccessibilityTree) -> Bool {
+            tree.names.contains { $0.hasPrefix("Overwrite ") && $0.hasSuffix(" preset") }
+        }
+
+        _ = try await press("Edit Manual instead", in: hosted.document)
+        var tree = try await press("Save to a preset", in: hosted.document)
+        #expect(overwriting(tree))
+        #expect(tree.first("Cancel saving to a preset") != nil)
+
+        tree = try await press("Edit Photoshop", in: hosted.document)
+        #expect(tree.first("Cancel saving to a preset") == nil)
+        #expect(!overwriting(tree), "a swatch applies its preset again")
+
+        tree = try await press("Edit Manual instead", in: hosted.document)
+        #expect(tree.first("Save to a preset") != nil)
+        #expect(tree.first("Cancel saving to a preset") == nil)
+        #expect(!overwriting(tree))
     }
 }

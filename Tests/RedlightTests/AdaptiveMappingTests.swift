@@ -42,7 +42,7 @@ import Testing
             (30, 0), (6, 1), (0, 2), (-18, 3), (-70, 4),
         ]
         for anchor in anchors {
-            let target = banded(elevation: anchor.elevation)
+            let target = banded(elevation: anchor.elevation, wMin: presets[4].whitepoint)
             #expect(abs(target.whitepoint - presets[anchor.preset].whitepoint) < 1e-9)
         }
     }

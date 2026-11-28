@@ -18,7 +18,7 @@ struct MenuBarInitialState {
     var commandError: String? = nil
     var choosingSaveTarget = false
     var choosingPauseLength = false
-    /// Pause for apps unfolded, on the Settings page.
+    /// Apps unfolded, on the Settings page.
     var choosingApps = false
     /// Coordinates selected on the Settings page before a manual location is saved.
     var editingLocation = false
@@ -129,14 +129,18 @@ struct MenuBarView: View {
     /// isolated renders without constructing services that change macOS settings.
     var handler: CommandHandler?
     var openShortcuts: (() -> Void)?
-    var apps: AppSuspensionController?
+    var apps: AppRulesController?
     var initialState: MenuBarInitialState
 
     @State private var page: MenuBarPage
     @State private var session: PopoverSession
+    /// The app the popover was opened over, taken once: the popover is made at each opening.
+    @State private var appContext: PopoverAppContext
     @State private var locationDraft: LocationDraft
     @State private var bedtimeDraft: BedtimeDraft
     @State private var wakeDraft: BedtimeDraft
+    /// Color temp as a percent or in kelvin.
+    @State private var colorTempPreference: ColorTempPreference
     /// The header VoiceOver is sent to when one page replaces another.
     @AccessibilityFocusState private var focusedHeader: MenuBarPage?
 
@@ -144,7 +148,7 @@ struct MenuBarView: View {
     /// store the manager was given.
     init(manager: DisplayManager, defaults: UserDefaults = .standard,
          launchAtLogin: LaunchAtLogin? = nil, handler: CommandHandler? = nil,
-         openShortcuts: (() -> Void)? = nil, apps: AppSuspensionController? = nil,
+         openShortcuts: (() -> Void)? = nil, apps: AppRulesController? = nil,
          initialState: MenuBarInitialState = MenuBarInitialState(),
          initialPage: MenuBarPage = .controls) {
         self.manager = manager
@@ -155,6 +159,7 @@ struct MenuBarView: View {
         self.initialState = initialState
         _page = State(initialValue: initialPage)
         _session = State(initialValue: PopoverSession(commandError: initialState.commandError))
+        _appContext = State(initialValue: PopoverAppContext(apps: apps))
         _locationDraft = State(initialValue: LocationDraft(
             isEditing: initialState.editingLocation,
             latitudeText: initialState.latitudeText ?? "",
@@ -162,10 +167,19 @@ struct MenuBarView: View {
             error: initialState.locationError))
         _bedtimeDraft = State(initialValue: BedtimeDraft(defaults: defaults))
         _wakeDraft = State(initialValue: BedtimeDraft(defaults: defaults, kind: .wake))
+        _colorTempPreference = State(initialValue: ColorTempPreference(defaults: defaults))
+    }
+
+    /// Color temp's unit: kelvin as the first tinted display shows it.
+    private var colorTempUnit: SliderUnit {
+        guard colorTempPreference.unit == .kelvin else { return .percent }
+        let display = manager.displays.first { $0.isEnabled }?.id ?? manager.displays.first?.id ?? CGMainDisplayID()
+        return .kelvin(KelvinScale.forDisplay(display))
     }
 
     var body: some View {
         let dispatch = PopoverDispatch(handler: handler, session: session)
+        let colorTempUnit = colorTempUnit
         EmberSurface {
             // The accent follows the colour temp on the displays, also while a flag previews
             // a limit. The closure is not called here or in the scope: each view that paints
@@ -177,14 +191,14 @@ struct MenuBarView: View {
                     switch shown {
                     case .controls:
                         ControlsPage(manager: manager, launchAtLogin: launchAtLogin, dispatch: dispatch,
-                                     session: session, initialState: initialState,
+                                     session: session, appContext: appContext, apps: apps, initialState: initialState,
                                      headerFocus: $focusedHeader) { enterCoordinates in
                             locationDraft.begin(editing: enterCoordinates)
                             page = .settings
                         }
                     case .settings:
                         SettingsPage(manager: manager, launchAtLogin: launchAtLogin,
-                                     openShortcuts: openShortcuts, apps: apps, dispatch: dispatch,
+                                     openShortcuts: openShortcuts, dispatch: dispatch,
                                      session: session, initialState: initialState,
                                      locationDraft: locationDraft, bedtimeDraft: bedtimeDraft,
                                      wakeDraft: wakeDraft,
@@ -196,6 +210,8 @@ struct MenuBarView: View {
                 }
             }
         }
+        .environment(\.emberColorTempUnit, colorTempUnit)
+        .environment(\.colorTempPreference, colorTempPreference)
         .disabled(manager.isTerminating)
         .frame(width: EmberMetrics.width)
         .onChange(of: page) { _, shown in
@@ -229,6 +245,8 @@ private struct ControlsPage: View {
     let launchAtLogin: LaunchAtLogin?
     let dispatch: PopoverDispatch
     let session: PopoverSession
+    let appContext: PopoverAppContext
+    let apps: AppRulesController?
     let initialState: MenuBarInitialState
     let headerFocus: AccessibilityFocusState<MenuBarPage?>.Binding
     /// True opens Settings on the coordinate fields.
@@ -240,15 +258,19 @@ private struct ControlsPage: View {
                           choosingPauseLength: initialState.choosingPauseLength)
             DisplaysCard(manager: manager, dispatch: dispatch)
             ModeControl(manager: manager, dispatch: dispatch)
-            ModeContent(manager: manager, dispatch: dispatch, session: session,
+            ModeContent(manager: manager, dispatch: dispatch, session: session, appContext: appContext,
                         choosingSaveTarget: initialState.choosingSaveTarget, openSettings: openSettings)
+            if let apps {
+                AppsControl(apps: apps, manager: manager, dispatch: dispatch,
+                            divider: false, startExpanded: initialState.choosingApps)
+            }
             SettingsCard(launchAtLogin: launchAtLogin, updateAvailable: initialState.updateAvailable,
                          loginRequiresApproval: initialState.loginRequiresApproval) { openSettings(false) }
             CommandErrorLine(session: session)
         }
         // A login item waiting for approval shows as the Settings dot, so ask on every
         // opening, not only once the Settings page is up.
-        .onAppear { launchAtLogin?.refresh() }
+        .onPaneShown { launchAtLogin?.refresh() }
     }
 }
 
@@ -264,6 +286,7 @@ private struct PopoverHeader: View {
 
     @State private var choosingPauseLength: Bool
     @State private var sunriseAvailable = true
+    @Environment(\.emberDisclose) private var disclose
     /// Moves VoiceOver to Resume when a chosen length takes its row away.
     @AccessibilityFocusState private var pauseFocused: Bool
 
@@ -292,12 +315,13 @@ private struct PopoverHeader: View {
                 Spacer(minLength: 0)
                 PauseControl(
                     pausedUntil: manager.pausedUntil, pauseLength: manager.pauseLength,
+                    isPeeking: manager.isPeeking,
                     isExpanded: choosingPauseLength && canChoosePauseLength,
                     focus: $pauseFocused,
                     toggle: { dispatch(.pause(manager.isPaused ? .off : .on)) },
                     toggleLengths: {
                         if !choosingPauseLength { sunriseAvailable = manager.nextSunrise() != nil }
-                        choosingPauseLength.toggle()
+                        disclose { choosingPauseLength.toggle() }
                     }
                 )
                 // Resume always works; Pause needs a filter to pause.
@@ -318,11 +342,16 @@ private struct PopoverHeader: View {
             HeaderStatus(manager: manager)
             if choosingPauseLength && canChoosePauseLength {
                 PauseLengthRow(sunriseAvailable: sunriseAvailable) { length in
-                    guard dispatch(.pauseFor(length)) else { return }
-                    choosingPauseLength = false
+                    var paused = false
+                    disclose {
+                        paused = dispatch(.pauseFor(length))
+                        if paused { choosingPauseLength = false }
+                    }
+                    guard paused else { return }
                     // The chip that was pressed goes with its row.
                     Task { @MainActor in pauseFocused = true }
                 }
+                .emberRevealTransition()
             }
         }
         .onChange(of: canChoosePauseLength) { _, available in
@@ -343,10 +372,17 @@ private struct HeaderStatus: View {
         Group {
             if manager.isTerminating {
                 Text("Quitting…")
-            } else if !manager.isPaused, manager.isOn, let app = manager.suspendedForApp {
-                Text("Off for \(app)")
-                    .help("Redlight is suspended while \(app) is in front")
-                    .accessibilityLabel("Suspended while \(app) is in front")
+            } else if !manager.isPaused, manager.isOn, manager.isPausedForApp, let app = manager.activeApp?.name {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .accessibilityHidden(true)
+                    Text("Off for \(app)")
+                }
+                .foregroundStyle(palette.warning)
+                .help("Redlight pauses while \(app) is in front")
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Paused while \(app) is in front")
             }
         }
         .font(.ember(12))
@@ -444,7 +480,7 @@ private struct ModeControl: View {
             label: "Mode", options: [(value: true, title: "Auto"), (value: false, title: "Manual")],
             selection: manager.adaptiveEnabled,
             help: "Auto follows real solar elevation. You can still adjust either slider while Auto stays on.",
-            animation: EmberMotion.modeSwitch
+            motion: .modeSwitch
         ) { dispatch(.adaptive($0 ? .on : .off)) }
     }
 }
@@ -456,15 +492,17 @@ private struct ModeContent: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
     let session: PopoverSession
+    let appContext: PopoverAppContext
     let openSettings: (Bool) -> Void
 
     @State private var choosingSaveTarget: Bool
 
     init(manager: DisplayManager, dispatch: PopoverDispatch, session: PopoverSession,
-         choosingSaveTarget: Bool, openSettings: @escaping (Bool) -> Void) {
+         appContext: PopoverAppContext, choosingSaveTarget: Bool, openSettings: @escaping (Bool) -> Void) {
         self.manager = manager
         self.dispatch = dispatch
         self.session = session
+        self.appContext = appContext
         self.openSettings = openSettings
         _choosingSaveTarget = State(initialValue: choosingSaveTarget)
     }
@@ -473,6 +511,8 @@ private struct ModeContent: View {
         let auto = manager.adaptiveEnabled
         EmberPager(ids: [true, false], selection: auto) { pane(auto: $0) }
             .onChange(of: auto) { _, _ in choosingSaveTarget = false }
+            // Editing a rule hides Save to a preset and its Cancel; choosing ends with them.
+            .onChange(of: appContext.editing != nil) { _, editing in if editing { choosingSaveTarget = false } }
     }
 
     private func pane(auto: Bool) -> some View {
@@ -483,9 +523,12 @@ private struct ModeContent: View {
             } else {
                 PresetSwatches(manager: manager, isSaveTarget: choosingSaveTarget, choose: choosePreset)
             }
-            SliderRow(manager: manager, channel: .color, isAuto: auto, dispatch: dispatch)
-            SliderRow(manager: manager, channel: .whitepoint, isAuto: auto, dispatch: dispatch)
-            if !auto {
+            AppRuleLine(context: appContext, isAuto: auto)
+            SliderRow(manager: manager, channel: .color, isAuto: auto, dispatch: dispatch, appContext: appContext)
+            SliderRow(manager: manager, channel: .whitepoint, isAuto: auto, dispatch: dispatch, appContext: appContext)
+            SaturationSliderRow(manager: manager, appContext: appContext)
+            // Saving takes Manual's values, which the sliders do not show while they edit a rule.
+            if !auto, appContext.editing == nil {
                 SaveToPreset(isChoosing: $choosingSaveTarget)
             }
         }
@@ -558,7 +601,8 @@ struct AutoLocationNotice: View {
 
 /// Reuses the same day's sampled solar curve between timeline ticks. The cache does not
 /// publish changes to the view.
-private final class SunArcCache {
+@MainActor
+final class SunArcCache {
     struct CycleKey: Equatable {
         var date: Date, lat: Double, lon: Double
         var calendar: Calendar
@@ -566,6 +610,10 @@ private final class SunArcCache {
 
     private var cycleKey: CycleKey?
     private var cycleValue: SunCycle?
+    private var tintKey: (dayStart: Date?, inputs: DisplayManager.AutoTintInputs)?
+    private var tintValue: [DisplayManager.AutoTint]?
+    private var gradientKey: (dayStart: Date?, inputs: DisplayManager.AutoTintInputs, palette: EmberPalette)?
+    private var gradientValue: SunArcView.TintGradients?
 
     static let refreshInterval: TimeInterval = 20
 
@@ -576,6 +624,34 @@ private final class SunArcCache {
         cycleKey = key
         cycleValue = fresh
         return fresh
+    }
+
+    /// The day's tint for a cycle, worked out again only when the day or what Auto would
+    /// show on it has changed.
+    func tint(
+        for cycle: SunCycle, inputs: DisplayManager.AutoTintInputs, compute: () -> [DisplayManager.AutoTint]?
+    ) -> [DisplayManager.AutoTint]? {
+        let dayStart = cycle.samples.first?.date
+        if let tintKey, tintKey.dayStart == dayStart, tintKey.inputs == inputs { return tintValue }
+        tintKey = (dayStart, inputs)
+        tintValue = compute()
+        return tintValue
+    }
+
+    /// The arc's colours for the day's tint in a palette. The arc's body runs on every
+    /// colour-temp tick, a fade's frames included, and building them takes a contrast search
+    /// at each sample: they are built again only when the tint or the palette changes.
+    func gradients(
+        for cycle: SunCycle, inputs: DisplayManager.AutoTintInputs, palette: EmberPalette,
+        compute: () -> [DisplayManager.AutoTint]?
+    ) -> SunArcView.TintGradients? {
+        let dayStart = cycle.samples.first?.date
+        if let gradientKey, gradientKey.dayStart == dayStart, gradientKey.inputs == inputs,
+           gradientKey.palette == palette { return gradientValue }
+        gradientKey = (dayStart, inputs, palette)
+        gradientValue = SunArcView.tintGradients(
+            tint(for: cycle, inputs: inputs, compute: compute), samples: cycle.samples, palette: palette)
+        return gradientValue
     }
 }
 
@@ -603,9 +679,20 @@ private struct SunArcSection: View {
                 let cycle = cache.cycle(for: key)
                 // The times and the bedtime mark are worked out here, once per timeline
                 // tick. The arc itself is evaluated on every colour-temp tick as well.
+                // The arc is drawn in the tint Auto will show through the day. It asks for the
+                // track in its own body, which already follows the colour temp.
+                let cache = cache
                 SunArcView(cycle: cycle, marks: SunArcView.marks(
                     for: cycle, bedtime: hasBedtime ? manager.effectiveBedtime : nil,
-                    nextEvent: nextEvent, calendar: calendar, locale: locale))
+                    nextEvent: nextEvent, calendar: calendar, locale: locale),
+                    tint: { palette in
+                        // White point's offset is not observed, and the body does not
+                        // otherwise read the white point: read the value an offset moves.
+                        _ = manager.whitepoint
+                        return cache.gradients(for: cycle, inputs: manager.autoTintInputs, palette: palette) {
+                            manager.autoTintTrack(for: cycle.samples)
+                        }
+                    })
             }
         }
     }
@@ -711,6 +798,7 @@ struct LocationRow: View {
 /// value taken past either limit moves that limit with it
 /// (`DisplayManager.setIntensityPushingBand`), so the whole range is always reachable.
 struct SliderRow: View {
+    @Environment(\.emberColorTempUnit) private var colorTempUnit
     enum Channel {
         case color, whitepoint
 
@@ -724,60 +812,199 @@ struct SliderRow: View {
     /// pane sliding out keeps the shape it had.
     let isAuto: Bool
     let dispatch: PopoverDispatch
+    /// The app the popover was opened over. While its Hold or Shift is being edited the
+    /// slider shows and sets the rule's result instead of the model.
+    var appContext: PopoverAppContext? = nil
 
     /// A white point as a fill level: 0 at the bottom of the slider, 1 at the top.
     static func level(whitepoint: Double) -> Double { WhitepointScale.shown(whitepoint) }
 
+    /// What the slider is set to and shows: the model's own value, or the rule's result.
+    static func percent(_ channel: Channel, manager: DisplayManager, editing rule: AppRule?) -> Int {
+        let shown = manager.shownOutput(editing: rule)
+        switch channel {
+        case .color: return SliderPercent.whole(shown.intensity * 100)
+        case .whitepoint: return SliderPercent.whole(WhitepointScale.percent(shown.whitepoint))
+        }
+    }
+
     var body: some View {
         let auto = isAuto
+        let editing = appContext?.editing
+        // A Shift is held inside Auto's flags, so they stay, and can be moved; a Hold ignores them.
+        let showsBand = auto && editing?.rule.kind != .hold
+        let label = editing.map { "\(channel.title) for \($0.name)" } ?? channel.title
+        let percent = Self.percent(channel, manager: manager, editing: editing?.rule)
+        let value = channel == .color ? SliderPercent.unit(percent) : WhitepointScale.output(percent: Double(percent))
+        let command: CommandChannel = channel == .color ? .color : .whitepoint
+        // A Fixed channel in Auto takes no Shift: there is nothing for the slider to set.
+        let isFixed = auto && editing?.rule.kind == .shift
+            && (channel == .color ? manager.isIntensityPinned : manager.isWhitepointPinned)
         VStack(alignment: .leading, spacing: 4) {
-            SliderHeader(manager: manager, channel: channel, isAuto: isAuto, dispatch: dispatch)
+            SliderHeader(manager: manager, channel: channel, isAuto: isAuto, dispatch: dispatch,
+                         value: value, showsBand: showsBand, editsRule: editing != nil)
                 // Over the slider's slop: where Reset's hit area and the slop meet, Reset wins.
                 .zIndex(1)
             switch channel {
             case .color:
                 EmberSlider(
-                    value: manager.intensity, range: channel.range,
-                    band: auto ? manager.intensityBand : nil,
-                    label: channel.title, tone: .accent,
-                    onChange: { manager.setIntensityPushingBand($0) },
+                    percent: percent, range: channel.range,
+                    band: showsBand ? manager.intensityBand : nil,
+                    label: label, tone: .accent,
+                    onChange: { percent in
+                        let value = SliderPercent.unit(percent)
+                        write(value, on: command) { manager.setIntensityPushingBand(value) }
+                    },
                     onLimitChange: { bound, v in
                         if bound == .lower { manager.adaptiveMin = v } else { manager.adaptiveMax = v }
                     },
                     onPreview: { manager.previewIntensity($0) },
                     onPreviewEnd: { manager.endPreview() },
-                    onInteractionBegin: { manager.beginSliderInteraction() },
+                    onInteractionBegin: beginInteraction,
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
             case .whitepoint:
                 EmberSlider(
-                    value: manager.whitepoint, range: channel.range,
-                    band: auto ? manager.whitepointBand : nil,
+                    percent: percent, range: channel.range,
+                    band: showsBand ? manager.whitepointBand : nil,
                     // Its brightness follows the white point on the displays, read here and
                     // not in the colour temp's branch, which a white point tick leaves alone.
-                    label: channel.title, tone: .level(Self.level(whitepoint: manager.shownWhitepoint)),
-                    onChange: { manager.setWhitepointPushingBand($0) },
+                    label: label, tone: .level(Self.level(whitepoint: manager.shownWhitepoint)),
+                    onChange: { percent in
+                        let value = WhitepointScale.output(percent: Double(percent))
+                        write(value, on: command) { manager.setWhitepointPushingBand(value) }
+                    },
                     onLimitChange: { bound, v in
                         if bound == .lower { manager.adaptiveWpMin = v } else { manager.adaptiveWpMax = v }
                     },
                     onPreview: { manager.previewWhitepoint($0) },
                     onPreviewEnd: { manager.endPreview() },
-                    onInteractionBegin: { manager.beginSliderInteraction() },
+                    onInteractionBegin: beginInteraction,
                     isInteractionCurrent: { manager.isSliderInteractionCurrent($0) }
                 )
             }
+        }
+        // Color temp in the unit chosen in Settings; White point is always a percent.
+        .environment(\.emberSliderUnit, channel == .color ? colorTempUnit : .percent)
+        .disabled(isFixed)
+    }
+
+    /// A gesture's target, the rule or the model, is taken as it begins, not at each value.
+    private func beginInteraction() -> UInt64 {
+        appContext?.beginInteraction()
+        return manager.beginSliderInteraction()
+    }
+
+    private func write(_ value: Double, on channel: CommandChannel, global: () -> Void) {
+        if let appContext {
+            appContext.write(manager, showing: value, on: channel, global: global)
+        } else {
+            global()
+        }
+    }
+}
+
+/// Color retained after the compositor's grayscale pass. A full value leaves the display
+/// unchanged, while zero produces grayscale beneath the red and white-point filters.
+///
+/// Laid out like the other sliders: its switch sits in the header where their Reset does,
+/// so the slider runs the full width and the values stay in one column. While off, the
+/// slider and its value go quiet but still keep and set the level.
+struct SaturationSliderRow: View {
+    let manager: DisplayManager
+    var appContext: PopoverAppContext? = nil
+
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.emberMoves) private var moves
+
+    var body: some View {
+        let editing = appContext?.editing
+        let percent = editing.map { manager.appSaturationPercent($0.rule) } ?? manager.saturationPercent
+        let isOn = editing.map { $0.rule.saturation != nil } ?? manager.saturationEnabled
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("Saturation")
+                    .font(.ember(12))
+                    .foregroundStyle(palette.secondary)
+                    .accessibilityHidden(true)
+                Spacer(minLength: 0)
+                if let editing {
+                    if editing.rule.saturation != nil {
+                        EmberIconButton(systemImage: SliderHeader.resetSymbol, size: 18, symbolSize: 10, isQuiet: true) {
+                            try? appContext?.apps?.set(editing.bundleID, editing.rule.withSaturation(nil))
+                        }
+                        .help("Use global saturation")
+                        .accessibilityLabel("Use global saturation for \(editing.name)")
+                    } else {
+                        Text("Global")
+                            .font(.ember(11))
+                            .foregroundStyle(palette.secondary)
+                    }
+                } else {
+                    EmberSwitch("Saturation filter", height: 16, isOn: Binding(
+                        get: { manager.saturationEnabled },
+                        // The slider's tone and the value's ink follow the switch.
+                        set: { on in withAnimation(moves ? EmberMotion.quick : nil) { manager.saturationEnabled = on } }
+                    ))
+                }
+                Text("\(percent)%")
+                    .font(.ember(12, .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(isOn ? palette.text : palette.secondary)
+                    .accessibilityHidden(true)
+            }
+            .frame(height: 16)
+            // Over the slider's slop: where the switch's hit area and the slop meet, the switch wins.
+            .zIndex(1)
+            EmberSlider(
+                percent: percent, range: 0...1,
+                label: "Saturation", tone: isOn ? .accent : .neutral,
+                onChange: { percent in
+                    let value = SliderPercent.unit(percent)
+                    if let appContext {
+                        appContext.writeRule({ manager.rule($0, showingSaturation: value) }) { manager.saturation = value }
+                    } else {
+                        manager.saturation = value
+                    }
+                },
+                onValueDragActive: { active in manager.setSaturationPreview(active && editing == nil) },
+                onInteractionBegin: {
+                    appContext?.beginInteraction()
+                    return manager.beginSliderInteraction()
+                },
+                isInteractionCurrent: manager.isSliderInteractionCurrent
+            )
         }
     }
 }
 
 /// Label on the left; on the right Reset, when there is something to reset, and the value.
 struct SliderHeader: View {
+    @Environment(\.emberSliderUnit) private var unit
     let manager: DisplayManager
     let channel: SliderRow.Channel
     /// Its row's mode; see `SliderRow.isAuto`.
     let isAuto: Bool
     let dispatch: PopoverDispatch
+    /// What the slider is set to: the model's value, or an app rule's result.
+    let rawValue: Double
+    /// Whether the slider draws Auto's band: in Auto, unless it edits a Hold.
+    let showsBand: Bool
+    /// True while the slider edits an app's rule. Reset is Auto's and Manual's, so it goes.
+    let editsRule: Bool
     @Environment(\.emberPalette) private var palette
+    @Environment(\.emberMoves) private var moves
+
+    init(manager: DisplayManager, channel: SliderRow.Channel, isAuto: Bool, dispatch: PopoverDispatch,
+         value: Double, showsBand: Bool, editsRule: Bool) {
+        self.manager = manager
+        self.channel = channel
+        self.isAuto = isAuto
+        self.dispatch = dispatch
+        rawValue = value
+        self.showsBand = showsBand
+        self.editsRule = editsRule
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -796,15 +1023,19 @@ struct SliderHeader: View {
                 }
                 .help(help)
                 .accessibilityLabel(help)
+                .emberPopTransition()
             }
-            // The slider's own percent: its place in the range, as its flags count it.
-            Text(SliderCore.percentText(value, in: channel.range))
+            // The slider's own value: its place in the range, as its flags count it, or Color
+            // temp in kelvin.
+            Text(unit.text(value, in: channel.range))
                 .font(.ember(12, .semibold))
                 .monospacedDigit()
                 .accessibilityHidden(true)
         }
         // Fixed, so the row does not move when Reset comes and goes.
         .frame(height: 16)
+        // Reset pops in and out where it stands.
+        .animation(moves ? EmberMotion.quick : nil, value: showsReset)
     }
 
     static let resetSymbol = "arrow.counterclockwise"
@@ -814,7 +1045,7 @@ struct SliderHeader: View {
     /// limits or an adjustment made in Auto are waiting behind it: Manual does not show
     /// those, and Reset is the only way to clear them from here.
     private var showsReset: Bool {
-        Self.showsReset(
+        !editsRule && Self.showsReset(
             isDefault: channel == .color ? manager.intensityIsDefault : manager.whitepointIsDefault,
             isAuto: isAuto, hasPreset: manager.activePresetIndex != nil,
             autoSettingsAreDefault: channel == .color
@@ -826,12 +1057,11 @@ struct SliderHeader: View {
         return isAuto || !hasPreset || !autoSettingsAreDefault
     }
 
-    /// The value the slider shows: in Auto it is held inside the band, as the slider draws it.
+    /// The value the slider shows: with a band it is held inside it, as the slider draws it.
     private var value: Double {
-        let raw = channel == .color ? manager.intensity : manager.whitepoint
-        guard isAuto else { return raw }
+        guard showsBand else { return rawValue }
         let band = channel == .color ? manager.intensityBand : manager.whitepointBand
-        return SliderCore.clampToBand(raw, lower: band.lowerBound, upper: band.upperBound)
+        return SliderCore.clampToBand(rawValue, lower: band.lowerBound, upper: band.upperBound)
     }
 }
 
@@ -876,6 +1106,12 @@ struct PresetButton: View {
             VStack(spacing: 5) {
                 shape
                     .fill(swatch.color)
+                    .overlay {
+                        // The Day swatch is nearly the panel's colour in light.
+                        if let edge = palette.edge(for: swatch, on: palette.background) {
+                            shape.strokeBorder(edge, lineWidth: 1)
+                        }
+                    }
                     .frame(height: EmberMetrics.swatchHeight)
                     .overlay {
                         if isActive || isSaveTarget {
@@ -905,17 +1141,22 @@ struct PresetButton: View {
 private struct SaveToPreset: View {
     @Binding var isChoosing: Bool
     @Environment(\.emberPalette) private var palette
+    @Environment(\.emberMoves) private var moves
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                EmberLinkButton(isChoosing ? "Cancel" : "Save to a preset…") { isChoosing.toggle() }
+                // The swatches' save outlines and the hint fade in together.
+                EmberLinkButton(isChoosing ? "Cancel" : "Save to a preset…") {
+                    withAnimation(moves ? EmberMotion.quick : nil) { isChoosing.toggle() }
+                }
                     .accessibilityLabel(isChoosing ? "Cancel saving to a preset" : "Save to a preset")
                 if isChoosing {
                     Text("Pick a preset to overwrite")
                         .font(.ember(12))
                         .foregroundStyle(palette.tertiary)
                         .lineLimit(1)
+                        .transition(.opacity)
                 }
             }
             Text("Presets are also the stops Auto moves through.")
@@ -975,6 +1216,9 @@ private struct PauseControl: View {
     let pausedUntil: Date?
     /// How long the pause was set for: its countdown ticks on minutes counted from its start.
     let pauseLength: TimeInterval
+    /// While a peek is held (the Pause shortcut, or `redlight peek`) the pause glyph gives
+    /// way to a pair of eyes looking about. A pause outranks it: its play glyph stays.
+    var isPeeking: Bool = false
     let isExpanded: Bool
     let focus: AccessibilityFocusState<Bool>.Binding
     /// Pauses, or resumes when paused.
@@ -1003,9 +1247,7 @@ private struct PauseControl: View {
             // So the count is always there, and empty while nothing is paused.
             EmberButton(action: toggle) { state in
                 HStack(spacing: 0) {
-                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(glyph)
+                    PauseGlyph(isPaused: isPaused, isPeeking: isPeeking && !isPaused, color: glyph)
                         .frame(width: 12)
                     PauseCountdown(until: pausedUntil, length: pauseLength) { tick = $0 }
                         .padding(.leading, isPaused ? 5 : 0)
@@ -1019,7 +1261,7 @@ private struct PauseControl: View {
             }
             .help(Self.help(until: pausedUntil, now: now))
             .accessibilityLabel(isPaused ? "Resume Redlight" : "Pause Redlight for 30 minutes")
-            .accessibilityValue(Self.spokenValue(until: pausedUntil, now: now))
+            .accessibilityValue(isPeeking && !isPaused ? "Peeking" : Self.spokenValue(until: pausedUntil, now: now))
             .accessibilityFocused(focus)
             if !isPaused {
                 EmberButton(action: toggleLengths) { state in
@@ -1051,6 +1293,84 @@ private struct PauseControl: View {
     static func spokenValue(until: Date?, now: Date?) -> String {
         guard let until, let now else { return "" }
         return DisplayManager.pauseCountdownAccessibilityText(until: until, now: now)
+    }
+}
+
+/// The pause button's glyph: pause, play while paused, or the peek's eyes. Both glyphs are
+/// always there and only fade, so the button's label never gains or loses a view (see
+/// `PauseControl`).
+private struct PauseGlyph: View {
+    let isPaused: Bool
+    let isPeeking: Bool
+    let color: Color
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.emberAnimationsEnabled) private var animates
+
+    var body: some View {
+        let still = reduceMotion || !animates
+        ZStack {
+            Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 10.5, weight: .bold))
+                .opacity(isPeeking ? 0 : 1)
+                .scaleEffect(isPeeking && !still ? 0.4 : 1)
+                .blur(radius: isPeeking && !still ? 1.5 : 0)
+            PeekEyes(isLooking: isPeeking && !still)
+                .opacity(isPeeking ? 1 : 0)
+                .scaleEffect(isPeeking || still ? 1 : 0.4)
+                .blur(radius: isPeeking || still ? 0 : 1.5)
+        }
+        .foregroundStyle(color)
+        .accessibilityHidden(true)
+        // Quick, with the least overshoot as the eyes open.
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : animates ? .spring(duration: 0.22, bounce: 0.2) : nil,
+                   value: isPeeking)
+    }
+}
+
+/// Two eyes whose pupils glance from side to side and rest at each side. The pupils are
+/// cut out of the eyes, so the pill shows through them in either appearance.
+struct PeekEyes: View {
+    /// Whether the pupils move. Still, they look ahead.
+    let isLooking: Bool
+
+    static let size = CGSize(width: 13.5, height: 9)
+    /// Seconds for a glance left and back from the right.
+    static let period: TimeInterval = 1.8
+
+    /// The pupils' offset, -1 (left) to 1 (right), `t` seconds into a peek: from straight
+    /// ahead to the right, then across to the left and back, easing into a short rest at
+    /// each side.
+    static func gaze(at t: TimeInterval) -> Double {
+        let wave = sin(2 * .pi * t / period)
+        return tanh(2.4 * wave) / tanh(2.4)
+    }
+
+    @State private var start = Date()
+
+    var body: some View {
+        TimelineView(.animation(paused: !isLooking)) { context in
+            let gaze = isLooking ? Self.gaze(at: context.date.timeIntervalSince(start)) : 0
+            Canvas { ctx, size in
+                let gap: CGFloat = 1.5
+                let eyeWidth = (size.width - gap) / 2
+                let pupil: CGFloat = 3.4
+                let travel = (eyeWidth - pupil) / 2 - 0.6
+                ctx.drawLayer { layer in
+                    for index in 0..<2 {
+                        let eye = CGRect(x: CGFloat(index) * (eyeWidth + gap), y: 0, width: eyeWidth, height: size.height)
+                        layer.fill(Path(ellipseIn: eye), with: .foreground)
+                        layer.blendMode = .destinationOut
+                        let dot = CGRect(x: eye.midX - pupil / 2 + travel * gaze,
+                                         y: eye.midY - pupil / 2 + 0.6, width: pupil, height: pupil)
+                        layer.fill(Path(ellipseIn: dot), with: .color(.black))
+                        layer.blendMode = .normal
+                    }
+                }
+            }
+            .frame(width: Self.size.width, height: Self.size.height)
+        }
+        .onChange(of: isLooking) { _, looking in if looking { start = Date() } }
     }
 }
 
@@ -1181,6 +1501,7 @@ struct PauseLengthRow: View {
 /// its draft, and a switch.
 struct BedtimeRow: View {
     /// Which of Auto's two times the row sets.
+    @MainActor
     enum Kind {
         case bedtime, wake
 
@@ -1245,7 +1566,7 @@ struct BedtimeRow: View {
             ))
             .help(kind.explanation)
         }
-        .onAppear { if let bedtime { draft.set(bedtime) } }
+        .onPaneShown { if let bedtime { draft.set(bedtime) } }
         .onChange(of: bedtime) { _, new in if let new { draft.set(new) } }
     }
 

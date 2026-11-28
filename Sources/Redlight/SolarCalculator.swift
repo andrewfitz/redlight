@@ -2,6 +2,32 @@ import Foundation
 
 /// Pure NOAA solar-position math. No system/location dependencies.
 enum SolarCalculator {
+    struct PositionAndBounds {
+        let elevation: Double
+        let rising: Bool
+        let minElevation: Double
+        let maxElevation: Double
+    }
+
+    /// Computes the live position and the two culmination bounds while sharing the
+    /// declination calculation. These values are consumed together by Auto's five-second
+    /// tick and by learning-day sampling.
+    static func positionAndBounds(at date: Date, latitude: Double, longitude: Double)
+        -> PositionAndBounds
+    {
+        let t = julianCentury(date)
+        let decl = solarDeclination(t)
+        let latR = rad(latitude), declR = rad(decl)
+        let angle = hourAngle(at: date, t: t, longitude: longitude)
+        let haR = rad(angle)
+        let cosZenith = sin(latR) * sin(declR) + cos(latR) * cos(declR) * cos(haR)
+        let zenith = acos(min(1, max(-1, cosZenith)))
+        return PositionAndBounds(
+            elevation: 90 - deg(zenith), rising: angle < 0,
+            minElevation: abs(latitude + decl) - 90,
+            maxElevation: 90 - abs(latitude - decl))
+    }
+
     /// Sun elevation in degrees above the horizon at `date` for the location.
     static func elevation(at date: Date, latitude: Double, longitude: Double) -> Double {
         position(at: date, latitude: latitude, longitude: longitude).elevation
@@ -11,14 +37,8 @@ enum SolarCalculator {
     static func position(at date: Date, latitude: Double, longitude: Double)
         -> (elevation: Double, rising: Bool)
     {
-        let t = julianCentury(date)
-        let decl = solarDeclination(t)
-        let latR = rad(latitude), declR = rad(decl)
-        let angle = hourAngle(at: date, t: t, longitude: longitude)
-        let haR = rad(angle)
-        let cosZenith = sin(latR) * sin(declR) + cos(latR) * cos(declR) * cos(haR)
-        let zenith = acos(min(1, max(-1, cosZenith)))
-        return (90 - deg(zenith), angle < 0)
+        let result = positionAndBounds(at: date, latitude: latitude, longitude: longitude)
+        return (result.elevation, result.rising)
     }
 
     /// Whether the sun is on the rising half of its cycle (solar midnight → solar noon).

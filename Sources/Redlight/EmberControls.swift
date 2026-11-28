@@ -55,7 +55,113 @@ enum EmberMotion {
     /// A curve with an end, not a spring: the pane that has slid out is taken away when
     /// the curve ends, and a spring's last, invisible part runs on after that.
     static let modeSwitch: Animation = .timingCurve(0.2, 0.9, 0.25, 1, duration: modeSwitchDuration)
+    /// The same curve for Core Animation, which slides the pager's pictures.
+    @MainActor static var modeSwitchTiming: CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+    }
+
+    /// How far along the curve the motion is at `time`, 0 to 1 of its duration: for the
+    /// popover's height, moved by hand once a frame alongside the pictures.
+    nonisolated static func modeSwitchProgress(_ time: Double) -> Double {
+        UnitBezier(x1: 0.2, y1: 0.9, x2: 0.25, y2: 1).value(at: min(1, max(0, time)))
+    }
     static let modeSwitchDuration: TimeInterval = 0.32
+
+    /// Something unfolding or folding in place: Per-App, the pause lengths, a rule's amounts.
+    /// The mode switch's curve, a little quicker. A curve with an end for the same reason:
+    /// the popover's height follows it frame by frame (`PopoverSlideHost.disclose`).
+    static let disclosure: Animation = .timingCurve(0.2, 0.9, 0.25, 1, duration: disclosureDuration)
+    static let disclosureDuration: TimeInterval = 0.28
+    /// A control or a colour that changes in place, where nothing moves around it.
+    static let quick: Animation = .easeOut(duration: 0.16)
+}
+
+/// Unfolds or folds part of the popover: `disclose { isExpanded.toggle() }`. The change
+/// animates on `EmberMotion.disclosure` and the popover's height follows on the same curve.
+/// With Reduce Motion, or animations off for an offscreen render, the change is made at once.
+struct EmberDisclose {
+    var host: PopoverSlideHost?
+    var animates: Bool
+
+    @MainActor func callAsFunction(_ change: () -> Void) {
+        guard animates else { change(); return }
+        if let host {
+            host.disclose(change)
+        } else {
+            withAnimation(EmberMotion.disclosure) { change() }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    var emberDisclose: EmberDisclose {
+        EmberDisclose(host: popoverSlideHost, animates: emberAnimationsEnabled && !accessibilityReduceMotion)
+    }
+
+    /// Whether this view's changes should move: animations on and Reduce Motion off.
+    var emberMoves: Bool { emberAnimationsEnabled && !accessibilityReduceMotion }
+}
+
+extension AnyTransition {
+    /// What `EmberDisclose` brings in: uncovered from its top down as the space for it opens,
+    /// and covered from the bottom up as it closes, on the disclosure's own curve. What moves
+    /// past it moves by exactly the part shown, so it never draws over a card around it.
+    static var emberReveal: AnyTransition {
+        .modifier(active: EmberRevealMask(shown: 0), identity: EmberRevealMask(shown: 1))
+            .combined(with: .opacity)
+    }
+
+    /// A small control coming and going in place, such as Reset.
+    static var emberPop: AnyTransition { .opacity.combined(with: .scale(scale: 0.6)) }
+}
+
+/// Shows the top `shown` of a view, through `EmberRevealShape`, which animates.
+struct EmberRevealMask: ViewModifier {
+    var shown: Double
+
+    func body(content: Content) -> some View {
+        content.mask { EmberRevealShape(shown: shown) }
+    }
+}
+
+/// The view's rectangle down to `shown` of its height. It reaches past the view's edges by
+/// a focus band's width, so a control's focus band is never cut off at rest.
+struct EmberRevealShape: Shape {
+    var shown: Double
+
+    var animatableData: Double {
+        get { shown }
+        set { shown = newValue }
+    }
+
+    static let margin: CGFloat = 6
+
+    func path(in rect: CGRect) -> Path {
+        let part = min(1, max(0, shown))
+        let m = Self.margin
+        // The bottom margin comes in only at the end, so it never shows a sliver early.
+        let height = rect.height * part + (part >= 1 ? 2 * m : m)
+        return Path(CGRect(x: rect.minX - m, y: rect.minY - m, width: rect.width + 2 * m, height: height))
+    }
+}
+
+extension View {
+    /// The transition for a part that `EmberDisclose` shows and hides. None where nothing
+    /// moves, so an offscreen render never catches it fading.
+    func emberRevealTransition() -> some View { modifier(EmberTransitionModifier(transition: .emberReveal)) }
+
+    /// `AnyTransition.emberPop`, or none where nothing moves.
+    func emberPopTransition() -> some View { modifier(EmberTransitionModifier(transition: .emberPop)) }
+}
+
+private struct EmberTransitionModifier: ViewModifier {
+    let transition: AnyTransition
+    @Environment(\.emberAnimationsEnabled) private var animates
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.transition(animates && !reduceMotion ? transition : .identity)
+    }
 }
 
 extension View {
@@ -198,7 +304,7 @@ private struct EmberButtonBody<Label: View>: ButtonStyle {
 
 // MARK: - Switch
 
-/// 30 × 18 switch. The label is not drawn: rows show their own text. Assistive apps get a
+/// A switch, 30 × 18 by default. The label is not drawn: rows show their own text. Assistive apps get a
 /// native toggle with an on/off value; the explicit style on it is what stops it from
 /// taking this style again.
 ///
@@ -207,9 +313,11 @@ private struct EmberButtonBody<Label: View>: ButtonStyle {
 /// longer matches the switch on screen. So the name is the accessibility label set on the
 /// styled toggle, as `EmberSwitch` does: use that, not this style on its own.
 struct EmberSwitchStyle: ToggleStyle {
+    var height: CGFloat = 18
+
     func makeBody(configuration: Configuration) -> some View {
         EmberButton { configuration.isOn.toggle() } label: { state in
-            EmberSwitchBody(isOn: configuration.isOn, isFocused: state.isFocused)
+            EmberSwitchBody(isOn: configuration.isOn, isFocused: state.isFocused, height: height)
         }
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { EmptyView() }
@@ -221,6 +329,7 @@ struct EmberSwitchStyle: ToggleStyle {
 private struct EmberSwitchBody: View {
     let isOn: Bool
     let isFocused: Bool
+    let height: CGFloat
 
     @Environment(\.emberPalette) private var palette
     @Environment(\.emberAccent) private var accent
@@ -235,17 +344,23 @@ private struct EmberSwitchBody: View {
         let knob = EmberSwitchFace.knob(isOn: isOn, accent: track ?? .black, palette: palette)
         Capsule()
             .fill(track?.color ?? palette.fillStrong)
-            .frame(width: 30, height: 18)
+            .overlay {
+                // A switch on at 100% is nearly the card's colour in light.
+                if let track, let edge = palette.edge(for: track, on: palette.card) {
+                    Capsule().strokeBorder(edge, lineWidth: 1)
+                }
+            }
+            .frame(width: height * 5 / 3, height: height)
             .overlay(alignment: isOn ? .trailing : .leading) {
                 Circle()
                     .fill(knob.color)
-                    .frame(width: 14, height: 14)
+                    .frame(width: height - 4, height: height - 4)
                     .shadow(color: .black.opacity(!isOn && knob.ink == .white ? 0.22 : 0), radius: 1, y: 1)
                     .padding(2)
             }
             .animation(reduceMotion || !animates ? nil : .easeOut(duration: 0.12), value: isOn)
             .emberFocusHalo(Capsule(), isFocused: isFocused)
-            .emberMinimumHit(visible: 18)
+            .emberMinimumHit(visible: height)
     }
 }
 
@@ -270,14 +385,17 @@ struct EmberSwitch: View {
     let label: String
     @Binding var isOn: Bool
 
-    init(_ label: String, isOn: Binding<Bool>) {
+    let height: CGFloat
+
+    init(_ label: String, height: CGFloat = 18, isOn: Binding<Bool>) {
+        self.height = height
         self.label = label
         _isOn = isOn
     }
 
     var body: some View {
         Toggle(label, isOn: $isOn)
-            .toggleStyle(EmberSwitchStyle())
+            .toggleStyle(EmberSwitchStyle(height: height))
             .accessibilityLabel(label)
     }
 }
@@ -361,15 +479,23 @@ struct EmberSegmented<Value: Hashable>: View {
     let selection: Value
     /// On a card the trough takes the stronger fill.
     var onCard = false
+    /// Switch-sized, for a choice at the end of a card row: as tall as an `EmberSwitch`.
+    var compact = false
+    /// Optional selected-label color for a state that needs a subtle visual cue.
+    var selectedForeground: Color? = nil
     /// The tooltip, and the help assistive apps give for each option.
     var help: String? = nil
     /// How the selected segment travels to a new option.
-    var animation: Animation = .easeOut(duration: 0.15)
+    var motion: EmberSegmentMotion = .quick
     let select: (Value) -> Void
 
     @Environment(\.emberPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.emberAnimationsEnabled) private var animates
+
+    /// A compact control's segments: with the frame around them, as tall as a switch.
+    static var compactHeight: CGFloat { 14 }
+    private var innerRadius: CGFloat { compact ? 6 : 8 }
 
     var body: some View {
         let selected = options.firstIndex { $0.value == selection } ?? 0
@@ -380,31 +506,26 @@ struct EmberSegmented<Value: Hashable>: View {
                     if !isSelected { select(options[index].value) }
                 } label: { state in
                     Text(options[index].title)
-                        .font(.ember(12.5, isSelected ? .semibold : .medium))
-                        .foregroundStyle(isSelected ? palette.text : palette.secondary)
+                        .font(.ember(compact ? 11.5 : 12.5, isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? (selectedForeground ?? palette.text) : palette.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
-                        .frame(height: EmberMetrics.segmentHeight)
+                        .frame(height: compact ? Self.compactHeight : EmberMetrics.segmentHeight)
                         .contentShape(Rectangle())
-                        .emberFocusHalo(RoundedRectangle(cornerRadius: 8, style: .continuous),
+                        .emberFocusHalo(RoundedRectangle(cornerRadius: innerRadius, style: .continuous),
                                         isFocused: state.isFocused, spread: 0)
                 }
             }
         }
+        // Drawn and moved by Core Animation: a SwiftUI animation, however small, has SwiftUI
+        // draw the whole popover again on every frame it runs.
         .background {
-            GeometryReader { geo in
-                let width = geo.size.width / CGFloat(max(1, options.count))
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(palette.raised)
-                    .shadow(color: palette.isDark ? .black.opacity(0.25) : EmberRGB(70, 45, 20).opacity(0.16),
-                            radius: palette.isDark ? 1 : 1.5, y: 1)
-                    .frame(width: width, height: geo.size.height)
-                    .offset(x: CGFloat(selected) * width)
-                    .animation(reduceMotion || !animates ? nil : animation, value: selected)
-            }
+            SegmentHighlight(index: selected, count: options.count, palette: palette, onCard: onCard,
+                             cornerRadius: innerRadius,
+                             motion: reduceMotion || !animates ? nil : motion)
         }
         .padding(2)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .background(RoundedRectangle(cornerRadius: innerRadius + 2, style: .continuous)
             .fill(onCard ? palette.fillStrong : palette.trough))
         .modifier(EmberTooltip(text: help))
         // One picker with a selected value, not a row of unrelated buttons. Its label is
@@ -490,7 +611,7 @@ struct EmberRow<Content: View>: View {
     }
 }
 
-/// A card line that is one button: Location, Keyboard shortcuts, Pause for apps.
+/// A card line that is one button: Location, Keyboard shortcuts, Apps.
 struct EmberRowButton<Content: View>: View {
     var divider = false
     let action: () -> Void
@@ -526,8 +647,11 @@ struct EmberChevron: View {
     var size: CGFloat = 9
 
     var body: some View {
-        Image(systemName: direction.rawValue)
+        // Up is down turned over, so a disclosure turns the one glyph instead of swapping it.
+        let turned = direction == .up
+        Image(systemName: turned ? Direction.down.rawValue : direction.rawValue)
             .font(.system(size: size, weight: .semibold))
+            .rotationEffect(.degrees(turned ? 180 : 0))
             .accessibilityHidden(true)
     }
 }
@@ -670,7 +794,7 @@ struct EmberTimeField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(date: $date) }
 
     func makeNSView(context: Context) -> NSDatePicker {
-        let picker = NSDatePicker()
+        let picker = EmberDatePicker()
         picker.datePickerStyle = .textField
         picker.datePickerElements = [.hourMinute]
         picker.isBezeled = false
@@ -823,5 +947,157 @@ struct EmberPageHeader: View {
             }
         }
         .frame(height: 20)
+    }
+}
+
+/// A date picker that a pane out of play keeps from the keyboard altogether. On its own,
+/// `refusesFirstResponder` only stops a click from giving it the keyboard: Tab still visits it.
+final class EmberDatePicker: NSDatePicker {
+    override var canBecomeKeyView: Bool { !refusesFirstResponder && super.canBecomeKeyView }
+    override var acceptsFirstResponder: Bool { !refusesFirstResponder && super.acceptsFirstResponder }
+}
+
+/// A cubic timing curve from (0, 0) to (1, 1) through two control points, as CSS and Core
+/// Animation define it: the progress at a moment, found by solving for the moment's x.
+struct UnitBezier {
+    let x1: Double, y1: Double, x2: Double, y2: Double
+
+    func value(at x: Double) -> Double {
+        sample(y1, y2, at: solve(x))
+    }
+
+    private func sample(_ p1: Double, _ p2: Double, at t: Double) -> Double {
+        let c = 3 * p1, b = 3 * (p2 - p1) - c, a = 1 - c - b
+        return ((a * t + b) * t + c) * t
+    }
+
+    private func slope(at t: Double) -> Double {
+        let c = 3 * x1, b = 3 * (x2 - x1) - c, a = 1 - c - b
+        return (3 * a * t + 2 * b) * t + c
+    }
+
+    private func solve(_ x: Double) -> Double {
+        // Newton's method, then halving where the slope is too flat for it.
+        var t = x
+        for _ in 0..<8 {
+            let error = sample(x1, x2, at: t) - x
+            if abs(error) < 1e-7 { return t }
+            let d = slope(at: t)
+            if abs(d) < 1e-6 { break }
+            t -= error / d
+        }
+        var low = 0.0, high = 1.0
+        t = x
+        while low < high {
+            let value = sample(x1, x2, at: t)
+            if abs(value - x) < 1e-7 { return t }
+            if x > value { low = t } else { high = t }
+            t = (high - low) / 2 + low
+            if high - low < 1e-9 { break }
+        }
+        return t
+    }
+}
+
+/// How a segmented control's selected segment travels: for Core Animation.
+struct EmberSegmentMotion: Equatable {
+    let duration: TimeInterval
+    /// The control points of the timing curve.
+    let curve: [Float]
+
+    static let quick = EmberSegmentMotion(duration: 0.15, curve: [0, 0, 0.58, 1])
+    /// With the panes under the mode control, on `EmberMotion.modeSwitch`'s curve.
+    static let modeSwitch = EmberSegmentMotion(duration: EmberMotion.modeSwitchDuration, curve: [0.2, 0.9, 0.25, 1])
+
+    @MainActor var timing: CAMediaTimingFunction {
+        CAMediaTimingFunction(controlPoints: curve[0], curve[1], curve[2], curve[3])
+    }
+}
+
+/// The selected segment's raised face, a layer that slides between the options.
+private struct SegmentHighlight: NSViewRepresentable {
+    let index: Int
+    let count: Int
+    let palette: EmberPalette
+    let onCard: Bool
+    var cornerRadius: CGFloat = 8
+    /// Nil moves it at once.
+    let motion: EmberSegmentMotion?
+
+    func makeNSView(context: Context) -> HighlightView { HighlightView() }
+
+    func updateNSView(_ view: HighlightView, context: Context) {
+        let shadow = palette.isDark ? EmberRGB(0, 0, 0) : EmberRGB(70, 45, 20)
+        // Opaque, as SwiftUI blended it over the trough: Core Animation blends a translucent
+        // layer over another differently, and the face came out darker.
+        let trough = onCard
+            ? palette.wash.mixed(palette.fillStrongAlpha, over: palette.card)
+            : palette.wash.mixed(palette.troughAlpha, over: palette.background)
+        view.radius = cornerRadius
+        view.update(index: index, count: count,
+                    fill: palette.raisedRGB.mixed(palette.raisedAlpha, over: trough).cgColor(),
+                    shadow: shadow.cgColor(alpha: palette.isDark ? 0.25 : 0.16),
+                    shadowRadius: palette.isDark ? 1 : 1.5, motion: motion)
+    }
+
+    final class HighlightView: NSView {
+        private let face = CALayer()
+        var radius: CGFloat = 8 {
+            didSet { face.cornerRadius = radius; needsLayout = true }
+        }
+        private var index = 0
+        private var count = 1
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            face.cornerRadius = 8
+            face.cornerCurve = .continuous
+            face.shadowOpacity = 1
+            face.shadowOffset = CGSize(width: 0, height: -1)
+            layer?.addSublayer(face)
+        }
+
+        /// Never unarchived.
+        required init?(coder: NSCoder) { nil }
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func layout() {
+            super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            face.frame = slot(index)
+            face.shadowPath = CGPath(roundedRect: face.bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            CATransaction.commit()
+        }
+
+        func update(index: Int, count: Int, fill: CGColor, shadow: CGColor, shadowRadius: CGFloat,
+                    motion: EmberSegmentMotion?) {
+            let moved = index != self.index && count == self.count
+            self.index = index
+            self.count = max(1, count)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            face.backgroundColor = fill
+            face.shadowColor = shadow
+            face.shadowRadius = shadowRadius
+            let from = face.presentation()?.position ?? face.position
+            face.frame = slot(index)
+            CATransaction.commit()
+            guard moved, let motion, window != nil else { return }
+            let move = CABasicAnimation(keyPath: "position")
+            move.fromValue = NSValue(point: from)
+            move.toValue = NSValue(point: face.position)
+            move.duration = motion.duration
+            move.timingFunction = motion.timing
+            face.add(move, forKey: "position")
+        }
+
+        private func slot(_ index: Int) -> CGRect {
+            let width = bounds.width / CGFloat(count)
+            return CGRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
+        }
     }
 }

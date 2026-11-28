@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Redlight display</title>
+<style>body{font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8e8;background:#2b2b2b;padding:12px}label{display:block;margin:10px 0 5px;color:#ccc}select{width:100%;padding:6px;background:#444;color:#fff;border:1px solid #666;border-radius:4px}</style>
+<label for="colorUnit">Color temp unit</label>
+<select id="colorUnit"><option value="percent">Percent (%)</option><option value="kelvin">Kelvin (K)</option></select>
+<script>
+const unit = document.querySelector("#colorUnit");
+unit.disabled = true;
+window.connectElgatoStreamDeckSocket = (port, uuid, registerEvent, info, actionInfo) => {
+  const { action, context, payload } = JSON.parse(actionInfo);
+  let settings = payload.settings ?? {};
+  const render = () => {
+    unit.value = settings.colorUnit === 'kelvin' ? 'kelvin' : 'percent';
+  };
+  render();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ event: registerEvent, uuid }));
+    unit.disabled = false;
+  };
+  socket.onclose = () => { unit.disabled = true; };
+  socket.onmessage = ({ data }) => {
+    const message = JSON.parse(data);
+    if (message.event === 'didReceiveSettings' && message.context === context) {
+      settings = message.payload.settings;
+      render();
+    }
+  };
+  unit.onchange = () => {
+    settings = { ...settings, colorUnit: unit.value };
+    socket.send(JSON.stringify({ event: 'setSettings', action, context, payload: settings }));
+  };
+};
+</script>

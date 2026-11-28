@@ -2,10 +2,10 @@
 //
 // make-icon.swift — builds the Redlight app icon set from its master artwork.
 //
-// The master is `Resources/AppIcon.png`: a red sun setting behind a beige CRT monitor under a
-// starry sky, 1024×1024 and already on the macOS icon grid (an 824 px rounded-square tile with
-// a 100 px transparent margin), prepared from generated artwork by cropping its tile and
-// masking the corners.
+// The master is `Resources/AppIcon.png`: the face of a beige 1990s CRT monitor with a red sun
+// setting over the sea on its screen, 1024×1024 and already on the macOS icon grid (an 824 px
+// rounded-square tile with a 100 px transparent margin), prepared from generated artwork by
+// cropping its tile and masking the corners.
 // This script resamples the master to every size the .iconset format needs. Usage:
 //
 //   swift Tools/make-icon.swift [output.iconset] [master.png]

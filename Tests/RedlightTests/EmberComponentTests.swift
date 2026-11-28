@@ -314,7 +314,7 @@ import Testing
 
     @Test func lateCurveSqueezesTheBrightHalfIntoASliver() {
         #expect(EmberContrast.lateOutput(0) == 0)
-        #expect(abs(EmberContrast.lateOutput(1) - 0.3) < 1e-12)
+        #expect(abs(EmberContrast.lateOutput(1) - EmberContrast.lateWhitepoint) < 1e-12)
         // More than half of the output range is used up by the darkest quarter of the input.
         #expect(EmberContrast.lateOutput(0.25) > 0.15)
         var previous = -1.0
@@ -324,7 +324,7 @@ import Testing
             previous = output
         }
         #expect(EmberContrast.lateOutput(-1) == 0)
-        #expect(abs(EmberContrast.lateOutput(2) - 0.3) < 1e-12)
+        #expect(abs(EmberContrast.lateOutput(2) - EmberContrast.lateWhitepoint) < 1e-12)
     }
 
     @Test func ordinaryContrastIsTheWCAGRatio() {
@@ -548,8 +548,13 @@ import Testing
                     for kind in [EmberPalette.MarkKind.grabber, .solid] {
                         #expect(palette.markSpec(kind, on: fill).ink == ink, "\(at)")
                     }
-                    #expect(wcag(fill, band) >= EmberPalette.bandWCAG - 1e-9, "\(at): \(wcag(fill, band))")
-                    #expect(wcag(fill, palette.card) >= wcag(fill, band) - 1e-9, "\(at)")
+                    // In light the palest tints are nearly the band's colour: they are edged
+                    // instead, as a white control is on a light Mac.
+                    let isEdged = palette.sliderEdge(for: fill) != nil
+                    #expect(wcag(fill, band) >= EmberPalette.bandWCAG - 1e-9 || isEdged, "\(at): \(wcag(fill, band))")
+                    if !isEdged, EmberContrast.luminance(fill) < EmberContrast.luminance(palette.card) {
+                        #expect(wcag(fill, palette.card) >= wcag(fill, band) - 1e-9, "\(at)")
+                    }
                     if palette.isDark {
                         #expect(late(fill, band) >= EmberPalette.bandLate - 1e-9, "\(at): \(late(fill, band))")
                     }
@@ -561,12 +566,12 @@ import Testing
     @Test func darkWhitePointFillGoesFromWhiteToGreyAndFromRedToADullerDimmerRed() {
         let palette = EmberPalette.dark
         func chroma(_ color: EmberRGB) -> Double { max(color.r, color.g, color.b) - min(color.r, color.g, color.b) }
-        // Unfiltered: white at the top, a mid grey at the bottom.
+        // Unfiltered: a barely warm white at the top, a mid grey at the bottom.
         let white = EmberTint.rgb(intensity: 1, scheme: .dark)
-        #expect(white == .white)
-        #expect(palette.sliderFillRGB(.level(1), accent: white) == .white)
+        #expect(white == EmberTint.top)
+        #expect(palette.sliderFillRGB(.level(1), accent: white) == white)
         let grey = palette.dimmestFill(accent: white)
-        #expect(chroma(grey) < 0.5)
+        #expect(chroma(grey) < 8)
         #expect(grey.r > 120 && grey.r < 160)
         // Late: still a red, a little less of one and a little dimmer.
         let red = EmberTint.rgb(intensity: 0, scheme: .dark)
@@ -635,13 +640,22 @@ import Testing
         }
     }
 
-    @Test func lightAccentIsDeepButNeverTooDeepForABlackMark() {
+    /// One tint scale for both appearances, from a barely warm white to Late's red; a black
+    /// mark reads on all of it, and in light the palest of it is edged, not darkened.
+    @Test func bothAppearancesShareTheTintScaleAndLightEdgesItsPalest() {
         for intensity in intensities {
             let accent = EmberTint.rgb(intensity: intensity, scheme: .light)
+            #expect(accent == EmberTint.rgb(intensity: intensity, scheme: .dark))
             #expect(wcag(.black, accent) >= 3)
-            // Still darker than the panel and the card it sits on.
-            #expect(wcag(accent, EmberPalette.light.card) >= 1.8)
+            let light = EmberPalette.light
+            let shows = wcag(accent, light.background) >= EmberPalette.edgeBelow
+            #expect(shows || light.edge(for: accent, on: light.background) != nil, "\(intensity)")
+            #expect(EmberPalette.dark.edge(for: accent, on: EmberPalette.dark.background) == nil)
         }
+        // The top is white with the least warmth: no channel far from the others.
+        let top = EmberTint.top
+        #expect(top.r == 255 && top.b >= 225 && top.g > top.b)
+        #expect(EmberPalette.light.edge(for: top, on: EmberPalette.light.background) != nil)
     }
 }
 
@@ -782,11 +796,11 @@ import Testing
                         }
                     }
                     EmberCard {
-                        PauseForAppsRow.Column(rows: 2) {
-                            PauseForAppsRow.RowFace(name: "Safari", symbol: "minus.circle.fill",
-                                                    color: palette.text, isFocused: true)
-                            PauseForAppsRow.RowFace(name: "Preview", symbol: "plus.circle",
-                                                    color: palette.secondary, isFocused: false)
+                        AppCandidates.Column(rows: 2) {
+                            AppCandidates.RowFace(name: "Safari", symbol: "plus.circle",
+                                                  color: palette.text, isFocused: true)
+                            AppCandidates.RowFace(name: "Preview", symbol: "plus.circle",
+                                                  color: palette.secondary, isFocused: false)
                         }
                         .padding(.vertical, 6)
                     }
@@ -803,11 +817,11 @@ import Testing
                         }
                     }
                     ForEach([EmberTone.accent, .level(0.5), .level(0)], id: \.self) { tone in
-                        EmberSlider(value: value, band: lower...upper, tone: tone, onChange: { value = $0 },
+                        EmberSlider(percent: SliderCore.percent(value), band: lower...upper, tone: tone, onChange: { value = SliderPercent.unit($0) },
                                     onLimitChange: { if $0 == .lower { lower = $1 } else { upper = $1 } })
-                        EmberSlider(value: lower, band: lower...upper, tone: tone, onChange: { lower = $0 },
+                        EmberSlider(percent: SliderCore.percent(lower), band: lower...upper, tone: tone, onChange: { lower = SliderPercent.unit($0) },
                                     onLimitChange: { if $0 == .lower { lower = $1 } else { upper = $1 } })
-                        EmberSlider(value: pin, band: pin...pin, tone: tone, onChange: { pin = $0 },
+                        EmberSlider(percent: SliderCore.percent(pin), band: pin...pin, tone: tone, onChange: { pin = SliderPercent.unit($0) },
                                     onLimitChange: { _, v in pin = v })
                     }
                 }

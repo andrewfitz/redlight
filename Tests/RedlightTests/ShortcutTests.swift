@@ -175,16 +175,36 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         gamma: MockGammaController = MockGammaController(),
         reserved: @escaping () -> Set<KeyShortcut> = { [] }
     ) -> (ShortcutController, DisplayManager) {
+        let (controller, manager, _, _) = makeController(gamma: gamma, reserved: reserved, appSource: nil)
+        return (controller, manager)
+    }
+
+    /// With the app rules wired as the app wires them, when `appSource` is given.
+    private func makeController(
+        gamma: MockGammaController = MockGammaController(),
+        reserved: @escaping () -> Set<KeyShortcut> = { [] },
+        appSource: FakeAppSource?
+    ) -> (ShortcutController, DisplayManager, AppRulesController?, CommandHandler) {
         let defaults = registry.makeDefaults(prefix: "ShortcutControllerTests")
         let manager = DisplayManager(
             gamma: gamma, getDisplayIDs: { [1] },
             getDisplayName: { "Display \($0)" }, getDisplayPersistenceKey: { String($0) },
             defaults: defaults, location: FakeLocationProvider(),
             now: { Date(timeIntervalSince1970: 1_000_000) },
-            adaptiveTransitionDuration: 0, displayTransitionDuration: 0, peekTransitionDuration: 0)
-        let handler = CommandHandler(manager: manager, services: CommandServices(
+            adaptiveTransitionDuration: 0, displayTransitionDuration: 0, peekTransitionDuration: 0,
+            appRuleTransitionDuration: 0)
+        var services = CommandServices(
             appearance: { false }, setAppearance: { _ in }, login: { .init(enabled: false, requiresApproval: false) },
-            setLogin: { _ in }, update: {}, quit: {}, version: { "test" }))
+            setLogin: { _ in }, update: {}, quit: {}, version: { "test" })
+        let apps = appSource.map {
+            AppRulesController(source: $0, defaults: defaults, ownBundleID: "com.redlight.app", ownProcessID: 999)
+        }
+        if let apps {
+            apps.onChange = { manager.setActiveApp($0) }
+            services.appRules = { apps.statusRules }
+            services.changeApps = { try apps.apply($0) }
+        }
+        let handler = CommandHandler(manager: manager, services: services)
         let store = ShortcutStore(defaults: defaults, reserved: reserved)
         store.useSuggested(reserved: [])
         let uptime = uptime
@@ -192,7 +212,7 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
             store: store, manager: manager, execute: { try handler.execute($0) },
             hotkeys: hotkeys, readout: readout, uptime: { uptime.now },
             repeatDelay: { 60 }, repeatInterval: { 60 })
-        return (controller, manager)
+        return (controller, manager, apps, handler)
     }
 
     private func send(_ action: ShortcutAction, pressed: Bool, to controller: ShortcutController) {
@@ -263,6 +283,17 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         send(.cooler, pressed: true, to: controller)
         send(.cooler, pressed: false, to: controller)
         #expect(readout.shown.last?.text == "Color Temp 100%")
+    }
+
+    /// The readout's bar is the slider's fill: the white point counts 0 to 100 % of its own
+    /// scale, as the status reports it.
+    @Test func aWhitePointStepFillsTheReadoutAsTheSliderShowsIt() {
+        let (controller, manager) = makeController()
+        manager.setAll(on: true)
+        send(.dimmer, pressed: true, to: controller)
+        send(.dimmer, pressed: false, to: controller)
+        #expect(readout.shown.last?.text == "White Point 95%")
+        #expect(readout.shown.last?.level.map { abs($0 - 0.95) < 1e-9 } == true)
     }
 
     @Test func aResentPressWhileHeldDoesNotStepTwice() {
@@ -353,7 +384,9 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         gamma.applyCalls.removeAll()
 
         uptime.now += ShortcutController.untrackedHoldLimit
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        // The loop ends as soon as the tint is back; the deadline only bounds a failure. A
+        // long one keeps a busy parallel run from starving the main run loop past it.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while gamma.applyCalls.isEmpty, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -362,20 +395,20 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         #expect(controller.store.shortcut(for: .pause) != nil)
     }
 
-    @Test func stepsAndPauseKeepWorkingWhileSuspendedForAnApp() {
+    @Test func stepsAndPauseKeepWorkingInAnAppThatPauses() {
         let (controller, manager) = makeController()
         manager.setAll(on: true)
-        manager.setSuspendedForApp("Photoshop")
+        manager.setActiveApp(.photoshop(.pause))
         send(.warmer, pressed: true, to: controller)
         send(.warmer, pressed: false, to: controller)
         #expect(abs(manager.intensity - 0.95) < 1e-9)
-        #expect(readout.shown.last?.text == "Color Temp 95% · Suspended")
+        #expect(readout.shown.last?.text == "Color Temp 95% · Off for Photoshop")
 
-        // A held peek changes nothing visible, and releasing it leaves the suspension.
+        // A held peek changes nothing visible, and releasing it leaves the app's rule.
         send(.pause, pressed: true, to: controller)
         uptime.now += 2
         send(.pause, pressed: false, to: controller)
-        #expect(manager.suspendedForApp == "Photoshop")
+        #expect(manager.isPausedForApp)
         send(.pause, pressed: true, to: controller)
         uptime.now += 0.1
         send(.pause, pressed: false, to: controller)
@@ -386,7 +419,60 @@ private let primary = UInt32(controlKey | optionKey | cmdKey)
         send(.pause, pressed: true, to: controller)
         send(.pause, pressed: false, to: controller)
         #expect(!manager.isPaused)
-        #expect(manager.suspendedForApp == "Photoshop")
+        #expect(manager.isPausedForApp)
+    }
+
+    /// The step keys are pressed while using the app in front: under its Hold or Shift they
+    /// edit that app's rule, while the command line's steps stay global.
+    @Test func stepKeysEditTheRuleOfTheAppInFrontAndTheCommandLineStaysGlobal() throws {
+        let source = FakeAppSource(frontmost: .photoshop)
+        let (controller, manager, apps, handler) = makeController(appSource: source)
+        let rules = try #require(apps)
+        manager.setAll(on: true)
+        manager.intensity = 0.6
+        try rules.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))
+
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: false, to: controller)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .hold(color: 35, whitepoint: 70))
+        #expect(manager.intensity == 0.6, "the global value is untouched")
+        #expect(readout.shown.last?.text == "Color Temp 35% · Photoshop: Hold")
+        send(.dimmer, pressed: true, to: controller)
+        send(.dimmer, pressed: false, to: controller)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .hold(color: 35, whitepoint: 65))
+
+        // The command line, as scripts use it, does not depend on the app in front.
+        _ = try handler.execute(.step(.color, -10))
+        #expect(abs(manager.intensity - 0.5) < 1e-9)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .hold(color: 35, whitepoint: 65))
+
+        // A Shift moves what is shown; at the end of the slider a held key stops.
+        try rules.set("com.adobe.Photoshop", .shift(color: 0, whitepoint: 0))
+        send(.cooler, pressed: true, to: controller)
+        send(.cooler, pressed: false, to: controller)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .shift(color: 5, whitepoint: 0))
+        #expect(readout.shown.last?.text == "Color Temp 55% · Photoshop: Shift")
+        try rules.set("com.adobe.Photoshop", .hold(color: 100, whitepoint: 70))
+        send(.cooler, pressed: true, to: controller)
+        send(.cooler, pressed: false, to: controller)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .hold(color: 100, whitepoint: 70))
+
+        // A Shift already past the end of the slider stays as saved, and a held key stops.
+        manager.intensity = 0.8
+        try rules.set("com.adobe.Photoshop", .shift(color: 50, whitepoint: 0))
+        send(.cooler, pressed: true, to: controller)
+        send(.cooler, pressed: false, to: controller)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .shift(color: 50, whitepoint: 0))
+        #expect(readout.shown.last?.text == "Color Temp 100% · Photoshop: Shift")
+        try rules.set("com.adobe.Photoshop", .hold(color: 100, whitepoint: 70))
+        manager.intensity = 0.5
+
+        // Elsewhere the keys are global again.
+        source.activate(.safari)
+        send(.warmer, pressed: true, to: controller)
+        send(.warmer, pressed: false, to: controller)
+        #expect(abs(manager.intensity - 0.45) < 1e-9)
+        #expect(rules.rule(for: "com.adobe.Photoshop") == .hold(color: 100, whitepoint: 70))
     }
 
     @Test func pauseWhileOffExplainsInsteadOfPeeking() {

@@ -12,6 +12,16 @@ enum CommandSwitch: String, Codable, Sendable, CaseIterable {
     }
 }
 
+enum CommandPeek: String, Codable, Sendable, CaseIterable {
+    case on, off, tap, renew
+}
+
+/// "Learn my adjustments": the switch, or forgetting what was learned.
+enum CommandLearn: String, Codable, Sendable, CaseIterable {
+    /// `reset` keeps a backup of what it forgets; `restore` brings the newest back.
+    case on, off, toggle, reset, restore
+}
+
 enum CommandChannel: String, Codable, Sendable, CaseIterable {
     case color, whitepoint
 
@@ -63,9 +73,10 @@ enum CommandBedtime: Codable, Sendable, Equatable {
     case at(hour: Int, minute: Int)
 }
 
-/// Changes to the apps that suspend the tint while in front, by bundle identifier.
+/// Changes to the per-app rules, by bundle identifier.
 enum CommandApps: Codable, Sendable, Equatable {
-    case add(String)
+    /// Gives the app this rule, replacing any it had.
+    case set(String, AppRule)
     case remove(String)
     case clear
 }
@@ -86,10 +97,20 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     case master(CommandSwitch)
     case status
     case color(Double)
+    /// Color temp as a colour temperature, in kelvin: the app turns it into its percent on the
+    /// first tinted display, from that display's colour profile.
+    case colorKelvin(Double)
     case whitepoint(Double)
+    /// Global saturation as a percentage from 0 (grayscale) to 100 (full color).
+    case saturation(Double)
+    /// Relative saturation percentage change from the current target.
+    case saturationStep(Double)
+    /// Enables, disables, or toggles the saturation pass.
+    case saturationEnabled(CommandSwitch)
     /// Relative percentage change from the current target, resolved by the running app.
     case step(CommandChannel, Double)
     case pause(CommandSwitch)
+    case peek(CommandPeek)
     /// Starts a pause of this length, replacing any pause already running.
     case pauseFor(CommandPauseLength)
     case reset(CommandChannel)
@@ -97,6 +118,8 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     case savePreset(CommandPreset)
     case adaptive(CommandSwitch)
     case limits(CommandChannel, min: Double, max: Double)
+    /// Auto's Color temp limits in kelvin, turned into percents as `colorKelvin` is.
+    case limitsKelvin(min: Double, max: Double)
     case displayList
     case display(CommandDisplaySelector, CommandSwitch)
     case invert(CommandDisplaySelector, CommandSwitch)
@@ -106,6 +129,8 @@ enum RedlightCommand: Codable, Sendable, Equatable {
     case bedtime(CommandBedtime)
     /// Adaptive's "clear by" time: the same payload as the bedtime.
     case wake(CommandBedtime)
+    /// Auto learning from the user's adjustments, on or off, or reset.
+    case learn(CommandLearn)
     case appsList
     case apps(CommandApps)
     case update
@@ -124,10 +149,20 @@ struct Status: Codable, Sendable, Equatable {
         var inverted: Bool
     }
     struct Level: Codable, Sendable, Equatable {
-        var set: Double
-        var target: Double
-        /// "42.0% (target 43.0%)".
-        var text: String { "\(Status.percentText(set))% (target \(Status.percentText(target))%)" }
+        let set: Int
+        let target: Int
+        var text: String { "\(set)% (target \(target)%)" }
+
+        init(set: Int, target: Int) {
+            self.set = set
+            self.target = target
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            set = SliderPercent.whole(try values.decode(Double.self, forKey: .set))
+            target = SliderPercent.whole(try values.decode(Double.self, forKey: .target))
+        }
     }
     struct Band: Codable, Sendable, Equatable {
         var min: Double
@@ -158,12 +193,38 @@ struct Status: Codable, Sendable, Equatable {
         var enabled: Bool
         var requiresApproval: Bool
     }
+    /// "Learn my adjustments": whether it is on, how many parts of the day have something
+    /// learned over both channels and on each, and what was learned, a sentence per slider.
+    struct Learning: Codable, Sendable, Equatable {
+        var enabled: Bool
+        var anchors: Int = 0
+        var summary: [String] = []
+        /// Each slider's share of `anchors`. Absent from earlier builds of protocol 5.
+        var colorAnchors: Int?
+        var whitepointAnchors: Int?
+        /// Earlier states kept by resets, for `redlight learn restore`.
+        var backups: Int?
+
+        /// What was learned, as `redlight status` and the Shortcuts status put it.
+        var text: String {
+            if !summary.isEmpty { return summary.joined(separator: " ") }
+            return anchors > 0 ? "your settings match Auto's own so far" : "nothing yet"
+        }
+    }
 
     var running: Bool = true
     var on: Bool = false
     var displays: [Display] = []
     var color: Level = Level(set: 100, target: 100)
     var whitepoint: Level = Level(set: 100, target: 100)
+    /// Global saturation, where 0 is grayscale and 100 is full color.
+    var saturation: Level = Level(set: 0, target: 100)
+    var saturationEnabled: Bool = false
+    var saturationText: String {
+        let global = "\(saturation.set)% (\(saturationEnabled ? "on" : "off"))"
+        guard activeApp?.rule.saturation != nil else { return global }
+        return "\(global), app target \(saturation.target)%"
+    }
     var activePreset: CommandPreset?
     var adaptive: Bool = false
     var elevation: Double?
@@ -174,41 +235,74 @@ struct Status: Codable, Sendable, Equatable {
     var version: String = ""
     var fading: Bool = false
     var pausedUntil: Date?
+    /// Whether a transient Peek is currently hiding the tint. Absent from older status replies.
+    var peeking: Bool?
     /// Absent from apps older than protocol 3.
     var locationSource: CommandLocationSource?
     /// Adaptive's bedtime as "22:30"; absent when off, and from older apps.
     var bedtime: String?
     /// Adaptive's wake time as "07:00"; absent when off, and from apps older than protocol 4.
     var wake: String?
-    /// The chosen app in front that is suspending the tint; absent when none is.
-    var suspendedFor: String?
-    /// Bundle IDs of the apps that suspend the tint; absent from JSON when there are none.
-    var apps: [String] = []
+    /// Auto's learning; absent from apps older than protocol 5.
+    var learning: Learning?
+    /// The app in front with a rule, while Redlight is on; absent otherwise.
+    var activeApp: App?
+    /// Every app with a rule, in the order chosen; absent from JSON when there are none.
+    var appRules: [App] = []
+    /// Color temp as the colour temperature the first tinted display shows. Absent from
+    /// earlier builds of protocol 5.
+    var colorKelvin: Kelvin?
+
+    /// A colour temperature in kelvin, nil where the tint is redder than the blackbody curve
+    /// goes (below 500 K).
+    struct Kelvin: Codable, Sendable, Equatable {
+        var set: Double?
+        var target: Double?
+
+        /// "4,830 K", or "4,830 K, target 3,400 K" while it moves.
+        var text: String {
+            let now = KelvinScale.text(kelvin: set)
+            guard target != set else { return now }
+            return "\(now), target \(KelvinScale.text(kelvin: target))"
+        }
+    }
+
+    /// An app with a rule. `name` is the installed app's, or the bundle ID.
+    struct App: Codable, Sendable, Equatable {
+        var bundleID: String
+        var name: String
+        var rule: AppRule
+    }
 
     static var notRunning: Status { Status(running: false) }
 
     private enum CodingKeys: String, CodingKey {
         case running, on, displays, color, whitepoint, activePreset, adaptive, elevation
-        case statusLine, limits, appearance, login, version, fading, pausedUntil, locationSource, bedtime
-        case wake, suspendedFor, apps
+        case statusLine, limits, appearance, login, version, fading, pausedUntil, peeking, locationSource, bedtime
+        case wake, learning, activeApp, appRules, colorKelvin, saturation, saturationEnabled
     }
 
     init(
         running: Bool = true, on: Bool = false, displays: [Display] = [],
         color: Level = Level(set: 100, target: 100),
         whitepoint: Level = Level(set: 100, target: 100), activePreset: CommandPreset? = nil,
+        saturation: Level = Level(set: 0, target: 100),
+        saturationEnabled: Bool = false,
         adaptive: Bool = false, elevation: Double? = nil, statusLine: String = "",
         limits: Limits = Limits.factory,
         appearance: CommandAppearance = .light,
         login: Login = Login(enabled: false, requiresApproval: false), version: String = "", fading: Bool = false,
-        pausedUntil: Date? = nil, locationSource: CommandLocationSource? = nil, bedtime: String? = nil,
-        wake: String? = nil, suspendedFor: String? = nil, apps: [String] = []
+        pausedUntil: Date? = nil, peeking: Bool? = nil, locationSource: CommandLocationSource? = nil, bedtime: String? = nil,
+        wake: String? = nil, learning: Learning? = nil, activeApp: App? = nil, appRules: [App] = [],
+        colorKelvin: Kelvin? = nil
     ) {
         self.running = running
         self.on = on
         self.displays = displays
         self.color = color
         self.whitepoint = whitepoint
+        self.saturation = saturation
+        self.saturationEnabled = saturationEnabled
         self.activePreset = activePreset
         self.adaptive = adaptive
         self.elevation = elevation
@@ -219,11 +313,14 @@ struct Status: Codable, Sendable, Equatable {
         self.version = version
         self.fading = fading
         self.pausedUntil = pausedUntil
+        self.peeking = peeking
         self.locationSource = locationSource
         self.bedtime = bedtime
         self.wake = wake
-        self.suspendedFor = suspendedFor
-        self.apps = apps
+        self.learning = learning
+        self.activeApp = activeApp
+        self.appRules = appRules
+        self.colorKelvin = colorKelvin
     }
 
     init(from decoder: Decoder) throws {
@@ -246,6 +343,9 @@ struct Status: Codable, Sendable, Equatable {
             color: try values.decode(Level.self, forKey: .color),
             whitepoint: try values.decode(Level.self, forKey: .whitepoint),
             activePreset: try values.decodeIfPresent(CommandPreset.self, forKey: .activePreset),
+            saturation: try values.decodeIfPresent(Level.self, forKey: .saturation)
+                ?? Level(set: 100, target: 100),
+            saturationEnabled: try values.decodeIfPresent(Bool.self, forKey: .saturationEnabled) ?? false,
             adaptive: try values.decode(Bool.self, forKey: .adaptive),
             elevation: try values.decodeIfPresent(Double.self, forKey: .elevation),
             statusLine: try values.decode(String.self, forKey: .statusLine),
@@ -255,11 +355,14 @@ struct Status: Codable, Sendable, Equatable {
             version: try values.decode(String.self, forKey: .version),
             fading: try values.decode(Bool.self, forKey: .fading),
             pausedUntil: pausedUntil,
+            peeking: try values.decodeIfPresent(Bool.self, forKey: .peeking),
             locationSource: try values.decodeIfPresent(CommandLocationSource.self, forKey: .locationSource),
             bedtime: try values.decodeIfPresent(String.self, forKey: .bedtime),
             wake: try values.decodeIfPresent(String.self, forKey: .wake),
-            suspendedFor: try values.decodeIfPresent(String.self, forKey: .suspendedFor),
-            apps: try values.decodeIfPresent([String].self, forKey: .apps) ?? []
+            learning: try values.decodeIfPresent(Learning.self, forKey: .learning),
+            activeApp: try values.decodeIfPresent(App.self, forKey: .activeApp),
+            appRules: try values.decodeIfPresent([App].self, forKey: .appRules) ?? [],
+            colorKelvin: try values.decodeIfPresent(Kelvin.self, forKey: .colorKelvin)
         )
     }
 
@@ -271,6 +374,8 @@ struct Status: Codable, Sendable, Equatable {
         try values.encode(displays, forKey: .displays)
         try values.encode(color, forKey: .color)
         try values.encode(whitepoint, forKey: .whitepoint)
+        try values.encode(saturation, forKey: .saturation)
+        try values.encode(saturationEnabled, forKey: .saturationEnabled)
         try values.encodeIfPresent(activePreset, forKey: .activePreset)
         try values.encode(adaptive, forKey: .adaptive)
         try values.encodeIfPresent(elevation, forKey: .elevation)
@@ -282,11 +387,14 @@ struct Status: Codable, Sendable, Equatable {
         try values.encode(fading, forKey: .fading)
         try values.encodeIfPresent(
             pausedUntil.map { ISO8601DateFormatter().string(from: $0) }, forKey: .pausedUntil)
+        try values.encodeIfPresent(peeking, forKey: .peeking)
         try values.encodeIfPresent(locationSource, forKey: .locationSource)
         try values.encodeIfPresent(bedtime, forKey: .bedtime)
         try values.encodeIfPresent(wake, forKey: .wake)
-        try values.encodeIfPresent(suspendedFor, forKey: .suspendedFor)
-        if !apps.isEmpty { try values.encode(apps, forKey: .apps) }
+        try values.encodeIfPresent(learning, forKey: .learning)
+        try values.encodeIfPresent(activeApp, forKey: .activeApp)
+        if !appRules.isEmpty { try values.encode(appRules, forKey: .appRules) }
+        try values.encodeIfPresent(colorKelvin, forKey: .colorKelvin)
     }
 }
 
@@ -306,10 +414,16 @@ struct CommandProtocolHeader: Decodable { var v: Int }
 
 struct CommandRequest: Codable, Sendable, Equatable {
     /// 2 added `step` and `pause`; 3 added `pauseFor`, `location`, `bedtime`, `appsList`,
-    /// `apps`, `Status.locationSource`, `Status.bedtime`, `Status.suspendedFor` and
-    /// `Status.apps`; 4 added `wake` and `Status.wake`.
+    /// `apps`, `Status.locationSource` and `Status.bedtime`; 4 added `wake` and `Status.wake`;
+    /// 5 added `learn` and `Status.learning`, and replaced the apps that pause the tint with
+    /// per-app rules: `apps` sets and removes rules, and `Status.activeApp` and
+    /// `Status.appRules` replace `Status.suspendedFor` and `Status.apps`.
     /// An older app answers "update Redlight" instead of failing to decode.
-    static let currentVersion = 4
+    /// 6 added transient Peek commands and `Status.peeking`.
+    /// 7 added global saturation commands and `Status.saturation`.
+    /// 8 added the saturation enable switch, `Status.saturationEnabled`, and Peek renewal.
+    /// 9 adds saturation to Hold and Shift app rules.
+    static let currentVersion = 9
     var v: Int
     var command: RedlightCommand
 

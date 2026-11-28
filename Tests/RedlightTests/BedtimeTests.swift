@@ -408,6 +408,8 @@ final class BedtimeTestClock {
     @Test func manualOffsetShiftsTheCombinedCurveAndStaysInTheBand() {
         let clock = BedtimeTestClock(date("2025-06-21T22:30:00Z"))
         let manager = makeManager(clock: clock)
+        // Without Learn my adjustments: a nudge is one offset for the whole curve.
+        manager.setLearning(false)
         manager.adaptiveEnabled = true
         manager.adaptiveMin = 0.1
         manager.adaptiveMax = 0.9

@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Redlight Adjust</title>
+<style>body{font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8e8;background:#2b2b2b;padding:12px}label{display:block;margin:10px 0 5px;color:#ccc}select,input{width:100%;box-sizing:border-box;padding:6px;background:#444;color:#fff;border:1px solid #666;border-radius:4px}</style>
+<h3>Adjust</h3>
+<label for="channel">Channel</label><select id="channel"><option value="color">Color Temp</option><option value="whitepoint">White Point</option></select>
+<label id="direction-label" for="direction">Key direction</label><select id="direction"><option value="up">Up</option><option value="down">Down</option></select>
+<label for="step">Step percent</label><input id="step" type="number" min="0" max="100" step="any" required value="5">
+<label for="colorUnit">Color temp unit</label>
+<select id="colorUnit"><option value="percent">Percent (%)</option><option value="kelvin">Kelvin (K)</option></select>
+<script>
+const channel = document.querySelector('#channel');
+const direction = document.querySelector('#direction');
+const step = document.querySelector('#step');
+const unit = document.querySelector("#colorUnit");
+const controls = [channel, direction, step, unit];
+controls.forEach((control) => { control.disabled = true; });
+
+window.connectElgatoStreamDeckSocket = (port, uuid, event, _info, actionInfo) => {
+  const { action, context, payload } = JSON.parse(actionInfo);
+  const settings = payload?.settings ?? {};
+  unit.value = settings.colorUnit === 'kelvin' ? 'kelvin' : 'percent';
+  channel.value = settings.channel === 'whitepoint' ? 'whitepoint' : 'color';
+  direction.value = settings.direction === 'down' ? 'down' : 'up';
+  const validStep = (amount) => Number.isFinite(amount) && amount > 0 && amount <= 100;
+  let savedStep = validStep(settings.step) ? settings.step : 5;
+  step.value = String(savedStep);
+  if (payload?.controller === 'Encoder') {
+    document.querySelector('#direction-label').textContent = 'Clockwise direction';
+  }
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ event, uuid }));
+    controls.forEach((control) => { control.disabled = false; });
+  };
+  socket.onclose = () => controls.forEach((control) => { control.disabled = true; });
+
+  const saveSettings = () => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const amount = step.valueAsNumber;
+    if (validStep(amount)) savedStep = amount;
+    else step.value = String(savedStep);
+    socket.send(JSON.stringify({
+      event: 'setSettings',
+      action,
+      context,
+      payload: { ...settings, colorUnit: unit.value, channel: channel.value, direction: direction.value, step: savedStep },
+    }));
+  };
+  controls.forEach((control) => control.addEventListener('change', saveSettings));
+};
+</script>

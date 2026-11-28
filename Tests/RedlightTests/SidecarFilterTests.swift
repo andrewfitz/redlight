@@ -74,6 +74,83 @@ import Testing
         #expect(sidecar.restoreCalls == [2])
     }
 
+    @Test func physicalSaturationKeepsTheLUTAndAddsOnlyAGrayscalePass() {
+        let gamma = MockGammaController()
+        let sidecar = MockGammaController()
+        let gray = MockGammaController()
+        let controller = DisplayFilterController(
+            gamma: gamma, sidecar: sidecar, desaturation: gray, isSidecar: { _ in false })
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 1)
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 0.3)
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 0.2)
+        // The red filter never leaves the calibrated LUT, so crossing 100% cannot flash.
+        #expect(gamma.restoreCalls.isEmpty)
+        #expect(gamma.applyCalls.count == 3)
+        #expect(gamma.applyCalls.allSatisfy { $0.intensity == 0.4 && $0.whitepoint == 0.8 && $0.invert })
+        #expect(sidecar.applyCalls.isEmpty)
+        #expect(gray.applyCalls.count == 2)
+        #expect(gray.applyCalls.allSatisfy { $0.intensity == 1 && $0.whitepoint == 1 && !$0.invert })
+        #expect(gray.saturationCalls.map(\.saturation) == [0.3, 0.2])
+        #expect(gray.saturationCalls.allSatisfy { $0.captureProtected })
+
+        controller.displaysDidChange()
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 0.2)
+        #expect(gray.restoreCalls.isEmpty) // a reconfiguration keeps the overlay open
+
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 1)
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 0.8, invert: true, saturation: 1)
+        #expect(gray.restoreCalls == [2])
+        #expect(gamma.restoreCalls.isEmpty)
+        #expect(gamma.applyCalls.count == 6)
+    }
+
+    @Test func unavailableGrayscalePassKeepsTheRedFilter() throws {
+        let screen = try #require(NSScreen.screens.first)
+        let gamma = MockGammaController()
+        var attempts = 0
+        let gray = SidecarFilterController(getScreen: { _ in screen }, makeOverlay: { _ in
+            attempts += 1
+            return nil
+        }, pointer: nil)
+        let controller = DisplayFilterController(
+            gamma: gamma, sidecar: MockGammaController(), desaturation: gray, isSidecar: { _ in false })
+        for _ in 0..<10 {
+            controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 1, invert: false, saturation: 0)
+        }
+        #expect(attempts == 1)
+        #expect(gamma.applyCalls.count == 10)
+        #expect(gamma.restoreCalls.isEmpty)
+    }
+
+    @Test func physicalGrayscaleOverlayNeverTakesThePointer() throws {
+        let screen = try #require(NSScreen.screens.first)
+        let pointer = Pointer()
+        pointer.location = NSPoint(x: screen.frame.midX, y: screen.frame.midY)
+        let gray = SidecarFilterController(
+            getScreen: { _ in screen }, makeOverlay: { _ in Overlay() }, pointer: nil)
+        let controller = DisplayFilterController(
+            gamma: MockGammaController(), sidecar: SidecarFilterController(
+                getScreen: { _ in screen }, makeOverlay: { _ in Overlay() }, pointer: pointer),
+            desaturation: gray, isSidecar: { _ in false })
+        controller.applyFilter(to: 2, intensity: 0.4, whitepoint: 1, invert: false, saturation: 0)
+        #expect(pointer.changed == nil)
+        #expect(pointer.hideCount == 0)
+        controller.restoreAll()
+    }
+
+    @Test func sidecarSaturationStaysOnItsCompositor() {
+        let gamma = MockGammaController()
+        let sidecar = MockGammaController()
+        let gray = MockGammaController()
+        let controller = DisplayFilterController(
+            gamma: gamma, sidecar: sidecar, desaturation: gray, isSidecar: { _ in true })
+        controller.applyFilter(to: 7, intensity: 0.4, whitepoint: 1, invert: false, saturation: 0.5)
+        #expect(sidecar.saturationCalls.map(\.saturation) == [0.5])
+        #expect(sidecar.saturationCalls.allSatisfy { !$0.captureProtected })
+        #expect(gray.applyCalls.isEmpty)
+        #expect(gamma.applyCalls.isEmpty)
+    }
+
     @Test func restoreCleansBothBackendsIncludingAReusedDisplayID() {
         let gamma = MockGammaController()
         let sidecar = MockGammaController()
@@ -211,6 +288,41 @@ import Testing
         #expect(window.frame == screen.frame)
         #expect(window.contentView?.layer?.sublayers?.last?.frame == window.contentView?.bounds)
         #expect(try filter() === second) // resizing must not change the color transfer
+    }
+
+    @Test func nativeCompositorRunsOnlyTheNeededPassesWithMatrixFirst() throws {
+        guard #available(macOS 27, *), let screen = NSScreen.screens.first else { return }
+        _ = NSApplication.shared
+        let window = try #require(SidecarFilterWindow(screen: screen))
+        defer { window.close() }
+        window.alphaValue = 0 // exercise the real render tree without graying the desktop
+        func filters() throws -> [NSObject] {
+            try #require(window.contentView?.layer?.sublayers?.last?.filters as? [NSObject])
+        }
+        // A grayscale-only overlay is a single GPU pass: the identity curve is left out.
+        window.apply(
+            screen: screen, intensity: 1, whitepoint: 1,
+            invert: false, saturation: 0, captureProtected: true)
+        var current = try filters()
+        #expect(current.count == 1)
+        #expect(current[0].value(forKey: "inputColorMatrix") as? NSValue ==
+                SaturationColorMatrix.value(saturation: 0))
+        #expect(window.sharingType == .none)
+
+        window.apply(
+            screen: screen, intensity: 0.5, whitepoint: 1,
+            invert: false, saturation: 0.5, captureProtected: false)
+        current = try filters()
+        #expect(current.count == 2)
+        #expect(current[0].value(forKey: "inputColorMatrix") as? NSValue ==
+                SaturationColorMatrix.value(saturation: 0.5))
+        #expect(current[1].value(forKey: "inputGreenValues") as? [Float] ==
+                SidecarTransferCurve.controls(gain: 0.5, whitepoint: 1, invert: false))
+        #expect(window.sharingType == .readWrite)
+
+        window.apply(screen: screen, intensity: 0.5, whitepoint: 1, invert: false)
+        let fullColor = try filters()
+        #expect(fullColor.count == 1) // full color drops the matrix pass
     }
 
     @Test func pointerOverSidecarIsHiddenAndDrawnBeneathTheFilter() throws {

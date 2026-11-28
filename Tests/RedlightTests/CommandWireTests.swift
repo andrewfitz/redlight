@@ -11,7 +11,7 @@ import Testing
     }
 
     @Test func everyCommandRoundTripsThroughVersionedRequest() throws {
-        var commands: [RedlightCommand] = [.status, .displayList, .color(0), .color(100), .whitepoint(25), .whitepoint(100), .login(true), .login(false), .update, .quit]
+        var commands: [RedlightCommand] = [.status, .displayList, .color(0), .color(100), .whitepoint(25), .whitepoint(100), .saturation(0), .saturation(100), .saturationStep(5), .saturationStep(-2.5), .saturationEnabled(.on), .saturationEnabled(.off), .saturationEnabled(.toggle), .login(true), .login(false), .update, .quit]
         for state in CommandSwitch.allCases {
             commands += [.master(state), .adaptive(state), .pause(state)]
             for selector: CommandDisplaySelector in [.number(2), .name("Studio Display"), .all, .key("uuid-display-1")] {
@@ -28,7 +28,12 @@ import Testing
                      .location(.automatic), .location(.manual(latitude: -33.87, longitude: 151.21)),
                      .bedtime(.at(hour: 22, minute: 30)), .bedtime(.at(hour: 0, minute: 0)), .bedtime(.off),
                      .wake(.at(hour: 7, minute: 0)), .wake(.at(hour: 23, minute: 59)), .wake(.off),
-                     .appsList, .apps(.add("com.adobe.Photoshop")), .apps(.remove("com.apple.Photos")), .apps(.clear)]
+                     .learn(.on), .learn(.off), .learn(.toggle), .learn(.reset), .learn(.restore),
+                     .appsList, .apps(.set("com.adobe.Photoshop", .pause)),
+                     .apps(.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))),
+                     .apps(.set("com.adobe.Photoshop", .shift(color: -10, whitepoint: 3))),
+                     .apps(.remove("com.apple.Photos")), .apps(.clear)]
+        commands += CommandPeek.allCases.map(RedlightCommand.peek)
         for command in commands {
             let request = CommandRequest(command: command)
             let decoded = try JSONDecoder().decode(CommandRequest.self, from: JSONEncoder().encode(request))
@@ -62,8 +67,27 @@ import Testing
         #expect(decoded == .notRunning)
     }
 
+    @Test func peekCommandsKeepTheirWireNamesAndStatusIsOptional() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        for (action, wireValue): (CommandPeek, String) in [(.on, "on"), (.off, "off"), (.tap, "tap"), (.renew, "renew")] {
+            let command = RedlightCommand.peek(action)
+            let data = try encoder.encode(command)
+            #expect(String(decoding: data, as: UTF8.self) == #"{"peek":{"_0":"\#(wireValue)"}}"#)
+            let decoded = try JSONDecoder().decode(RedlightCommand.self, from: data)
+            #expect(decoded == command)
+        }
+        let status = Status(on: true, peeking: true)
+        let object = try #require(JSONSerialization.jsonObject(with: encoder.encode(status)) as? [String: Any])
+        #expect(object["peeking"] as? Bool == true)
+        #expect(try JSONDecoder().decode(Status.self, from: encoder.encode(status)) == status)
+        var older = object
+        older.removeValue(forKey: "peeking")
+        #expect(try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: older)).peeking == nil)
+    }
+
     @Test func versionMismatchRequiresUpdateAndSystemExitCode() {
-        for version in [0, 1, 2, 3, 5, -1] {
+        for version in Array(0..<CommandRequest.currentVersion) + [CommandRequest.currentVersion + 1, -1] {
             do {
                 try CommandRequest(v: version, command: .status).validateVersion()
                 Issue.record("Accepted protocol version \(version)")
@@ -112,7 +136,7 @@ import Testing
     }
 
     @Test func theProtocolKeepsTheVersionTwoPauseEncoding() throws {
-        #expect(CommandRequest.currentVersion == 4)
+        #expect(CommandRequest.currentVersion == 9)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         for (command, json) in [(RedlightCommand.pause(.on), #"{"pause":{"_0":"on"}}"#),
@@ -123,7 +147,7 @@ import Testing
     }
 
     @Test func wakeIsAnAdditiveProtocolFourCommandAndStatusField() throws {
-        #expect(CommandRequest.currentVersion == 4)
+        #expect(CommandRequest.currentVersion == 9)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         for (command, json) in [(RedlightCommand.wake(.at(hour: 7, minute: 5)), #"{"wake":{"_0":{"at":{"hour":7,"minute":5}}}}"#),
@@ -142,6 +166,38 @@ import Testing
         #expect(older.bedtime == "22:30" && older.wake == nil)
         let unset = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Status(on: true))) as? [String: Any])
         #expect(unset["wake"] == nil)
+    }
+
+    @Test func learnIsAnAdditiveProtocolFiveCommandAndStatusField() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        for (command, json) in [(RedlightCommand.learn(.on), #"{"learn":{"_0":"on"}}"#),
+                                (.learn(.reset), #"{"learn":{"_0":"reset"}}"#)] {
+            #expect(String(decoding: try encoder.encode(command), as: UTF8.self) == json)
+            #expect(try JSONDecoder().decode(RedlightCommand.self, from: Data(json.utf8)) == command)
+            #expect(!command.isReadOnly)
+        }
+        #expect(CommandLearn.allCases.map(\.rawValue) == ["on", "off", "toggle", "reset", "restore"])
+
+        let learning = Status.Learning(enabled: true, anchors: 3, summary: ["Color temp runs from 30% to 90%."],
+                                       colorAnchors: 2, whitepointAnchors: 1)
+        let status = Status(on: true, adaptive: true, learning: learning)
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
+        var written = try #require(object["learning"] as? [String: Any])
+        #expect(written["enabled"] as? Bool == true && written["anchors"] as? Int == 3)
+        #expect(written["summary"] as? [String] == learning.summary)
+        #expect(written["colorAnchors"] as? Int == 2 && written["whitepointAnchors"] as? Int == 1)
+        #expect(try JSONDecoder().decode(Status.self, from: JSONEncoder().encode(status)) == status)
+        // The counts per slider came later in protocol 5: a status without them still reads.
+        written.removeValue(forKey: "colorAnchors")
+        written.removeValue(forKey: "whitepointAnchors")
+        var earlier = object
+        earlier["learning"] = written
+        let read = try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: earlier))
+        #expect(read.learning?.anchors == 3 && read.learning?.colorAnchors == nil)
+        object.removeValue(forKey: "learning")
+        let older = try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(older.adaptive && older.learning == nil)
     }
 
     @Test func bedtimeIsAnAdditiveProtocolThreeCommandAndStatusField() throws {
@@ -165,34 +221,41 @@ import Testing
         #expect(unset["bedtime"] == nil)
     }
 
-    @Test func appsAreAdditiveProtocolThreeCommandsAndStatusFields() throws {
+    /// Protocol 5's app rules: the commands and status fields as they go over the wire.
+    @Test func appRulesOnTheWire() throws {
         #expect(RedlightCommand.appsList.isReadOnly)
         #expect(!RedlightCommand.apps(.clear).isReadOnly)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        for (command, json) in [(RedlightCommand.appsList, #"{"appsList":{}}"#),
-                                (.apps(.add("com.adobe.Photoshop")), #"{"apps":{"_0":{"add":{"_0":"com.adobe.Photoshop"}}}}"#),
-                                (.apps(.remove("com.adobe.Photoshop")), #"{"apps":{"_0":{"remove":{"_0":"com.adobe.Photoshop"}}}}"#),
-                                (.apps(.clear), #"{"apps":{"_0":{"clear":{}}}}"#)] {
+        for (command, json) in [
+            (RedlightCommand.appsList, #"{"appsList":{}}"#),
+            (.apps(.set("com.adobe.Photoshop", .pause)), #"{"apps":{"_0":{"set":{"_0":"com.adobe.Photoshop","_1":{"pause":{}}}}}}"#),
+            (.apps(.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))),
+             #"{"apps":{"_0":{"set":{"_0":"com.adobe.Photoshop","_1":{"hold":{"color":40,"whitepoint":70}}}}}}"#),
+            (.apps(.set("com.adobe.Photoshop", .shift(color: -10, whitepoint: 5))),
+             #"{"apps":{"_0":{"set":{"_0":"com.adobe.Photoshop","_1":{"shift":{"color":-10,"whitepoint":5}}}}}}"#),
+            (.apps(.remove("com.adobe.Photoshop")), #"{"apps":{"_0":{"remove":{"_0":"com.adobe.Photoshop"}}}}"#),
+            (.apps(.clear), #"{"apps":{"_0":{"clear":{}}}}"#),
+        ] {
             #expect(String(decoding: try encoder.encode(command), as: UTF8.self) == json)
             #expect(try JSONDecoder().decode(RedlightCommand.self, from: Data(json.utf8)) == command)
         }
 
-        let status = Status(on: true, suspendedFor: "Photoshop", apps: ["com.adobe.Photoshop"])
-        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
-        #expect(object["suspendedFor"] as? String == "Photoshop")
-        #expect(object["apps"] as? [String] == ["com.adobe.Photoshop"])
+        let photoshop = Status.App(bundleID: "com.adobe.Photoshop", name: "Photoshop", rule: .hold(color: 40, whitepoint: 70))
+        let status = Status(on: true, activeApp: photoshop,
+                            appRules: [photoshop, Status.App(bundleID: "com.apple.Photos", name: "Photos", rule: .pause)])
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
+        let active = try #require(object["activeApp"] as? [String: Any])
+        #expect(active["name"] as? String == "Photoshop")
+        #expect(active["bundleID"] as? String == "com.adobe.Photoshop")
+        #expect((active["rule"] as? [String: Any])?["hold"] as? [String: Double] == ["color": 40, "whitepoint": 70])
+        #expect((object["appRules"] as? [Any])?.count == 2)
         #expect(try JSONDecoder().decode(Status.self, from: JSONEncoder().encode(status)) == status)
-        object.removeValue(forKey: "suspendedFor")
-        object.removeValue(forKey: "apps")
-        let older = try JSONDecoder().decode(Status.self, from: JSONSerialization.data(withJSONObject: object))
-        #expect(older.on)
-        #expect(older.suspendedFor == nil)
-        #expect(older.apps.isEmpty)
-        // With no apps chosen and nothing suspended, a status reply is byte-for-byte unchanged.
+        // With no rules and none in front, neither field is sent.
         let unset = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Status(on: true))) as? [String: Any])
-        #expect(unset["suspendedFor"] == nil)
-        #expect(unset["apps"] == nil)
+        #expect(unset["activeApp"] == nil)
+        #expect(unset["appRules"] == nil)
+        #expect(unset["suspendedFor"] == nil && unset["apps"] == nil)
     }
 
     @Test func invalidCommandPayloadIsRejected() {
@@ -259,7 +322,9 @@ import Testing
             (.location(.automatic), .location(.automatic)),
             (.bedtime(.at(hour: 22, minute: 30)), .bedtime(.at(hour: 22, minute: 30))), (.bedtime(.off), .bedtime(.off)),
             (.wake(.at(hour: 7, minute: 0)), .wake(.at(hour: 7, minute: 0))), (.wake(.off), .wake(.off)),
-            (.apps(.add("com.adobe.Photoshop")), .apps(.add("com.adobe.Photoshop"))),
+            (.learn(.on), .learn(.on)), (.learn(.reset), .learn(.reset)),
+            (.apps(.set("com.adobe.Photoshop", .shift(color: -5, whitepoint: 0))),
+             .apps(.set("com.adobe.Photoshop", .shift(color: -5, whitepoint: 0)))),
             (.apps(.remove("com.adobe.Photoshop")), .apps(.remove("com.adobe.Photoshop"))), (.apps(.clear), .apps(.clear)),
         ]
         for descriptor in PopoverActionDescriptor.allCases {

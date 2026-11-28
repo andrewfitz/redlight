@@ -1,9 +1,21 @@
 import AppKit
 import SwiftUI
 
+/// Slider settings use integer percentages. Only geometry, Auto and display output use fractions.
+enum SliderPercent {
+    static func whole(_ percent: Double) -> Int {
+        guard percent.isFinite else { return 100 }
+        // Ignore round-off from converting a display value back to slider units.
+        let bounded = min(100, max(0, percent))
+        return Int(((bounded * 1e10).rounded() / 1e10).rounded())
+    }
+
+    static func unit(_ percent: Int) -> Double { Double(percent) / 100 }
+}
+
 /// The white point as people are shown it and as they set it: 0 to 100 %.
 ///
-/// What the displays take runs from 0.25 to 1, and that is what is stored, saved and handed
+/// What the displays take runs from 0.25 to 1, and that is what is handed
 /// to the gamma tables. Below a quarter the screen is too dark to find the way back, so the
 /// output stops there; a scale that began at 25 % only made people ask why. So the popover,
 /// the command line and Shortcuts all show the output's place in its own range: 0.25 reads
@@ -215,7 +227,7 @@ enum SliderCore {
     /// The whole percent a slider shows for a value: its place in the slider's range, so
     /// the bottom of any slider is 0 and the top 100.
     static func percent(_ value: Double, in range: ClosedRange<Double> = 0...1) -> Int {
-        Int((frac(value, range: range) * 100).rounded())
+        SliderPercent.whole(frac(value, range: range) * 100)
     }
 
     /// Whole percent as the popover writes it: "20%".

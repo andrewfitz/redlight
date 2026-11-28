@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.streamDeckPlugin
+.test-build/

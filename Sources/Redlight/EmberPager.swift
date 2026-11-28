@@ -1,176 +1,150 @@
+import AppKit
 import SwiftUI
 
 /// Panes that take each other's place by sliding sideways: Auto and Manual under the mode
 /// control, and the popover's pages (controls, Settings, About).
 ///
-/// The panes sit side by side, in the order of `ids`, in a strip as many popovers wide, and
-/// a change of `selection` moves the strip on `EmberMotion.modeSwitch`. At rest only the
-/// selected pane exists. A change brings the new one into its place in the strip, out of
-/// sight, then slides the strip, and then takes away the pane that has left. The strip moves
-/// one update after the pane is in: a view that arrives in the same update as a move is
-/// drawn where the move ends. Meanwhile the height goes from the old pane's to the new
-/// one's, laid out anew on every frame, so whatever is under the pager and the popover
-/// around it follow.
+/// Only the shown pane is laid out. A pane is built the first time it is selected and then
+/// kept for as long as the popover is open: one that is not shown has no height and is not
+/// drawn, takes no input, and keeps its state, so going back to it builds nothing.
 ///
-/// Each pane is a view of its own: for the length of the slide two exist, and the one that
-/// is leaving takes no input, from the pointer or (through `emberIsLeaving`, which each
-/// control reads) the keyboard, and looks as it did. It is not hidden from assistive apps
-/// for that third of a second: hiding at this level, even with `false`, would uncover what
-/// a pane hides itself.
+/// The slide itself is not SwiftUI's. Animating the panes in SwiftUI had it lay out and draw
+/// the popover again on every frame, which a fast display could not keep up with. Here a
+/// change is handed to the popover's `PopoverSlideHost`: it takes a picture of what is on
+/// screen, has the pager show the new pane at once, takes a picture of that, and slides the
+/// two pictures past each other with Core Animation while the popover's height follows. The
+/// display moves them at its own rate, and SwiftUI does nothing until the next change. With
+/// no host (outside the popover), with Reduce Motion, or with animations off, the panes are
+/// swapped in place.
+///
+/// Every pane but the selected one takes no input from the pointer or (through
+/// `emberIsLeaving`, which each control reads) the keyboard. A pane not shown is transparent,
+/// which takes it out of what assistive apps see; it is not hidden from them explicitly,
+/// because hiding at this level, even with `false`, would uncover what a pane hides itself.
+/// A platform control in the pane that is leaving (a text field, a time picker) gives the
+/// keyboard back to the popover.
 ///
 /// A pane is given the popover's width, padded as the popover's content is, so it runs to the
 /// popover's edges and leaves by them. The pager is to be placed inside that padding.
-///
-/// With Reduce Motion, or with animations off, the panes are swapped in place.
 struct EmberPager<ID: Hashable, Pane: View>: View {
     /// Left to right.
     let ids: [ID]
     let selection: ID
     @ViewBuilder let pane: (ID) -> Pane
 
-    /// The pane that has arrived and stands alone. Nil during a change, and another pane than
-    /// the selection in the one update before that.
-    @State private var settled: ID?
-    /// The pane the strip is at, or on its way to.
-    @State private var position: ID
-    /// The panes a change is leaving behind, until it ends.
-    @State private var leaving: Set<ID> = []
-    /// The selected pane's own height, kept up to date at rest so that a change has somewhere
-    /// to start from, and during one the height on its way to the new pane's.
-    @State private var paneHeight: CGFloat = 0
-    @State private var measured: Measure
+    /// The pane on screen: the selection, once a change has swapped it in.
+    @State private var shown: ID
+    /// Every pane that has been built.
+    @State private var built: Set<ID>
+    /// How many times each pane has come into play, for `onPaneShown`.
+    @State private var visits: [ID: Int] = [:]
+    @State private var place = Place()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.emberAnimationsEnabled) private var animates
+    @Environment(\.popoverSlideHost) private var slideHost
 
-    /// Each pane's own height as last laid out, the latest selection and the latest change.
-    /// Not observed: writing it draws nothing.
-    private final class Measure {
-        var heights: [ID: CGFloat] = [:]
-        var selection: ID
-        var change = 0
-
-        init(selection: ID) { self.selection = selection }
+    /// Where the pager is in the popover's content, and the latest selection. Not observed:
+    /// writing it draws nothing.
+    private final class Place {
+        var frame: CGRect = .zero
+        var selection: ID?
     }
-
-    /// Room above and below the panes that the clip leaves alone, for a focus band on the
-    /// first or last control of a pane.
-    private static var bleed: CGFloat { 6 }
 
     init(ids: [ID], selection: ID, @ViewBuilder pane: @escaping (ID) -> Pane) {
         self.ids = ids
         self.selection = selection
         self.pane = pane
-        _settled = State(initialValue: selection)
-        _position = State(initialValue: selection)
-        _measured = State(initialValue: Measure(selection: selection))
+        _shown = State(initialValue: selection)
+        _built = State(initialValue: [selection])
     }
-
-    private var slides: Bool { animates && !reduceMotion }
 
     var body: some View {
-        // During a change the height is held; at rest the pane has its own, and anything
-        // unfolding in it resizes the popover at once.
-        let inTransit = settled != selection
-        let place = CGFloat(ids.firstIndex(of: position) ?? 0)
-        HStack(alignment: .top, spacing: 0) {
+        ZStack(alignment: .top) {
             ForEach(ids, id: \.self) { id in slot(id) }
         }
-        .offset(x: -place * EmberMetrics.width)
-        // For the strip alone. The height is outside it: taking hold of it is not a move,
-        // and where it then goes is animated in `move`.
-        .animation(slides ? EmberMotion.modeSwitch : nil, value: position)
-        .frame(width: EmberMetrics.width, alignment: .leading)
-        .modifier(HeldHeight(height: paneHeight, isHeld: inTransit && slides))
-        .padding(.vertical, Self.bleed)
-        .clipped()
-        .padding(.vertical, -Self.bleed)
+        .frame(width: EmberMetrics.width, alignment: .top)
         .padding(.horizontal, -EmberMetrics.padding)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(PopoverSlideHost.space)) }) {
+            place.frame = $0
+        }
         .onChange(of: selection) { old, new in
-            measured.selection = new
-            guard slides else {
-                position = new
-                settled = new
-                leaving = []
+            place.selection = new
+            // Built now, out of sight, so it is ready to swap in.
+            built.insert(new)
+            visits[new, default: 0] += 1
+            Self.releaseKeyboardFromPlatformControl()
+            guard animates, !reduceMotion, let slideHost else {
+                shown = new
                 return
             }
-            settled = nil
-            leaving.insert(old)
-            MainRunLoop.perform { position = measured.selection }
-            // A pane seen before has a height to go to at once, and one turned back to
-            // midway never reports another; a new one says its own in `took`.
-            if let known = measured.heights[new] { move(to: known) }
-            settleLater()
-        }
-    }
-
-    /// One pane's place in the strip: the pane while it is selected or on its way out, and
-    /// otherwise nothing, the width of the popover.
-    @ViewBuilder
-    private func slot(_ id: ID) -> some View {
-        Group {
-            if id == selection || id == settled || leaving.contains(id) {
-                pane(id)
-                    .padding(.horizontal, EmberMetrics.padding)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
-                        took(height, of: id)
-                    }
-                    .allowsHitTesting(id == selection)
-                    .environment(\.emberIsLeaving, id != selection)
-            } else {
-                Color.clear.frame(height: 0)
+            let from = ids.firstIndex(of: old) ?? 0, to = ids.firstIndex(of: new) ?? 0
+            let place = place
+            slideHost.slide(forward: to >= from, region: { place.frame }) {
+                var swap = Transaction()
+                swap.disablesAnimations = true
+                withTransaction(swap) { shown = place.selection ?? new }
             }
         }
-        .frame(width: EmberMetrics.width, alignment: .top)
     }
 
-    /// A pane's own height, as laid out. The selected pane's is where the height is, at rest,
-    /// and where it goes during a change.
-    private func took(_ height: CGFloat, of id: ID) {
-        measured.heights[id] = height
-        guard id == measured.selection, height != paneHeight else { return }
-        guard settled != id, slides else {
-            paneHeight = height
-            return
-        }
-        // On its way already: the height sets off again from where it is, and the change
-        // ends when this move does.
-        move(to: height)
-        settleLater()
+    /// A text field or time picker of the pane that is leaving would keep the keyboard, out of
+    /// sight. The popover's own root takes it, as when the popover opens. SwiftUI's own focus
+    /// is left alone: it lets go of a control that stops being focusable by itself, and a
+    /// control outside the panes (the mode switch, pressed from the keyboard) keeps it.
+    private static func releaseKeyboardFromPlatformControl() {
+        guard let window = NSApp.keyWindow, let responder = window.firstResponder as? NSView,
+              !(responder is PopoverScrollView),
+              // SwiftUI's own view: its focus is SwiftUI's business.
+              !String(describing: type(of: responder)).hasPrefix("NSHostingView") else { return }
+        var view: NSView? = responder
+        while let current = view, !(current is PopoverScrollView) { view = current.superview }
+        guard let root = view else { return }
+        window.makeFirstResponder(root)
     }
 
-    /// Sends the held height to a pane's own.
-    private func move(to height: CGFloat) {
-        withAnimation(EmberMotion.modeSwitch) { paneHeight = height }
-    }
-
-    /// Ends the change when the strip and the height have arrived, with a frame to spare.
-    /// Asked again, by a further change or a height that set off anew, the earlier ask
-    /// leaves it to the later one.
-    private func settleLater() {
-        measured.change += 1
-        let change = measured.change
-        MainRunLoop.perform(after: EmberMotion.modeSwitchDuration + 0.05) {
-            guard measured.change == change else { return }
-            settled = measured.selection
-            leaving = []
+    /// One pane: laid out and drawn while shown, and otherwise, once built, kept out of sight.
+    @ViewBuilder
+    private func slot(_ id: ID) -> some View {
+        let isShown = id == shown
+        if built.contains(id) || isShown {
+            pane(id)
+                .padding(.horizontal, EmberMetrics.padding)
+                .fixedSize(horizontal: false, vertical: true)
+                .allowsHitTesting(isShown && id == selection)
+                .environment(\.emberIsLeaving, id != selection)
+                .environment(\.emberPaneVisit, visits[id] ?? 0)
+                .frame(width: EmberMetrics.width, alignment: .top)
+                // Out of sight: no height of its own, not drawn, and well outside the popover,
+                // so its platform views (a time picker) are nowhere near a click.
+                .frame(height: isShown ? nil : 0, alignment: .top)
+                .opacity(isShown ? 1 : 0)
+                .offset(x: isShown ? 0 : -4 * EmberMetrics.width)
         }
     }
 }
 
-/// Holds its content to a height that animates as a layout: every frame lays the content
-/// out at that frame's height, so what is under it moves with it and the popover can follow.
-/// Not held, the content has its own height.
-private struct HeldHeight: ViewModifier, Animatable {
-    var height: CGFloat
-    var isHeld: Bool
+extension EnvironmentValues {
+    /// How many times the pane this is in has come into play again in its `EmberPager`.
+    @Entry var emberPaneVisit = 0
+    /// What slides an `EmberPager`'s panes, in the popover.
+    @Entry var popoverSlideHost: PopoverSlideHost? = nil
+}
 
-    nonisolated var animatableData: CGFloat {
-        get { height }
-        set { height = newValue }
+extension View {
+    /// Runs when the view appears, and again each time the pager pane it is in comes back
+    /// into play: a pane is kept while out of sight, so it does not appear again.
+    func onPaneShown(perform action: @escaping () -> Void) -> some View {
+        modifier(OnPaneShown(action: action))
     }
+}
+
+private struct OnPaneShown: ViewModifier {
+    let action: () -> Void
+    @Environment(\.emberPaneVisit) private var visit
 
     func body(content: Content) -> some View {
-        content.frame(height: isHeld ? max(0, height) : nil, alignment: .top)
+        content
+            .onAppear(perform: action)
+            .onChange(of: visit) { action() }
     }
 }

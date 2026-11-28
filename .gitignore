@@ -29,3 +29,5 @@ sparkle-key*.txt
 
 # Local build output record (machine-specific paths)
 .redlight-build-info.json
+/design
+/planning

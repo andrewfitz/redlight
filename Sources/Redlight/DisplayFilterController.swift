@@ -1,28 +1,46 @@
 import AppKit
 import QuartzCore
 
-/// Physical displays use their calibrated gamma tables. Sidecar transmits the
-/// composited desktop before those tables, so its filter must live in that desktop.
+/// Physical displays use their calibrated gamma tables for the red filter. A reduced
+/// saturation adds a compositor grayscale pass on top, because gamma tables cannot mix
+/// RGB channels; the pass runs before scan-out, so the LUT then tints the gray image.
+/// Sidecar transmits the composited desktop before those tables, so its whole filter
+/// lives on the compositor surface.
 @MainActor
 final class DisplayFilterController: @preconcurrency GammaControlling {
     private let gamma: GammaControlling
     private let sidecar: GammaControlling
+    /// Physical displays' grayscale pass. Separate from `sidecar` so it never drives the
+    /// Sidecar pointer replica: the hardware cursor stays real and is tinted by the LUT.
+    private let desaturation: GammaControlling
     private let isSidecar: @MainActor (CGDirectDisplayID) -> Bool
     private var routes: [CGDirectDisplayID: Bool] = [:]
+    private var desaturatedDisplays: Set<CGDirectDisplayID> = []
 
     init(
         gamma: GammaControlling = GammaController(),
         sidecar: GammaControlling = SidecarFilterController(),
+        desaturation: GammaControlling = SidecarFilterController(
+            makeOverlay: { SidecarFilterWindow(screen: $0, requiresColorMatrix: true) },
+            pointer: nil),
         isSidecar: @escaping @MainActor (CGDirectDisplayID) -> Bool = {
             DisplayFilterController.isSidecarDisplay($0)
         }
     ) {
         self.gamma = gamma
         self.sidecar = sidecar
+        self.desaturation = desaturation
         self.isSidecar = isSidecar
     }
 
     func applyFilter(to id: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
+        applyFilter(to: id, intensity: intensity, whitepoint: whitepoint, invert: invert, saturation: 1)
+    }
+
+    func applyFilter(
+        to id: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float
+    ) {
         let useSidecar: Bool
         if let cached = routes[id] {
             useSidecar = cached
@@ -31,37 +49,62 @@ final class DisplayFilterController: @preconcurrency GammaControlling {
             routes[id] = useSidecar
             // Relinquish a previous backend once when discovering this route,
             // rather than performing cross-backend cleanup on every fade frame.
-            if useSidecar { gamma.restore(id) }
-            else { sidecar.restore(id) }
+            // A physical display's live grayscale pass is left alone, so a display
+            // reconfiguration does not close and reopen its overlay.
+            if useSidecar {
+                gamma.restore(id)
+                if desaturatedDisplays.remove(id) != nil { desaturation.restore(id) }
+            } else {
+                sidecar.restore(id)
+            }
         }
         if useSidecar {
-            sidecar.applyFilter(to: id, intensity: intensity, whitepoint: whitepoint, invert: invert)
-        } else {
-            gamma.applyFilter(to: id, intensity: intensity, whitepoint: whitepoint, invert: invert)
+            sidecar.applyFilter(
+                to: id, intensity: intensity, whitepoint: whitepoint,
+                invert: invert, saturation: saturation)
+            return
         }
+        // The red filter stays on the LUT throughout, so crossing 100% only adds or
+        // removes the grayscale pass and never shows a frame without the tint.
+        if saturation < 1 {
+            desaturatedDisplays.insert(id)
+            desaturation.applyFilter(
+                to: id, intensity: 1, whitepoint: 1, invert: false,
+                saturation: saturation, captureProtected: true)
+        } else if desaturatedDisplays.remove(id) != nil {
+            desaturation.restore(id)
+        }
+        gamma.applyFilter(to: id, intensity: intensity, whitepoint: whitepoint, invert: invert)
     }
 
     func restore(_ id: CGDirectDisplayID) {
         routes.removeValue(forKey: id)
+        desaturatedDisplays.remove(id)
         sidecar.restore(id)
+        desaturation.restore(id)
         gamma.restore(id)
     }
 
     func restoreAll() {
         routes.removeAll()
+        desaturatedDisplays.removeAll()
         sidecar.restoreAll()
+        desaturation.restoreAll()
         gamma.restoreAll()
     }
 
     func resetForDisplayRecovery() {
         routes.removeAll()
+        desaturatedDisplays.removeAll()
         sidecar.restoreAll()
+        desaturation.restoreAll()
         gamma.resetForDisplayRecovery()
     }
 
     func displaysDidChange() {
         routes.removeAll()
         sidecar.displaysDidChange()
+        desaturation.displaysDidChange()
         gamma.displaysDidChange()
     }
 
@@ -91,16 +134,29 @@ enum SidecarTransferCurve {
 }
 
 /// A WindowServer backdrop samples the windows beneath it and filters them before
-/// Sidecar encodes the image. No screen capture, input monitoring, or iPad setup.
-/// This uses guarded private Core Animation SPI, as the public gamma API has no
-/// visible effect on Sidecar. Normal displays never enter this path.
+/// Sidecar encodes the image. The same compositor surface is used for grayscale on
+/// physical displays because the public gamma API cannot mix RGB channels. No screen
+/// capture, input monitoring, or iPad setup is needed.
 @MainActor
 protocol SidecarOverlay: AnyObject {
     func apply(screen: NSScreen, intensity: Float, whitepoint: Float, invert: Bool)
+    func apply(
+        screen: NSScreen, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    )
     func invalidateSurface()
     /// Draws `cursor` beneath the filter at a global location; nil removes it.
     func updatePointer(_ cursor: NSCursor?, at location: NSPoint)
     func close()
+}
+
+extension SidecarOverlay {
+    func apply(
+        screen: NSScreen, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    ) {
+        apply(screen: screen, intensity: intensity, whitepoint: whitepoint, invert: invert)
+    }
 }
 
 /// WindowServer composites the pointer after every window, so a backdrop cannot
@@ -148,7 +204,28 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
     }
 
     func applyFilter(to id: CGDirectDisplayID, intensity: Float, whitepoint: Float, invert: Bool) {
-        guard intensity != 1 || whitepoint != 1 || invert else { restore(id); return }
+        applyFilter(
+            to: id, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: 1)
+    }
+
+    func applyFilter(
+        to id: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float
+    ) {
+        applyFilter(
+            to: id, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: saturation, captureProtected: false)
+    }
+
+    func applyFilter(
+        to id: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    ) {
+        guard intensity != 1 || whitepoint != 1 || invert || saturation != 1 else {
+            restore(id)
+            return
+        }
         guard !unavailable.contains(id) else { return }
         let cachedScreen = screens[id]
         guard let screen = cachedScreen ?? getScreen(id) else { restore(id); return }
@@ -158,14 +235,16 @@ final class SidecarFilterController: @preconcurrency GammaControlling {
         } else {
             guard let window = makeOverlay(screen) else {
                 unavailable.insert(id)
-                NSLog("Redlight: Sidecar compositor filter is unavailable for display %u", id)
+                NSLog("Redlight: compositor filter is unavailable for display %u", id)
                 return
             }
             overlays[id] = window
             overlay = window
         }
         if cachedScreen == nil { screens[id] = screen }
-        overlay.apply(screen: screen, intensity: intensity, whitepoint: whitepoint, invert: invert)
+        overlay.apply(
+            screen: screen, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: saturation, captureProtected: captureProtected)
         if cachedScreen == nil { syncPointer() }
     }
 
@@ -344,12 +423,15 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
         let intensity: Float
         let whitepoint: Float
         let invert: Bool
+        let saturation: Float
     }
 
     private let backdrop: CALayer
     private let pointer = CALayer()
     private weak var pointerCursor: NSCursor?
     private let curve: NSObject
+    /// A `colorMatrix` prototype, nil where the OS lacks it; Sidecar then keeps full color.
+    private let matrix: NSObject?
     private var lastOutput: Output?
     private var lastBackingScale: CGFloat
     private var needsSurfaceRebuild = false
@@ -359,7 +441,9 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    init?(screen: NSScreen) {
+    /// `requiresColorMatrix` fails creation where the grayscale filter is missing, so a
+    /// saturation-only overlay never costs a full-screen backdrop that does nothing.
+    init?(screen: NSScreen, requiresColorMatrix: Bool = false) {
         guard let backdropType = NSClassFromString("CABackdropLayer") as? NSObject.Type,
               backdropType.responds(to: NSSelectorFromString("layer")),
               let backdrop = backdropType.perform(NSSelectorFromString("layer"))?.takeUnretainedValue() as? CALayer,
@@ -375,8 +459,16 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
               backdrop.responds(to: NSSelectorFromString("setScale:")),
               backdrop.responds(to: NSSelectorFromString("setBleedAmount:"))
         else { return nil }
+        let matrix = (filterType.perform(NSSelectorFromString("filterWithType:"), with: "colorMatrix")?
+            .takeUnretainedValue() as? NSObject)
+            .flatMap { filter in
+                (filter.perform(NSSelectorFromString("inputKeys"))?.takeUnretainedValue() as? [String])?
+                    .contains("inputColorMatrix") == true ? filter : nil
+            }
+        if requiresColorMatrix, matrix == nil { return nil }
         self.backdrop = backdrop
         self.curve = curve
+        self.matrix = matrix
         self.lastBackingScale = screen.backingScaleFactor
         super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
 
@@ -420,7 +512,23 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
     }
 
     func apply(screen: NSScreen, intensity: Float, whitepoint: Float, invert: Bool) {
-        let output = Output(intensity: intensity, whitepoint: whitepoint, invert: invert)
+        apply(
+            screen: screen, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: 1, captureProtected: false)
+    }
+
+    func apply(
+        screen: NSScreen, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    ) {
+        // Physical-display overlays are excluded from WindowServer captures, so screenshots,
+        // screen recordings, and shared windows retain the source colors. Sidecar must stay
+        // shareable because its compositor surface is the image sent to the iPad.
+        let sharing: NSWindow.SharingType = captureProtected ? .none : .readWrite
+        if sharingType != sharing { sharingType = sharing }
+        let output = Output(
+            intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: saturation)
         let screenFrame = screen.frame
         let backingScale = screen.backingScaleFactor
         let geometryChanged = frame != screenFrame || lastBackingScale != backingScale
@@ -434,16 +542,26 @@ final class SidecarFilterWindow: NSWindow, SidecarOverlay {
         // CAFilter is a value in the render tree. Mutating an already attached
         // instance leaves WindowServer using its old values (notably the first,
         // nearly neutral frame of a startup fade). Submit a new snapshot each time.
+        // Each filter is a full-screen GPU pass, so a neutral stage is left out: a physical
+        // display's grayscale overlay runs only the matrix, and full color only the curve.
         if output != lastOutput {
-            guard let filter = curve.copy() as? NSObject else { return }
-            let red = SidecarTransferCurve.controls(gain: 1, whitepoint: whitepoint, invert: invert)
-            let green = SidecarTransferCurve.controls(gain: intensity, whitepoint: whitepoint, invert: invert)
-            let blue = SidecarTransferCurve.controls(
-                gain: max(0, intensity * 2 - 1), whitepoint: whitepoint, invert: invert)
-            filter.setValue(red, forKey: "inputRedValues")
-            filter.setValue(green, forKey: "inputGreenValues")
-            filter.setValue(blue, forKey: "inputBlueValues")
-            backdrop.filters = [filter]
+            var filters: [NSObject] = []
+            if saturation < 1, let matrix, let filter = matrix.copy() as? NSObject {
+                filter.setValue(SaturationColorMatrix.value(saturation: saturation), forKey: "inputColorMatrix")
+                filters.append(filter)
+            }
+            if intensity != 1 || whitepoint != 1 || invert {
+                guard let filter = curve.copy() as? NSObject else { return }
+                let red = SidecarTransferCurve.controls(gain: 1, whitepoint: whitepoint, invert: invert)
+                let green = SidecarTransferCurve.controls(gain: intensity, whitepoint: whitepoint, invert: invert)
+                let blue = SidecarTransferCurve.controls(
+                    gain: max(0, intensity * 2 - 1), whitepoint: whitepoint, invert: invert)
+                filter.setValue(red, forKey: "inputRedValues")
+                filter.setValue(green, forKey: "inputGreenValues")
+                filter.setValue(blue, forKey: "inputBlueValues")
+                filters.append(filter)
+            }
+            backdrop.filters = filters
             lastOutput = output
         }
         if geometryChanged || needsSurfaceRebuild {

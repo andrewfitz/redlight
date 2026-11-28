@@ -142,6 +142,9 @@ final class LivePopoverFixture {
          now: @escaping () -> Date = { LivePopoverFixture.afternoon }) {
         let defaults = registry.makeDefaults()
         self.defaults = defaults
+        // These check Auto's own behaviour: Learn my adjustments, on by default, is off here
+        // unless a test asks for it.
+        defaults.set(false, forKey: "redlight.learningEnabled")
         for (key, value) in values { defaults.set(value, forKey: key) }
         location.coordinate = coordinate
         if manualLocation { location.setManualCoordinate(coordinate) }
@@ -845,12 +848,16 @@ extension Raster {
                 try press(.leftMouseUp, at: point)
                 // Every frame the window server has, for longer than any of the animations.
                 var frames: [Raster] = []
+                var tops: Set<CGFloat> = [live.window.frame.maxY]
                 let end = Date().addingTimeInterval(0.9)
                 while Date() < end {
                     live.pump(0.004)
                     frames.append(try capture())
+                    tops.insert(live.window.frame.maxY)
                 }
                 #expect(fixture.manager.adaptiveEnabled == toAuto)
+                // The popover hangs from the menu bar: as its height goes by, its top stays put.
+                #expect(tops.count == 1, "round \(round): the top edge moved, through \(tops.sorted())")
                 var lines: [String] = []
                 var lastLeft = before.columns.lowerBound
                 var moved = 0
@@ -882,7 +889,8 @@ extension Raster {
                 for (earlier, later) in zip(heights, heights.dropFirst()) {
                     #expect(to > from ? later >= earlier : later <= earlier, "the height went back: \(heights)")
                 }
-                let between = Set(heights.filter { min(from, to) + 2 < $0 && $0 < max(from, to) - 2 })
+                // Whole points, so 2 px steps: any height but the two ends is on the way.
+                let between = Set(heights.filter { min(from, to) < $0 && $0 < max(from, to) })
                 // Two at the least, however few frames a busy machine captures; a jump has none.
                 #expect(between.count >= 2, "the height jumped: \(heights)")
 
@@ -923,7 +931,7 @@ extension Raster {
 
                 // One pane is left, with one of each slider, and the popover is its size.
                 let pills = try live.sliders().map(\.pill)
-                #expect(pills.count == 2, "round \(round): slider pills at \(pills)")
+                #expect(pills.count == 3, "round \(round): slider pills at \(pills)")
                 #expect(live.popover.contentSize.height == live.document.frame.height)
                 if let directory = LivePopoverEnvironment.shotDirectory {
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -967,9 +975,16 @@ extension Raster {
                         atStart: false)
                 }
             }
-            @MainActor func isOnSettings() -> Bool { !live.views().compactMap { $0 as? NSDatePicker }.isEmpty }
+            // A page out of sight is kept, its views with it: what counts is on screen.
+            @MainActor func onScreen(_ view: NSView) -> Bool {
+                guard let content = live.window.contentView else { return false }
+                return view.convert(view.bounds, to: nil).intersects(content.frame.insetBy(dx: 1, dy: 1))
+            }
+            @MainActor func isOnSettings() -> Bool {
+                live.views().contains { $0 is NSDatePicker && onScreen($0) }
+            }
             @MainActor func sliderCount() -> Int {
-                live.views().filter { $0.acceptsFirstResponder && $0.bounds.size == LiveSlider.size }.count
+                live.views().filter { $0.acceptsFirstResponder && $0.bounds.size == LiveSlider.size && onScreen($0) }.count
             }
             let resting = try #require(selectedSegment(in: try capture(), palette: palette), "no mode segment shown")
             let controlsHeight = live.document.frame.height
@@ -984,12 +999,16 @@ extension Raster {
                     : CGPoint(x: EmberMetrics.padding + 18, y: EmberMetrics.padding + 13)
                 try press(at: CGPoint(x: top.x, y: live.document.isFlipped ? top.y : height - top.y))
                 var frames: [Raster] = []
+                var tops: Set<CGFloat> = [live.window.frame.maxY]
                 let end = Date().addingTimeInterval(0.9)
                 while Date() < end {
                     live.pump(0.004)
                     frames.append(try capture())
+                    tops.insert(live.window.frame.maxY)
                 }
                 let what = toSettings ? "to Settings" : "back"
+                // The popover hangs from the menu bar: as its height goes by, its top stays put.
+                #expect(tops.count == 1, "\(what): the top edge moved, through \(tops.sorted())")
                 #expect(isOnSettings() == toSettings, "\(what): the page did not change")
                 // One page is left, and the popover is its size.
                 #expect(sliderCount() == (toSettings ? 0 : 2), "\(what)")
@@ -1033,6 +1052,104 @@ extension Raster {
 
     /// A mode change that something interrupts, or that nobody pressed for, still ends with
     /// one pane at its own height, and lets go of that height afterwards.
+    /// The popover is the menu of a menu bar item, so it stands where a menu would: above
+    /// every app's windows, floating panels and always-on-top windows included, and over a
+    /// full-screen app.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func thePopoverStandsAboveEveryOtherWindowLikeAMenu() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto()
+            let live = try LivePopover(fixture.view(), animated: true)
+            defer {
+                live.close()
+                fixture.retire()
+            }
+            live.pump(0.4)
+            #expect(live.window.level == .popUpMenu, "level \(live.window.level.rawValue)")
+            #expect(live.window.collectionBehavior.contains(.fullScreenAuxiliary))
+            // A floating window of another kind, such as an always-on-top panel, stays under it.
+            let panel = NSPanel(contentRect: live.window.frame, styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            panel.level = .statusBar
+            panel.orderFrontRegardless()
+            defer { panel.close() }
+            live.pump(0.1)
+            let order = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
+                .compactMap { $0[kCGWindowNumber as String] as? Int }
+            let popoverIndex = try #require(order.firstIndex(of: live.window.windowNumber))
+            let panelIndex = try #require(order.firstIndex(of: panel.windowNumber))
+            #expect(popoverIndex < panelIndex, "the popover should be in front of a status-bar-level panel")
+        }
+    }
+
+    /// The popover follows a sliding height once a frame, on the display's clock, and lets the
+    /// display go when the height stops. (Closing in the middle of a slide lets it go as well,
+    /// on the popover's close notification, but a popover here never finishes closing.)
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func thePopoverFollowsASlideOnTheDisplayAndLetsGoAfter() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture.auto()
+            let live = try LivePopover(fixture.view(), animated: true)
+            defer {
+                live.close()
+                fixture.retire()
+            }
+            let sizer = try #require((live.scroll as? PopoverScrollView)?.sizer)
+            live.pump(0.4)
+            #expect(!sizer.isWaitingForDisplay, "waiting on the display at rest")
+            fixture.manager.adaptiveEnabled.toggle()
+            live.pump(0.08)
+            #expect(sizer.isWaitingForDisplay, "not following the slide")
+            live.pump(0.8)
+            #expect(!sizer.isWaitingForDisplay, "still waiting on the display after the slide")
+            #expect(abs(live.popover.contentSize.height - live.document.frame.height) < 1)
+        }
+    }
+
+    /// A slide is pictures over the popover. Going to a Settings page taller than the controls,
+    /// they cover the whole popover as it grows: left at the controls' height, the live page
+    /// showed below them, still, cut off by their foot.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func aSlideToATallerPageCoversThePopoverAsItGrows() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture(defaults: ["redlight.adaptiveEnabled": true], manualLocation: true)
+            defer { fixture.retire() }
+            // Every General row: a Settings page well taller than the controls.
+            let view = MenuBarView(manager: fixture.manager, defaults: fixture.defaults, launchAtLogin: LaunchAtLogin(),
+                                   handler: fixture.handler, openShortcuts: {},
+                                   initialState: MenuBarInitialState(updateAvailable: false, updatesAutomatically: true,
+                                                                     keepsNightShiftOff: true))
+            let live = try LivePopover(view, animated: true)
+            defer { live.close() }
+            live.pump(0.4)
+            let controls = live.popover.contentSize.height
+            let height = live.document.bounds.height
+            let row = CGPoint(x: EmberMetrics.width / 2, y: height - EmberMetrics.padding - 22)
+            let point = CGPoint(x: row.x, y: live.document.isFlipped ? row.y : height - row.y)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                NSApp.postEvent(try #require(NSEvent.mouseEvent(
+                    with: type, location: live.document.convert(point, to: nil), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: live.window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)),
+                    atStart: false)
+            }
+            // Partway: the popover has grown, and the pictures with it.
+            var checked = 0
+            let end = Date().addingTimeInterval(0.5)
+            while Date() < end {
+                live.pump(0.01)
+                guard let overlay = live.scroll.subviews.first(where: { $0 is PopoverSlideOverlay }) else { continue }
+                #expect(overlay.frame == live.scroll.bounds,
+                        "the pictures are \(overlay.frame.height) tall in a popover \(live.scroll.bounds.height) tall")
+                checked += 1
+            }
+            #expect(live.popover.contentSize.height > controls + 60,
+                    "Settings is \(live.popover.contentSize.height) tall against the controls' \(controls)")
+            #expect(checked >= 3, "only \(checked) frames of the slide were seen")
+        }
+    }
+
     @Test(.enabled(if: LivePopoverEnvironment.enabled))
     func aModeChangeSettlesWhateverInterruptsIt() async throws {
         try inRunLoopTurn {
@@ -1050,7 +1167,7 @@ extension Raster {
                 #expect(abs(height() - expected) < 1, "\(what): \(height()), not \(expected)")
                 #expect(abs(live.popover.contentSize.height - height()) < 1, "\(what): the popover is another size")
                 let pills = try live.sliders().map(\.pill)
-                #expect(pills.count == 2, "\(what): slider pills at \(pills)")
+                #expect(pills.count == 3, "\(what): slider pills at \(pills)")
                 // And the strip is at that pane, not parked between two or on the other.
                 for pill in pills { #expect(pill.minX == EmberMetrics.padding, "\(what): a slider at \(pill)") }
             }
@@ -1137,8 +1254,43 @@ extension Raster {
         let fixture = LivePopoverFixture.auto(extra)
         let live = try LivePopover(fixture.view())
         let sliders = try live.sliders()
-        try #require(sliders.count == 2, "found \(sliders.count) sliders")
+        try #require(sliders.count == 3, "found \(sliders.count) sliders")
         return (fixture, live, sliders)
+    }
+
+    @Test(.enabled(if: LivePopoverEnvironment.enabled), arguments: [false, true])
+    func saturationPressPreviewsUntilRelease(auto: Bool) async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture(defaults: ["redlight.adaptiveEnabled": auto])
+            let manager = fixture.manager
+            manager.setEnabled(true, for: 1)
+            manager.intensity = 0.7
+            let live = try LivePopover(fixture.view())
+            defer { live.close(); fixture.retire() }
+
+            let slider = try #require(try live.sliders().last)
+            let track = slider.pill
+            let handle = slider.point(x: slider.x(for: 0, range: 0...1))
+            try live.drag(from: handle, dx: 0) {
+                #expect(fixture.gamma.saturationCalls.last?.saturation == 0)
+                #expect(!manager.saturationEnabled)
+            }
+            #expect(fixture.gamma.saturationCalls.last?.saturation == 1)
+            try live.drag(from: handle, dx: track.width / 2) {
+                #expect((0.4...0.6).contains(manager.saturation))
+                #expect(fixture.gamma.saturationCalls.last?.saturation == Float(manager.saturation))
+            }
+            #expect(fixture.gamma.saturationCalls.last?.saturation == 1)
+            AccessibilityTree.enable()
+            _ = live.document.accessibilityChildren()
+            live.pump(0.1)
+            let toggle = try #require(AccessibilityTree(live.document).first("Saturation filter"))
+            #expect(AccessibilityTree.press(toggle))
+            live.pump(0.1)
+            #expect(manager.saturationEnabled)
+            try live.drag(from: slider.point(x: track.width / 2), dx: 20)
+            #expect(fixture.gamma.saturationCalls.last?.saturation == Float(manager.saturation))
+        }
     }
 
     /// Auto in the afternoon with a 20–80 % colour temp band: the value rests on its upper
@@ -1797,6 +1949,44 @@ extension Raster {
             try live.key(.escape)
             #expect(!live.popover.isShown, "Escape did not close the popover from a coordinate field")
             #expect(fixture.manager.manualLocation?.latitude == 41.88, "Escape applied the half-typed latitude")
+        }
+    }
+
+    /// Settings is kept out of sight after Back, its fields with it: a field that was being
+    /// typed in gives the keyboard back, and Tab on the controls never reaches the page.
+    @Test(.enabled(if: LivePopoverEnvironment.enabled))
+    func backTakesTheKeyboardFromASettingsFieldAndTabStaysOnTheControls() async throws {
+        try inRunLoopTurn {
+            let fixture = LivePopoverFixture(defaults: ["redlight.adaptiveEnabled": true], manualLocation: true)
+            defer { fixture.retire() }
+            let live = try LivePopover(fixture.view(page: .settings, MenuBarInitialState(updateAvailable: false)),
+                                       animated: true)
+            defer { live.close() }
+            let latitude = try #require(live.views().compactMap { $0 as? NSTextField }
+                .first { $0.placeholderString == "Latitude" })
+            let frame = live.frame(of: latitude)
+            try live.click(at: CGPoint(x: frame.midX, y: frame.midY))
+            try #require(live.window.firstResponder is NSTextView, "the click did not start editing the field")
+            try live.key(.character("4"))
+            let typed = latitude.stringValue
+            // Back, at the top left of the page.
+            let height = live.document.bounds.height
+            let back = CGPoint(x: EmberMetrics.padding + 18, y: EmberMetrics.padding + 13)
+            try live.click(at: CGPoint(x: back.x, y: live.document.isFlipped ? back.y : height - back.y))
+            live.pump(0.6)
+            #expect(!(live.window.firstResponder is NSTextView), "the field out of sight still has the keyboard")
+            try live.key(.character("5"))
+            #expect(latitude.stringValue == typed, "typing reached the field out of sight: \(latitude.stringValue)")
+            #expect(fixture.manager.manualLocation?.latitude == 41.88)
+            // Round the controls with Tab: never into a view of the page out of sight.
+            guard let content = live.window.contentView else { return }
+            for press in 0..<14 {
+                try live.key(.tab)
+                guard let view = live.window.firstResponder as? NSView else { continue }
+                let onScreen = view.convert(view.bounds, to: nil).intersects(content.frame)
+                #expect(onScreen && !(view is NSTextView) && !(view is NSDatePicker),
+                        "Tab \(press) reached \(type(of: view)) out of sight")
+            }
         }
     }
 

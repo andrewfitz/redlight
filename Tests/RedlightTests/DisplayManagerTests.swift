@@ -19,6 +19,26 @@ final class MockGammaController: GammaControlling {
         applyCalls.append((displayID, intensity, whitepoint, invert))
     }
 
+    /// Every call with its saturation, so routing tests can see the grayscale pass.
+    var saturationCalls: [(displayID: CGDirectDisplayID, saturation: Float, captureProtected: Bool)] = []
+
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float
+    ) {
+        applyFilter(
+            to: displayID, intensity: intensity, whitepoint: whitepoint,
+            invert: invert, saturation: saturation, captureProtected: false)
+    }
+
+    func applyFilter(
+        to displayID: CGDirectDisplayID, intensity: Float, whitepoint: Float,
+        invert: Bool, saturation: Float, captureProtected: Bool
+    ) {
+        saturationCalls.append((displayID, saturation, captureProtected))
+        applyFilter(to: displayID, intensity: intensity, whitepoint: whitepoint, invert: invert)
+    }
+
     func restore(_ displayID: CGDirectDisplayID) {
         restoreCalls.append(displayID)
     }
@@ -128,7 +148,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
     }
 
     /// The menu bar icon counts a tint's depth only while a tint is on screen. An inversion
-    /// keeps the icon lit without one.
+    /// keeps the app active without one.
     @Test func anInversionIsActiveWithoutATintShowing() throws {
         let manager = makeManager()
         manager.applyPreset(4)
@@ -384,6 +404,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         // (0.0 is pure red), and 1.0 whitepoint is no reduction.
         #expect(DisplayManager.Defaults.intensity == 1.0)
         #expect(DisplayManager.Defaults.whitepoint == 1.0)
+        #expect(!makeManager().saturationEnabled)
         // Halfway down the white point's scale: 50 % as the slider and the CLI show it.
         #expect(DisplayManager.Defaults.whitepointMin == 0.625)
         #expect(WhitepointScale.percent(DisplayManager.Defaults.whitepointMin) == 50)
@@ -453,13 +474,13 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickDisplayTransitions()
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
 
         uptime += 0.36
         manager.tickDisplayTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
 
         mock.applyCalls.removeAll()
         mock.restoreCalls.removeAll()
@@ -474,7 +495,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickDisplayTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
 
         uptime += 0.36
         manager.tickDisplayTransitions()
@@ -504,13 +525,13 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickTransitions()
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
 
         uptime += 0.35
         manager.tickTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
         #expect(defaults.bool(forKey: "redlight.display.1.enabled"))
     }
 
@@ -572,7 +593,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
         #expect(completionCount == 0)
 
         uptime += 0.35
@@ -607,7 +628,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickTransitions()               // current Adaptive frame = 0.7 / 0.75
         let before = try #require(mock.applyCalls.last)
         #expect(abs(Double(before.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(before.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(before.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
 
         manager.beginTerminationFade {}
         let start = try #require(mock.applyCalls.last)
@@ -618,7 +639,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickTransitions()
         let halfway = try #require(mock.applyCalls.last)
         #expect(abs(Double(halfway.intensity) - 0.85) < 0.0001)
-        #expect(abs(Double(halfway.whitepoint) - 0.875) < 0.0001)
+        #expect(abs(Double(halfway.whitepoint) - (1 - (1 - WhitepointScale.output(percent: 33)) / 4)) < 0.0001)
     }
 
     @Test func terminationStartsFromLastRenderedFrameAfterRunLoopDelay() throws {
@@ -727,6 +748,53 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(manager.displays[0].isEnabled)
     }
 
+    @Test(arguments: [false, true]) func saturationStartsOffAndRemembersItsLevel(auto: Bool) {
+        let defaults = freshDefaults()
+        defaults.set(auto, forKey: "redlight.adaptiveEnabled")
+        let manager = makeManager(defaults: defaults)
+        #expect(!manager.saturationEnabled && manager.saturation == 0)
+        manager.intensity = 0.7
+        manager.toggle(1)
+        manager.saturation = 0.35
+        #expect(mock.saturationCalls.last?.saturation == 1)
+        manager.saturationEnabled = true
+        #expect(mock.saturationCalls.last?.saturation == 0.35)
+        manager.saturationEnabled = false
+        #expect(mock.saturationCalls.last?.saturation == 1)
+        let restored = makeManager(defaults: defaults)
+        #expect(!restored.saturationEnabled && restored.saturation == 0.35)
+    }
+
+    /// Saturation fades with the same amount as the tint, and a gray but untinted
+    /// display still gets a filter rather than a restore.
+    @Test func saturationFadesWithTheTintAndKeepsANeutralTintFiltered() throws {
+        var uptime: TimeInterval = 20
+        let manager = makeManager(
+            displayTransitionDuration: 1,
+            transitionUptime: { uptime })
+        manager.intensity = 0.4
+        manager.saturation = 0.2
+        manager.saturationEnabled = true
+        manager.toggle(1)
+        uptime += 0.5
+        manager.tickDisplayTransitions()
+        let tint = try #require(mock.applyCalls.last)
+        let gray = try #require(mock.saturationCalls.last)
+        let amount = (1 - Double(tint.intensity)) / 0.6
+        #expect(amount > 0 && amount < 1)
+        #expect(abs((1 - Double(gray.saturation)) / 0.8 - amount) < 0.0001)
+        manager.completeDisplayTransitions()
+        #expect(abs(Double(try #require(mock.saturationCalls.last).saturation) - 0.2) < 0.0001)
+
+        manager.intensity = 1
+        mock.restoreCalls.removeAll()
+        manager.saturation = 0.5
+        #expect(mock.restoreCalls.isEmpty)
+        #expect(try #require(mock.saturationCalls.last).saturation == 0.5)
+        manager.saturation = 1
+        #expect(mock.restoreCalls == [1])
+    }
+
     @Test func displayFadeKeepsInvertAndEndsAtPureInvert() throws {
         var uptime: TimeInterval = 30
         let manager = makeManager(
@@ -775,19 +843,19 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickDisplayTransitions()       // monitor amount = 0.5
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
 
         manager.adaptiveEnabled = true         // equatorial noon target = 1 / 1
         manager.advanceOutputTransition(toProgress: 0.5)
         call = try #require(mock.applyCalls.last)
         // Global output is now 0.7 / 0.75, still mixed through the monitor's 0.5 amount.
         #expect(abs(Double(call.intensity) - 0.85) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.875) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 - (1 - WhitepointScale.output(percent: 33)) / 4)) < 0.0001)
 
         manager.advanceDisplayTransitions(toProgress: 1)
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.7) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.75) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 + WhitepointScale.output(percent: 33)) / 2) < 0.0001)
         manager.completeOutputTransition()
     }
 
@@ -813,7 +881,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.applyCalls.count == 1)      // one coherent LUT write, not one per fade
         let before = try #require(mock.applyCalls.last)
         #expect(abs(Double(before.intensity) - 0.746875) < 0.0001)
-        #expect(abs(Double(before.whitepoint) - 0.7890625) < 0.0001)
+        #expect(abs(Double(before.whitepoint) - (1 - (1 - WhitepointScale.output(percent: 33)) * 0.84375 * 0.5)) < 0.0001)
 
         manager.toggle(1)                       // reverse the monitor while Adaptive moves
         let reversed = try #require(mock.applyCalls.last)
@@ -826,7 +894,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(mock.applyCalls.count == 1)
         let call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.925) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.9375) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (1 - (1 - WhitepointScale.output(percent: 33)) / 8)) < 0.0001)
 
         uptime += 0.5
         manager.tickTransitions()               // monitor reaches its unfiltered endpoint
@@ -883,7 +951,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
 
         let call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
         #expect(mock.restoreCalls.isEmpty)
     }
 
@@ -1125,13 +1193,13 @@ final class ImmediateFixLocationProvider: LocationProviding {
 
         manager.adaptiveEnabled = false
         #expect(abs(manager.intensity - 0.7) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.8) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 73)) < 1e-9)
         #expect(manager.intensityBand == 0.2...0.8)
         #expect(manager.whitepointBand == 0.5...0.9)
 
         manager.adaptiveEnabled = true
         #expect(abs(manager.intensity - 0.7) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.8) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 73)) < 1e-9)
         #expect(manager.intensityBand == 0.2...0.8)
         #expect(manager.whitepointBand == 0.5...0.9)
     }
@@ -1205,7 +1273,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.adaptiveEnabled = true
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
         #expect(abs(manager.intensity - 0.8) < 1e-9)  // model target is immediate
         #expect(abs(manager.whitepoint - 0.9) < 1e-9)
 
@@ -1213,7 +1281,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.tickOutputTransition()  // halfway through the production two-second fade
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.6) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.7) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (WhitepointScale.output(percent: 33) + 0.9) / 2) < 0.0001)
 
         let callCountBeforeHold = mock.applyCalls.count
         manager.adaptiveEnabled = false
@@ -1224,8 +1292,8 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(abs(Double(call.whitepoint) - 0.7) < 0.0001)
         #expect(mock.applyCalls.count == callCountBeforeHold + 1)
         #expect(!defaults.bool(forKey: "redlight.adaptiveEnabled"))
-        #expect(abs(defaults.double(forKey: "redlight.intensity") - 0.6) < 1e-9)
-        #expect(abs(defaults.double(forKey: "redlight.whitepoint") - 0.7) < 1e-9)
+        #expect(defaults.object(forKey: "redlight.colorPercent") as? Int == 60)
+        #expect(defaults.object(forKey: "redlight.whitepointPercent") as? Int == 60)
 
         let heldCallCount = mock.applyCalls.count
         uptime += 1
@@ -1321,7 +1389,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         location.onChange?()
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
 
         manager.advanceOutputTransition(toProgress: 0.5)
         call = try #require(mock.applyCalls.last)
@@ -1343,14 +1411,14 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.adaptiveEnabled = true
         #expect(manager.adaptiveStatusText == "Locating…")
         #expect(abs(manager.intensity - 0.4) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.5) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 33)) < 1e-9)
 
         manager.adaptiveEnabled = false
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
         #expect(abs(manager.intensity - 0.4) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.5) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 33)) < 1e-9)
 
         manager.adaptiveEnabled = true
         #expect(manager.adaptiveStatusText == "Locating…")
@@ -1362,7 +1430,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         location.onChange?()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.4) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 33)) < 0.0001)
 
         manager.advanceOutputTransition(toProgress: 0.5)
         call = try #require(mock.applyCalls.last)
@@ -1390,16 +1458,16 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.intensity = 0.65  // user owns this channel; white point keeps fading
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5625) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (0.4975 + (0.9 - 0.4975) * 0.15625)) < 0.0001)
 
         manager.adaptiveEnabled = false
         call = try #require(mock.applyCalls.last)
         #expect(abs(manager.intensity - 0.65) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.5625) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 41)) < 1e-9)
         #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.5625) < 0.0001)
-        #expect(abs(defaults.double(forKey: "redlight.intensity") - 0.65) < 1e-9)
-        #expect(abs(defaults.double(forKey: "redlight.whitepoint") - 0.5625) < 1e-9)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 41)) < 0.0001)
+        #expect(defaults.object(forKey: "redlight.colorPercent") as? Int == 65)
+        #expect(defaults.object(forKey: "redlight.whitepointPercent") as? Int == 41)
 
         let heldCallCount = mock.applyCalls.count
         manager.advanceOutputTransition(toProgress: 1)
@@ -1542,7 +1610,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.intensity = 0.4
         manager.whitepoint = 0.8
         #expect(manager.shownIntensity == 0.4)
-        #expect(manager.shownWhitepoint == 0.8)
+        #expect(manager.shownWhitepoint == WhitepointScale.output(percent: 73))
 
         // A flag's preview reaches whoever paints with the shown output, at once.
         let previewed = ObservationFlag()
@@ -1551,7 +1619,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(previewed.fired)
         #expect(manager.shownIntensity == 0.1)
         #expect(manager.intensity == 0.4)
-        #expect(manager.shownWhitepoint == 0.8)
+        #expect(manager.shownWhitepoint == WhitepointScale.output(percent: 73))
         manager.previewWhitepoint(0.1)
         #expect(manager.shownWhitepoint == 0.25)
 
@@ -1570,7 +1638,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.endPreview()
         #expect(ended.fired)
         #expect(manager.shownIntensity == 0.4)
-        #expect(manager.shownWhitepoint == 0.8)
+        #expect(manager.shownWhitepoint == WhitepointScale.output(percent: 73))
 
         // Every command and every popover close ends a preview. With none, nobody is told.
         let idle = ObservationFlag()
@@ -1729,10 +1797,22 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(abs(manager.intensity - 0.6) < 1e-9)   // no drift accumulated
     }
 
+    /// Learn my adjustments is on until switched off, and a switch-off is kept.
+    @Test func learnMyAdjustmentsIsOnUntilSwitchedOff() {
+        let defaults = freshDefaults()
+        let first = makeManager(defaults: defaults)
+        #expect(first.learningEnabled)
+        first.setLearning(false)
+        #expect(defaults.object(forKey: "redlight.learningEnabled") as? Bool == false)
+        #expect(!makeManager(defaults: defaults).learningEnabled)
+    }
+
     @Test func adaptiveEditsWhileLocatingArePreservedWhenCurveResolves() {
         let loc = FakeLocationProvider()         // no coordinate yet → "Locating…"
         let midnight = ISO8601DateFormatter().date(from: "2025-03-21T00:00:00Z")!
         let manager = makeManager(location: loc, now: { midnight })
+        // Without Learn my adjustments: a nudge is one offset for the whole curve.
+        manager.setLearning(false)
         manager.adaptiveEnabled = true
         #expect(manager.adaptiveStatusText == "Locating…")
 
@@ -1742,7 +1822,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         loc.coordinate = (0, 0)
         manager.applyAdaptive()                  // location arrives
         #expect(abs(manager.intensity - 0.9) < 1e-9)
-        #expect(abs(manager.whitepoint - 0.65) < 1e-9)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 53)) < 1e-9)
         #expect(manager.adaptiveStatusText.contains("adjusted"))
     }
 
@@ -1848,7 +1928,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         #expect(abs(d.double(forKey: "redlight.adaptiveOffsetIntensity") + 0.2) < 1e-9)
         #expect(manager.adaptiveStatusText.isEmpty)
         #expect(abs(manager.intensity - 0.8) < 1e-9)
-        #expect(abs(d.double(forKey: "redlight.intensity") - 0.8) < 1e-9)
+        #expect(d.object(forKey: "redlight.colorPercent") as? Int == 80)
 
         manager.adaptiveEnabled = true
         #expect(abs(manager.intensity - 0.8) < 1e-9)   // same valid target stays continuous
@@ -2360,27 +2440,27 @@ final class ImmediateFixLocationProvider: LocationProviding {
 
         // Model, persistence and the command target land on the preset at once…
         #expect(manager.intensity == 0.0)
-        #expect(manager.whitepoint == 0.3)
+        #expect(manager.whitepoint == Preset.defaults[4].whitepoint)
         #expect(manager.activePresetIndex == 4)
-        #expect(d.double(forKey: "redlight.intensity") == 0.0)
-        #expect(d.double(forKey: "redlight.whitepoint") == 0.3)
+        #expect(d.object(forKey: "redlight.colorPercent") as? Int == 0)
+        #expect(d.object(forKey: "redlight.whitepointPercent") as? Int == 7)
         #expect(manager.commandIsFading)
         // …while the display starts from the frame that was showing.
         var call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.9) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.9) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - WhitepointScale.output(percent: 87)) < 0.0001)
 
         // The shared render clock moves it; no Adaptive timer is running.
         uptime += 1; manager.tickTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.45) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.6) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - (WhitepointScale.output(percent: 87) + Preset.defaults[4].whitepoint) / 2) < 0.0001)
         #expect(manager.commandIsFading)
 
         uptime += 1.5; manager.tickTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.0) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.3) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - Preset.defaults[4].whitepoint) < 0.0001)
         #expect(!manager.commandIsFading)
         #expect(!manager.adaptiveEnabled)
     }
@@ -2418,7 +2498,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         uptime += 2; manager.tickTransitions()
         call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.65) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.3) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - Preset.defaults[4].whitepoint) < 0.0001)
         #expect(!manager.commandIsFading)
     }
 
@@ -2461,7 +2541,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.applyPreset(3)   // Night: 0.25 / 0.45
 
         #expect(manager.intensity == 0.25)
-        #expect(d.double(forKey: "redlight.intensity") == 0.25)
+        #expect(d.object(forKey: "redlight.colorPercent") as? Int == 25)
         #expect(manager.activePresetIndex == 3)
         // The output still moves (and reports it), so a resume mid-way shows a real frame.
         #expect(manager.commandIsFading)
@@ -2473,7 +2553,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.resume()
         let call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.25) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.45) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - Preset.defaults[3].whitepoint) < 0.0001)
     }
 
     @Test func presetWithFilterOffIsSavedAndShowsWhenTurnedOn() throws {
@@ -2491,7 +2571,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         manager.toggle(1)
         let call = try #require(mock.applyCalls.last)
         #expect(abs(Double(call.intensity) - 0.25) < 0.0001)
-        #expect(abs(Double(call.whitepoint) - 0.45) < 0.0001)
+        #expect(abs(Double(call.whitepoint) - Preset.defaults[3].whitepoint) < 0.0001)
     }
 
     // MARK: - Next solar event
@@ -2662,7 +2742,7 @@ final class ImmediateFixLocationProvider: LocationProviding {
         location.coordinate = (0, 180)
         location.onChange?()
         #expect(abs(manager.intensity - 0.6) < 0.000001)
-        #expect(abs(manager.whitepoint - 0.75) < 0.000001)
+        #expect(abs(manager.whitepoint - WhitepointScale.output(percent: 67)) < 0.000001)
     }
 
     @Test func nextSolarEventFollowsAdaptiveAndTheCoordinate() {

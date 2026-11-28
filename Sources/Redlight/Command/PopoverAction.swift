@@ -18,6 +18,9 @@ enum PopoverAction: Equatable {
     case location(CommandLocation)
     case bedtime(CommandBedtime)
     case wake(CommandBedtime)
+    case learn(CommandLearn)
+    /// Settings' Apps rows. A drag of the popover's sliders that edits a rule goes to the
+    /// rules directly, as slider tracking does to the model.
     case apps(CommandApps)
     case update
     case quit
@@ -38,6 +41,7 @@ enum PopoverAction: Equatable {
         case .location(let location): .location(location)
         case .bedtime(let bedtime): .bedtime(bedtime)
         case .wake(let wake): .wake(wake)
+        case .learn(let change): .learn(change)
         case .apps(let change): .apps(change)
         case .update: .update
         case .quit: .quit
@@ -60,6 +64,7 @@ enum PopoverAction: Equatable {
         case .location: .location
         case .bedtime: .bedtime
         case .wake: .wake
+        case .learn: .learn
         case .apps: .apps
         case .update: .update
         case .quit: .quit
@@ -71,5 +76,5 @@ enum PopoverAction: Equatable {
 /// payloads are enumerable. Parity tests use real representative actions for every kind.
 enum PopoverActionDescriptor: CaseIterable {
     case master, pause, pauseFor, reset, preset, savePreset, adaptive, display, invert, appearance, login,
-         location, bedtime, wake, apps, update, quit
+         location, bedtime, wake, learn, apps, update, quit
 }

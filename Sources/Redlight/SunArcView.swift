@@ -65,6 +65,12 @@ struct SunArcView: View {
     /// that it is worked out once per cycle: this view's body also runs on every colour-temp
     /// tick, for the accent.
     let marks: Marks
+    /// The arc's colours through the day for a palette, from what Auto will show at each
+    /// sample of the cycle. With them the arc is drawn in the tint the screen will have at
+    /// each time of day, as bright as its white point; without them, in the live accent from
+    /// end to end. Asked for in the body, so that a change to what Auto would show redraws
+    /// the arc.
+    var tint: (@MainActor (EmberPalette) -> TintGradients?)? = nil
 
     @Environment(\.emberPalette) private var palette
     @Environment(\.emberAccent) private var accent
@@ -115,20 +121,23 @@ struct SunArcView: View {
         let text: String
     }
 
-    static let chartHeight: CGFloat = 66
+    nonisolated static let chartHeight: CGFloat = 66
     // The curve's scale runs between these two lines of the chart, which leaves room for
     // the sun's halo above the highest point of the curve.
-    private static let plotTop: CGFloat = 8
-    private static let plotBottom: CGFloat = chartHeight - 2
+    nonisolated private static let plotTop: CGFloat = 8
+    nonisolated private static let plotBottom: CGFloat = chartHeight - 2
     private static let labelSpacing: CGFloat = 2
     private static let labelHeight: CGFloat = 12
     private static let labelGap: CGFloat = 6
     /// The canvas is this much wider than the chart on each side, so the round ends of the
     /// curve, the sun's halo at midnight and a late bedtime's moon are not cut off.
-    private static let bleed: CGFloat = 10
+    nonisolated static let bleed: CGFloat = 10
     private static let moonScale: CGFloat = 0.7
     /// From the top of the moon's box down to the line it floats above.
     private static let moonRise: CGFloat = 15
+
+    /// The curve's width: thick enough to read the tint changing along it.
+    static let lineWidth: CGFloat = 2.75
 
     var body: some View {
         let palette = self.palette
@@ -143,18 +152,16 @@ struct SunArcView: View {
         let halo = palette.arcHalo(accent: accent)
         let dot = palette.arcDot(accent: accent)
         let horizon = palette.isIncreasedContrast ? palette.text.opacity(0.85) : palette.tertiary.opacity(0.55)
+        let gradients = tint?(palette)
 
         Canvas { ctx, size in
             let bleed = Self.bleed
-            let plotTop = Self.plotTop
             let w = size.width - 2 * bleed
             guard w > 0, samples.count > 1 else { return }
-            let geometry = SunArcGeometry(
-                elevations: samples.lazy.map(\.elevation),
-                height: Self.plotBottom - Self.plotTop, padding: 0)
+            let plot = Plot(samples: samples, width: size.width)
 
-            func x(_ t: Double) -> CGFloat { bleed + CGFloat(t) * w }
-            func y(_ e: Double) -> CGFloat { plotTop + geometry.y(for: e) }
+            func x(_ t: Double) -> CGFloat { plot.x(t) }
+            func y(_ e: Double) -> CGFloat { plot.y(e) }
             func disc(_ centre: CGPoint, _ radius: CGFloat) -> Path {
                 Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius,
                                        width: 2 * radius, height: 2 * radius))
@@ -176,7 +183,11 @@ struct SunArcView: View {
             below.fill(area, with: .color(palette.nightArea))
             var above = ctx
             above.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: horizonY)))
-            above.fill(area, with: .color(dayArea))
+            // Left to right is the day, so a gradient along x is a colour for each time.
+            let dayStart = CGPoint(x: x(0), y: 0), dayEnd = CGPoint(x: x(1), y: 0)
+            above.fill(area, with: gradients.map {
+                .linearGradient($0.area, startPoint: dayStart, endPoint: dayEnd)
+            } ?? .color(dayArea))
 
             var line = Path()
             line.move(to: CGPoint(x: x(0), y: horizonY))
@@ -193,8 +204,10 @@ struct SunArcView: View {
                 bedtimePoint = point
             }
 
-            ctx.stroke(curve, with: .color(arcLine),
-                       style: StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
+            ctx.stroke(curve, with: gradients.map {
+                .linearGradient($0.line, startPoint: dayStart, endPoint: dayEnd)
+            } ?? .color(arcLine),
+                       style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round, lineJoin: .round))
 
             if let point = bedtimePoint {
                 ctx.fill(disc(point, 2.5), with: .color(palette.secondary))
@@ -236,6 +249,59 @@ struct SunArcView: View {
         .accessibilityRepresentation {
             Text(marks.description)
         }
+    }
+
+    /// Where the chart puts a time of day and an elevation, in a canvas `width` wide: the
+    /// canvas reaches `bleed` past the row on either side.
+    struct Plot {
+        let width: CGFloat
+        let geometry: SunArcGeometry
+
+        init(samples: [SunCycle.Sample], width: CGFloat) {
+            self.width = width
+            geometry = SunArcGeometry(
+                elevations: samples.lazy.map(\.elevation),
+                height: SunArcView.plotBottom - SunArcView.plotTop, padding: 0)
+        }
+
+        nonisolated func x(_ t: Double) -> CGFloat { SunArcView.bleed + CGFloat(t) * (width - 2 * SunArcView.bleed) }
+        nonisolated func y(_ elevation: Double) -> CGFloat { SunArcView.plotTop + geometry.y(for: elevation) }
+    }
+
+    /// The centre of the sun dot, in a canvas as wide as the row plus `bleed` on each side.
+    static func sunCentre(for cycle: SunCycle, rowWidth: CGFloat) -> CGPoint {
+        let plot = Plot(samples: cycle.samples, width: rowWidth + 2 * bleed)
+        return CGPoint(x: plot.x(cycle.nowFraction), y: plot.y(cycle.nowElevation))
+    }
+
+    /// The arc's line and the area under it, each a gradient along the day.
+    struct TintGradients: Equatable {
+        var line: Gradient
+        var area: Gradient
+    }
+
+    /// The arc's line and the area under it as gradients along the day, from what Auto shows
+    /// at each sample: the colour temp's tint, as bright as the white point makes it, the way
+    /// the white point slider's own fill is. The line keeps `EmberPalette.arcLineContrast`
+    /// on the panel however dim. The light appearance has its own, deeper scale, made to show
+    /// on a pale panel; with Increase Contrast on, its line stays ink and only the area is
+    /// tinted. Nil without a value for every sample.
+    static func tintGradients(
+        _ track: [DisplayManager.AutoTint]?, samples: [SunCycle.Sample], palette: EmberPalette
+    ) -> TintGradients? {
+        guard let track, track.count == samples.count, samples.count > 1 else { return nil }
+        let scheme: ColorScheme = palette.isDark ? .dark : .light
+        let inkLine = !palette.isDark && palette.isIncreasedContrast
+        var line: [Gradient.Stop] = [], area: [Gradient.Stop] = []
+        for (sample, point) in zip(samples, track) {
+            let tint = EmberTint.rgb(intensity: point.intensity, scheme: scheme)
+            let fill = palette.sliderFillRGB(.level(SliderRow.level(whitepoint: point.whitepoint)), accent: tint)
+            let location = CGFloat(min(1, max(0, sample.t)))
+            let stroke = inkLine ? palette.arcLine(accent: tint) : palette.arcLineRGB(dimmed: fill, tint: tint).color
+            line.append(Gradient.Stop(color: stroke, location: location))
+            area.append(Gradient.Stop(color: palette.dayArea(accent: fill), location: location))
+        }
+        return TintGradients(line: Gradient(stops: line), area: Gradient(stops: area))
     }
 
     static func accessibilitySummary(currentElevation: Double) -> String {

@@ -131,7 +131,10 @@ final class ShortcutController {
     }
 
     private func checkHeldKeys() {
-        for action in heldActions.keys { _ = isHeld(action) }
+        // `isHeld` can release an action when its physical key goes up. Iterate a
+        // snapshot so removing that action does not mutate the dictionary while
+        // its keys view is being traversed.
+        for action in Array(heldActions.keys) { _ = isHeld(action) }
     }
 
     private func isHeld(_ action: ShortcutAction) -> Bool {
@@ -179,23 +182,47 @@ final class ShortcutController {
     @discardableResult
     private func step(_ action: ShortcutAction) -> Bool {
         guard let (channel, percent) = action.step else { return false }
+        if let app = manager.activeApp, let rule = manager.activeAppRule {
+            return step(rule, of: app, channel: channel, by: percent)
+        }
         let before = channel == .color ? manager.intensity : manager.whitepoint
         do {
             let status = try execute(.step(channel, percent))
             let after = channel == .color ? manager.intensity : manager.whitepoint
             let value = channel == .color ? status.color.set : status.whitepoint.set
-            var text = "\(channel == .color ? "Color Temp" : "White Point") \(Int(value.rounded()))%"
-            let floor = channel == .color ? 0.0 : 25.0
+            var text = "\(channel == .color ? "Color Temp" : "White Point") \(value)%"
+            // The band is in output units, where the white point's scale starts at 0.25.
+            let floor = channel == .color ? 0.0 : 0.25
             let band = channel == .color ? manager.intensityBand : manager.whitepointBand
-            let narrowerLimit = percent < 0 ? band.lowerBound > floor / 100 : band.upperBound < 1
+            let narrowerLimit = percent < 0 ? band.lowerBound > floor : band.upperBound < 1
             if after == before, manager.adaptiveEnabled, band.lowerBound != band.upperBound, narrowerLimit {
                 text += " · Adaptive limit"
             }
             if status.pausedUntil != nil { text += " · Paused" }
-            else if status.suspendedFor != nil { text += " · Suspended" }
+            else if let app = status.activeApp, app.rule == .pause { text += " · Off for \(app.name)" }
             else if !status.on { text += " · Off" }
-            readout.show(text, level: (value - floor) / (100 - floor))
+            // Slider percent, 0 to 100 on both channels.
+            readout.show(text, level: SliderPercent.unit(value))
             return after != before
+        } catch {
+            readout.show(error.localizedDescription, level: nil)
+            return false
+        }
+    }
+
+    /// The keys are pressed while using the app in front. Under its Hold a global change
+    /// would show nothing, so a step edits that app's rule; the command line and Shortcuts
+    /// stay global, as scripts must not depend on the app in front.
+    private func step(_ rule: AppRule, of app: ActiveApp, channel: CommandChannel, by percent: Double) -> Bool {
+        let next = manager.rule(rule, steppedBy: percent, on: channel)
+        do {
+            let status = try execute(.apps(.set(app.bundleID, next)))
+            let shown = channel == .color ? status.color.target : status.whitepoint.target
+            var text = "\(channel == .color ? "Color Temp" : "White Point") \(shown)%"
+            text += " · \(app.name): \(next.kind.title)"
+            if status.pausedUntil != nil { text += " · Paused" } else if !status.on { text += " · Off" }
+            readout.show(text, level: SliderPercent.unit(shown))
+            return next != rule
         } catch {
             readout.show(error.localizedDescription, level: nil)
             return false

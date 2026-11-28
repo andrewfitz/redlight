@@ -131,6 +131,15 @@ struct PopoverState {
         PopoverState("no-displays", displays: []),
         PopoverState("display-off-inverted", off: [1], inverted: [2]) { $0.manager.applyPreset(3) },
         PopoverState("color-zero") { $0.manager.applyPreset(4) },
+        PopoverState("peeking") {
+            $0.manager.applyPreset(3)
+            $0.manager.setPeeking(true)
+        },
+        PopoverState("saturation-on") {
+            $0.manager.applyPreset(3)
+            $0.manager.saturation = 0.35
+            $0.manager.saturationEnabled = true
+        },
         PopoverState("color-full") { $0.manager.applyPreset(0) },
         PopoverState("pinned-band", defaults: adaptive([
             "redlight.adaptiveWpMin": 0.6, "redlight.adaptiveWpMax": 0.6,
@@ -219,6 +228,8 @@ struct PopoverState {
 
         PopoverState("settings") { $0.manager.applyPreset(3) }
             .showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
+        PopoverState("settings-kelvin", defaults: ["redlight.colorTempUnit": "kelvin"]) { $0.manager.applyPreset(3) }
+            .showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
         // As the built app shows it: with the updater's switch, here on.
         PopoverState("settings-automatic-updates") { $0.manager.applyPreset(3) }
             .showing {
@@ -233,6 +244,18 @@ struct PopoverState {
                 $0.menuBarView(page: .settings, MenuBarInitialState(
                     updateAvailable: false, updatesAutomatically: true, keepsNightShiftOff: true))
             },
+        // Learning on, at its longest: on each slider a limit it moved and a part of the day
+        // it knows.
+        PopoverState("settings-learning", defaults: adaptive([
+            "redlight.learningEnabled": true, "redlight.learning.model": learnedModel,
+            "redlight.adaptiveMin": 0.2, "redlight.adaptiveWpMin": WhitepointScale.output(0.6),
+        ])) {
+            try #require($0.manager.learningSummary == [
+                "Color temp runs from 20% to 100% and is about 12% redder around sunset.",
+                "White point runs from 60% to 100% and is about 10% dimmer after dark.",
+            ])
+        }
+            .showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: false)) },
         PopoverState("settings-coordinates-error", defaults: adaptive(), location: .none(.denied))
             .showing {
                 $0.menuBarView(page: .settings, MenuBarInitialState(
@@ -244,18 +267,40 @@ struct PopoverState {
                 $0.menuBarView(page: .settings,
                                MenuBarInitialState(updateAvailable: true, loginRequiresApproval: true))
             },
-        // Pause for apps unfolded: one app chosen, two more running.
-        PopoverState("settings-apps") {
+        // Per-app settings unfolded: a Pause, a Hold and a Shift, and two more apps running.
+        PopoverState("controls-apps") {
             $0.manager.applyPreset(3)
-            $0.appSource.names = ["com.apple.Safari": "Safari"]
+            $0.appSource.names = ["com.apple.Safari": "Safari", "com.adobe.Photoshop": "Adobe Photoshop 2026",
+                                  "com.apple.Photos": "Photos"]
             $0.appSource.runningApps = [
                 RunningApp(bundleID: "com.apple.Safari", name: "Safari", processID: 11),
                 RunningApp(bundleID: "com.apple.Preview", name: "Preview", processID: 12),
                 RunningApp(bundleID: "com.apple.finder", name: "Finder", processID: 13),
             ]
-            try $0.apps.apply(.add("com.apple.Safari"))
+            try $0.apps.apply(.set("com.apple.Safari", .pause))
+            try $0.apps.apply(.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70)))
+            try $0.apps.apply(.set("com.apple.Photos", .shift(color: -10, whitepoint: 5)))
         }.showing {
-            $0.menuBarView(page: .settings, MenuBarInitialState(choosingApps: true, updateAvailable: false))
+            $0.menuBarView(page: .controls, MenuBarInitialState(choosingApps: true, updateAvailable: false))
+        },
+        // Opened over an app with a Hold: the line above the sliders, which set the Hold.
+        PopoverState("auto-app-hold", defaults: adaptive([
+            "redlight.adaptiveMin": 0.2, "redlight.adaptiveMax": 1.0,
+        ])) {
+            $0.appSource.activate(RunningApp(bundleID: "com.adobe.Photoshop", name: "Photoshop", processID: 21))
+            try $0.apps.apply(.set("com.adobe.Photoshop", .hold(color: 85, whitepoint: 90)))
+        },
+        // Opened over an app with a Shift, in Manual.
+        PopoverState("manual-app-shift") {
+            $0.manager.applyPreset(3)
+            $0.appSource.activate(RunningApp(bundleID: "com.apple.Photos", name: "Photos", processID: 22))
+            try $0.apps.apply(.set("com.apple.Photos", .shift(color: 20, whitepoint: -10)))
+        },
+        // An app that pauses, in front: the header says so.
+        PopoverState("app-paused") {
+            $0.manager.applyPreset(3)
+            $0.appSource.activate(RunningApp(bundleID: "com.apple.Photos", name: "Photos", processID: 22))
+            try $0.apps.apply(.set("com.apple.Photos", .pause))
         },
         // The widest bar there is: "Quitting…", with an update waiting.
         PopoverState("settings-quitting") {
@@ -276,6 +321,31 @@ struct PopoverState {
                     .environment(\.calendar, calendar).environment(\.timeZone, calendar.timeZone))
             },
     ]
+
+    /// A saved model with a learned minimum and a part of the evening on each slider, as
+    /// weeks of learning would leave it. The limits saved with it are its flags.
+    static var learnedModel: Data {
+        func channel(
+            _ presets: [Double], band: ClosedRange<Double>, _ change: (inout HabitModel.Channel.State) -> Void
+        ) -> HabitModel.Channel {
+            var state = HabitModel.Channel(band: band, base: LearnedAutoFixtures.baseline(presets, band)).state
+            change(&state)
+            let data = try! JSONEncoder().encode(["state": state])
+            return try! JSONDecoder().decode(HabitModel.Channel.self, from: data)
+        }
+        let sunset = SolarCurve.Anchor.eveningSunset.rawValue, night = SolarCurve.Anchor.eveningNight.rawValue
+        let color = channel(Preset.defaults.map(\.intensity), band: 0...1) {
+            $0.lower = 0.2
+            $0.own[sunset] = -0.12
+            $0.rings[sunset] = Array(repeating: HabitModel.Vote(value: -0.12, weight: 3), count: 2)
+        }
+        let white = channel(Preset.defaults.map { WhitepointScale.shown($0.whitepoint) }, band: 0.5...1) {
+            $0.lower = 0.6
+            $0.own[night] = -0.1
+            $0.rings[night] = Array(repeating: HabitModel.Vote(value: -0.1, weight: 3), count: 2)
+        }
+        return HabitModel(color: color, whitepoint: white).encoded()!
+    }
 
     /// States that cannot be reached without changing source files, with the reason.
     static let unreachable: [(name: String, reason: String)] = []
@@ -344,8 +414,9 @@ final class PopoverFixture {
     let location = FakeLocationProvider()
     let manager: DisplayManager
     let handler: CommandHandler
-    let apps: AppSuspensionController
-    /// What `apps` takes for the running apps; empty unless a state fills it.
+    let apps: AppRulesController
+    /// What `apps` takes for the running apps and the app in front; empty unless a state
+    /// fills it. The popover is opened over the app last activated here.
     let appSource = FakeAppSource()
     /// Only reads `SMAppService.mainApp.status`; its setter is reached through `handler`,
     /// whose login service here is a no-op.
@@ -379,9 +450,9 @@ final class PopoverFixture {
             getMainDisplayID: { 1 }, defaults: defaults, location: location,
             now: wallClock ? { Date() } : { PopoverState.fixedNow },
             adaptiveTransitionDuration: 0, displayTransitionDuration: 0, peekTransitionDuration: 0,
-            locationPromptActivation: {})
+            appRuleTransitionDuration: 0, locationPromptActivation: {})
 
-        let apps = AppSuspensionController(
+        let apps = AppRulesController(
             source: appSource, defaults: defaults,
             ownBundleID: "com.redlight.snapshot", ownProcessID: 1)
         self.apps = apps
@@ -389,7 +460,9 @@ final class PopoverFixture {
             appearance: { false }, setAppearance: { _ in },
             login: { Status.Login(enabled: false, requiresApproval: false) },
             setLogin: { _ in }, update: {}, quit: {}, version: { "Snapshot" },
-            apps: { apps.bundleIDs }, changeApps: { try apps.apply($0) }))
+            appRules: { apps.statusRules }, changeApps: { try apps.apply($0) }))
+        let manager = manager
+        apps.onChange = { manager.setActiveApp($0) }
 
         for id in ids where !state.off.contains(id) { manager.setEnabled(true, for: id) }
         for id in ids where state.inverted.contains(id) { manager.setInverted(true, for: id) }

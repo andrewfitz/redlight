@@ -153,7 +153,7 @@ struct EmberSliderDrag: Equatable {
 /// the grabber itself, wider, taller and darker. Accessibility: a slider named `label` with
 /// its value in percent, and in Auto "`label` minimum" and "`label` maximum".
 struct EmberSlider: View {
-    let value: Double
+    let percent: Int
     var range: ClosedRange<Double> = 0...1
     /// Auto's allowed range. Nil in Manual.
     var band: ClosedRange<Double>? = nil
@@ -161,13 +161,15 @@ struct EmberSlider: View {
     /// Which Ember fill the slider takes.
     var tone: EmberTone = .accent
     /// Every value the slider sets, by pointer, key or assistive app.
-    let onChange: (Double) -> Void
+    let onChange: (Int) -> Void
     /// Sets one of Auto's limits, from its flag. Nil: no flags.
     var onLimitChange: ((SliderCore.Bound, Double) -> Void)? = nil
     /// While a flag is dragged: its value, to show on the displays.
     var onPreview: ((Double) -> Void)? = nil
     /// When a flag is released, or a limit set by key: back to the real output.
     var onPreviewEnd: (() -> Void)? = nil
+    /// Pointer contact with the value pill, including a stationary press on the grabber.
+    var onValueDragActive: ((Bool) -> Void)? = nil
     /// Called when a drag or a discrete edit starts; returns a token for it.
     var onInteractionBegin: (() -> UInt64)? = nil
     /// False once the token is stale (a command took over); the rest of that drag is ignored.
@@ -183,6 +185,7 @@ struct EmberSlider: View {
 
     @Environment(\.emberPalette) private var palette
     @Environment(\.emberAccent) private var accent
+    @Environment(\.emberSliderUnit) private var unit
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.emberIsLeaving) private var isLeaving
 
@@ -197,7 +200,8 @@ struct EmberSlider: View {
     /// The value as drawn: in Auto it never sits outside the band, also while a flag is
     /// dragged across it and Auto has not yet followed.
     private var shown: Double {
-        band.map { SliderCore.clampToBand(value, lower: $0.lowerBound, upper: $0.upperBound) } ?? value
+        let value = range.lowerBound + SliderPercent.unit(percent) * (range.upperBound - range.lowerBound)
+        return band.map { SliderCore.clampToBand(value, lower: $0.lowerBound, upper: $0.upperBound) } ?? value
     }
 
     /// The slider's height: the pill, and in Auto the flag row under it.
@@ -231,7 +235,7 @@ struct EmberSlider: View {
             VStack {
                 Slider(value: Binding(get: { shown }, set: { discreteEdit($0) }), in: range) { Text(label) }
                     .accessibilityLabel(label)
-                    .accessibilityValue(SliderCore.spokenPercent(shown, in: range))
+                    .accessibilityValue(unit.spoken(shown, in: range))
                 if let band, showsFlags {
                     limitSlider(.lower, band: band)
                     limitSlider(.upper, band: band)
@@ -252,8 +256,8 @@ struct EmberSlider: View {
         }), in: range) { Text(name) }
             .accessibilityLabel(name)
             .accessibilityValue(isPinned
-                ? "Fixed at \(SliderCore.spokenPercent(current, in: range))"
-                : SliderCore.spokenPercent(current, in: range))
+                ? "Fixed at \(unit.spoken(current, in: range))"
+                : unit.spoken(current, in: range))
     }
 
     private func pill(width w: CGFloat) -> some View {
@@ -273,7 +277,8 @@ struct EmberSlider: View {
                 // end lies on the tint and not on a seam.
                 span(.init(start: 0, end: tint.end), color: palette.fillStrong, midY: midY)
             }
-            span(face.fill, color: fill.color, midY: midY)
+            span(face.fill, color: fill.color, midY: midY,
+                 edge: palette.sliderEdge(for: fill))
 
             // The value's keyboard stop: the whole pill, so it keeps one place in the Tab
             // order wherever the value is.
@@ -303,13 +308,15 @@ struct EmberSlider: View {
                 .updating($gestureInProgress) { _, inProgress, _ in inProgress = true }
                 .onChanged { g in
                     if let drag, drag.start != g.startLocation { finishInteraction() }
-                    if drag == nil {
+                    let isFirstEvent = drag == nil
+                    if isFirstEvent {
                         if showsFocus { showsFocus = false }
                         interactionToken = onInteractionBegin?()
                         interactionGate = SliderInteractionGate()
                         drag = EmberSliderDrag(start: g.startLocation, valueX: face.valueX, limits: band)
                     }
                     updateDrag(pointerX: g.location.x, width: w)
+                    if isFirstEvent { onValueDragActive?(true) }
                 }
                 .onEnded { g in
                     guard drag?.start == g.startLocation else { return }
@@ -332,11 +339,14 @@ struct EmberSlider: View {
             atX: x + current.offset, among: current.restingLimits(in: band), width: width, range: range) {
             next = limit
         }
-        guard let next, next != shown else { return }
-        onChange(next)
+        guard let next else { return }
+        writeValue(next)
     }
 
     private func finishInteraction() {
+        if drag != nil, interactionGate.permitsMutation(token: interactionToken, isCurrent: isInteractionCurrent) {
+            onValueDragActive?(false)
+        }
         drag = nil
         interactionToken = nil
         interactionGate = SliderInteractionGate()
@@ -351,7 +361,13 @@ struct EmberSlider: View {
         guard v != shown else { return }
         let token = onInteractionBegin?()
         if let token, isInteractionCurrent?(token) == false { return }
-        onChange(v)
+        writeValue(v)
+    }
+
+    private func writeValue(_ proposed: Double) {
+        let percent = SliderCore.percent(proposed, in: range)
+        guard percent != SliderCore.percent(shown, in: range) else { return }
+        onChange(percent)
     }
 
     // MARK: - Pieces
@@ -377,9 +393,11 @@ struct EmberSlider: View {
         }
     }
 
-    private func span(_ span: EmberSliderFace.Span, color: Color, midY: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: EmberMetrics.sliderRadius)
+    private func span(_ span: EmberSliderFace.Span, color: Color, midY: CGFloat, edge: Color? = nil) -> some View {
+        let shape = RoundedRectangle(cornerRadius: EmberMetrics.sliderRadius)
+        return shape
             .fill(color)
+            .overlay { if let edge { shape.strokeBorder(edge, lineWidth: 1) } }
             .frame(width: span.length, height: Self.pillHeight)
             .position(x: span.mid, y: midY)
     }

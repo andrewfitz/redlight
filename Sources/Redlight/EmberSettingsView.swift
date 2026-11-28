@@ -7,7 +7,6 @@ struct SettingsPage: View {
     let manager: DisplayManager
     let launchAtLogin: LaunchAtLogin?
     let openShortcuts: (() -> Void)?
-    let apps: AppSuspensionController?
     let dispatch: PopoverDispatch
     let session: PopoverSession
     let initialState: MenuBarInitialState
@@ -32,10 +31,14 @@ struct SettingsPage: View {
                 EmberGroupLabel("Location for Auto")
                 LocationSettingsCard(manager: manager, dispatch: dispatch, draft: locationDraft)
             }
+            VStack(alignment: .leading, spacing: 6) {
+                EmberGroupLabel("Units")
+                EmberCard { ColorTempUnitRow() }
+            }
             // Only a built app has an updater; a render can stand in for it.
             let hasUpdates = initialState.updatesAutomatically != nil || Updater.shared.isAvailable
             let hasNightShift = initialState.keepsNightShiftOff != nil || NightShiftGuard.shared.isAvailable
-            if launchAtLogin != nil || hasUpdates || hasNightShift || apps != nil || openShortcuts != nil {
+            if launchAtLogin != nil || hasUpdates || hasNightShift || openShortcuts != nil {
                 VStack(alignment: .leading, spacing: 6) {
                     EmberGroupLabel("General")
                     EmberCard {
@@ -50,13 +53,8 @@ struct SettingsPage: View {
                             NightShiftRow(divider: launchAtLogin != nil || hasUpdates,
                                           stand: initialState.keepsNightShiftOff)
                         }
-                        if let apps {
-                            PauseForAppsControl(apps: apps, dispatch: dispatch,
-                                                divider: launchAtLogin != nil || hasUpdates || hasNightShift,
-                                                startExpanded: initialState.choosingApps)
-                        }
                         if let openShortcuts {
-                            ShortcutsRow(divider: launchAtLogin != nil || hasUpdates || hasNightShift || apps != nil,
+                            ShortcutsRow(divider: launchAtLogin != nil || hasUpdates || hasNightShift,
                                          open: openShortcuts)
                         }
                     }
@@ -85,7 +83,156 @@ private struct BedtimeCard: View {
             BedtimeRow(kind: .wake, divider: true, bedtime: manager.wakeTime, draft: wakeDraft) {
                 dispatch(.wake($0))
             }
+            LearningRows(manager: manager, dispatch: dispatch)
         }
+    }
+}
+
+/// "Learn my adjustments", under Auto's two times: the switch, and while it is on what has
+/// been learned, a sentence per slider, with the button that forgets it.
+struct LearningRows: View {
+    static let title = "Learn my adjustments"
+    static let explanation = "Auto learns how you set each slider at each time of day and starts doing it for you, following the sun through the seasons. The limits move to where you leave them. A big one-off change is ignored unless you make it again the next day."
+    static let nothingYet = "Nothing learned yet. Adjust the sliders in Auto and it learns how you like them."
+    static let matchesAuto = "So far your settings match Auto's own."
+    static let resetTitle = "Reset learning"
+    static let confirmText = "Reset what was learned on both sliders? Your limits are kept, and it is saved: `redlight learn restore` brings it back."
+    static let confirmTitle = "Reset both sliders"
+    static let cancelTitle = "Cancel"
+
+    let manager: DisplayManager
+    let dispatch: PopoverDispatch
+
+    /// Reset asks first: the button shows this question and its two answers in its place.
+    @State private var confirmingReset = false
+    @Environment(\.emberPalette) private var palette
+    @Environment(\.emberDisclose) private var disclose
+
+    var body: some View {
+        let enabled = manager.learningEnabled
+        EmberRow(divider: true) {
+            // The switch carries the name for VoiceOver, as the rows above do.
+            Text(Self.title)
+                .accessibilityHidden(true)
+            Spacer(minLength: 0)
+            EmberSwitch(Self.title, isOn: Binding(
+                get: { enabled },
+                set: { on in disclose { _ = dispatch(.learn(on ? .on : .off)) } }
+            ))
+        }
+        .help(Self.explanation)
+        // A pending confirmation must not survive turning learning off and back on.
+        // The detail view is removed while disabled, so its own `onChange` cannot observe
+        // this transition.
+        .onChange(of: enabled) { _, isEnabled in
+            if !isEnabled { confirmingReset = false }
+        }
+        if enabled {
+            let summary = manager.learningSummary
+            let hasLearned = manager.learnedAnchorCount > 0
+            VStack(alignment: .leading, spacing: 6) {
+                if hasLearned {
+                    // The learned day itself, a line per slider; the words go to VoiceOver.
+                    ForEach([CommandChannel.color, .whitepoint], id: \.self) { channel in
+                        if let shape = manager.learnedShape(channel) {
+                            LearnedShapeChart(
+                                name: channel.displayName, shape: shape,
+                                description: summary.first { $0.hasPrefix(channel.displayName) }
+                                    ?? Self.matchesAuto)
+                        }
+                    }
+                } else {
+                    Text(Self.nothingYet)
+                        .font(.ember(11))
+                        .foregroundStyle(palette.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if hasLearned, confirmingReset {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(Self.confirmText)
+                            .font(.ember(11))
+                            .foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 6) {
+                            EmberChipButton(title: Self.cancelTitle) { disclose { confirmingReset = false } }
+                            EmberChipButton(title: Self.confirmTitle, isProminent: true) {
+                                disclose {
+                                    confirmingReset = false
+                                    _ = dispatch(.learn(.reset))
+                                }
+                            }
+                        }
+                    }
+                    .emberRevealTransition()
+                } else if hasLearned {
+                    EmberChipButton(title: Self.resetTitle) { disclose { confirmingReset = true } }
+                        .emberRevealTransition()
+                        .help("Forget what was learned on both sliders, after asking. Your limits are kept, and `redlight learn restore` brings it back.")
+                }
+            }
+            .padding(.bottom, 8)
+            // A question left open is closed when learning goes off or there is nothing left to reset.
+            .onChange(of: hasLearned) { _, learned in if !learned { confirmingReset = false } }
+            .emberRevealTransition()
+        }
+    }
+}
+
+/// One slider's learned day: Auto's own curve as a faint line, what was learned as a solid
+/// line through the twelve parts of the day, from late night on the left to late night on
+/// the right. A filled dot is a part of the day learned from what was kept.
+struct LearnedShapeChart: View {
+    let name: String
+    let shape: DisplayManager.LearnedShape
+    /// What VoiceOver reads for the chart.
+    let description: String
+
+    static let height: CGFloat = 40
+
+    @Environment(\.emberPalette) private var palette
+
+    var body: some View {
+        let palette = self.palette
+        let ink = palette.secondary, faint = palette.tertiary.opacity(0.6)
+        HStack(alignment: .center, spacing: 8) {
+            Text(name)
+                .font(.ember(11))
+                .foregroundStyle(palette.tertiary)
+                .frame(width: 70, alignment: .leading)
+            Canvas { ctx, size in
+                let count = shape.learned.count
+                guard count > 1 else { return }
+                let inset: CGFloat = 3
+                func point(_ index: Int, _ value: Double) -> CGPoint {
+                    CGPoint(x: inset + CGFloat(index) / CGFloat(count - 1) * (size.width - 2 * inset),
+                            y: inset + CGFloat(1 - min(1, max(0, value))) * (size.height - 2 * inset))
+                }
+                func line(_ values: [Double]) -> Path {
+                    var path = Path()
+                    for (index, value) in values.enumerated() {
+                        if index == 0 { path.move(to: point(index, value)) } else { path.addLine(to: point(index, value)) }
+                    }
+                    return path
+                }
+                ctx.stroke(line(shape.plain), with: .color(faint),
+                           style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [2, 3]))
+                ctx.stroke(line(shape.learned), with: .color(ink),
+                           style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                for (index, value) in shape.learned.enumerated() {
+                    let centre = point(index, value)
+                    let dot = Path(ellipseIn: CGRect(x: centre.x - 2, y: centre.y - 2, width: 4, height: 4))
+                    if shape.known.indices.contains(index), shape.known[index] {
+                        ctx.fill(dot, with: .color(ink))
+                    } else {
+                        ctx.stroke(dot, with: .color(faint), lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: Self.height)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name) through the day")
+        .accessibilityValue(description)
     }
 }
 
@@ -97,6 +244,7 @@ private struct LocationSettingsCard: View {
     let manager: DisplayManager
     let dispatch: PopoverDispatch
     @Bindable var draft: LocationDraft
+    @Environment(\.emberDisclose) private var disclose
 
     private var usesCoordinates: Bool { manager.manualLocation != nil || draft.isEditing }
 
@@ -108,24 +256,28 @@ private struct LocationSettingsCard: View {
                                options: [(value: false, title: "Automatic"), (value: true, title: "Coordinates")],
                                selection: usesCoordinates, onCard: true,
                                help: "Use coordinates you enter instead of Location Services or the time zone.",
-                               select: setUsesCoordinates)
+                               select: { manual in disclose { setUsesCoordinates(manual) } })
 
                 if usesCoordinates {
-                    HStack(spacing: 6) {
-                        EmberTextField(placeholder: "Latitude", text: $draft.latitudeText)
-                            .accessibilityLabel("Latitude, -90 to 90")
-                        EmberTextField(placeholder: "Longitude", text: $draft.longitudeText)
-                            .accessibilityLabel("Longitude, -180 to 180")
-                        EmberChipButton(title: "Set", isProminent: true, height: 24, cornerRadius: 7,
-                                        action: setManualLocation)
-                            .accessibilityLabel("Set manual location")
-                    }
-                    .onSubmit(setManualLocation)
-                    .onAppear(perform: fillFields)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            EmberTextField(placeholder: "Latitude", text: $draft.latitudeText)
+                                .accessibilityLabel("Latitude, -90 to 90")
+                            EmberTextField(placeholder: "Longitude", text: $draft.longitudeText)
+                                .accessibilityLabel("Longitude, -180 to 180")
+                            EmberChipButton(title: "Set", isProminent: true, height: 24, cornerRadius: 7,
+                                            action: setManualLocation)
+                                .accessibilityLabel("Set manual location")
+                        }
+                        .onSubmit(setManualLocation)
+                        .onPaneShown(perform: fillFields)
 
-                    if let error = draft.error {
-                        EmberErrorText(message: error)
+                        if let error = draft.error {
+                            EmberErrorText(message: error)
+                                .emberRevealTransition()
+                        }
                     }
+                    .emberRevealTransition()
                 }
             }
         }
@@ -165,7 +317,8 @@ private struct LocationSettingsCard: View {
                 draft.isEditing = false
             }
         } catch {
-            draft.error = error.localizedDescription
+            let message = error.localizedDescription
+            disclose { draft.error = message }
         }
     }
 }
@@ -266,7 +419,7 @@ private struct LaunchAtLoginRows: View {
                 .accessibilityLabel("Approval needed, open Login Items")
             }
         }
-        .onAppear { launchAtLogin.refresh() }
+        .onPaneShown { launchAtLogin.refresh() }
     }
 }
 
@@ -288,182 +441,6 @@ private struct ShortcutsRow: View {
         }
         .help("Keyboard Shortcuts")
         .accessibilityLabel("Keyboard Shortcuts")
-    }
-}
-
-/// "Pause for apps": the row names the chosen apps and unfolds the list in place.
-struct PauseForAppsControl: View {
-    let apps: AppSuspensionController
-    let dispatch: PopoverDispatch
-    let divider: Bool
-
-    @State private var choosingApps: Bool
-    @State private var runningApps: [RunningApp] = []
-    @Environment(\.emberPalette) private var palette
-
-    init(apps: AppSuspensionController, dispatch: PopoverDispatch, divider: Bool, startExpanded: Bool) {
-        self.apps = apps
-        self.dispatch = dispatch
-        self.divider = divider
-        _choosingApps = State(initialValue: startExpanded)
-    }
-
-    var body: some View {
-        let chosen = apps.bundleIDs.map { (id: $0, name: apps.name(for: $0)) }
-        Group {
-            EmberRowButton(divider: divider) {
-                // Captured once per unfolding rather than on every redraw.
-                if !choosingApps { runningApps = apps.runningApps() }
-                choosingApps.toggle()
-            } content: {
-                Text("Pause for apps")
-                    .foregroundStyle(palette.text)
-                    .lineLimit(1)
-                    .fixedSize()
-                Spacer(minLength: 8)
-                HStack(spacing: 3) {
-                    Text(chosen.isEmpty ? "None" : chosen.map(\.name).joined(separator: ", "))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    EmberChevron(direction: choosingApps ? .up : .down)
-                }
-                .foregroundStyle(palette.secondary)
-                .layoutPriority(1)
-            }
-            .help("Suspend the tint while one of these apps is in front. Invert stays on.")
-            .accessibilityLabel("Pause for apps")
-            .accessibilityValue(Self.accessibilityValue(chosen: chosen.map(\.name), isExpanded: choosingApps))
-
-            if choosingApps {
-                PauseForAppsRow(chosen: chosen, running: runningApps, recent: apps.recentBundleID) {
-                    dispatch(.apps($0))
-                }
-                .padding(.bottom, 6)
-            }
-        }
-        .onAppear {
-            if choosingApps, runningApps.isEmpty { runningApps = apps.runningApps() }
-        }
-    }
-
-    /// What VoiceOver adds after "Pause for apps": the apps the row shows, then whether the
-    /// list is open. "Safari, Preview, collapsed".
-    static func accessibilityValue(chosen: [String], isExpanded: Bool) -> String {
-        "\(chosen.isEmpty ? "None" : chosen.joined(separator: ", ")), \(isExpanded ? "expanded" : "collapsed")"
-    }
-}
-
-/// The chosen apps, each with a remove button, then running apps to add. The list has a
-/// fixed height and scrolls, so it cannot stretch the popover.
-struct PauseForAppsRow: View {
-    static let rowHeight: CGFloat = 24
-    static let visibleRows = 6
-    /// How far a focused row's band reaches past the row on each side.
-    static let focusReach: CGFloat = 6
-
-    /// Bundle IDs with display names, in the order chosen.
-    let chosen: [(id: String, name: String)]
-    /// Running apps, captured when the row unfolds.
-    let running: [RunningApp]
-    let recent: String?
-    let change: (CommandApps) -> Void
-
-    @Environment(\.emberPalette) private var palette
-
-    /// Running apps not yet chosen, once each, the app last in front first (most likely the
-    /// one to add), then by name. Apps without a bundle identifier cannot be matched.
-    static func candidates(running: [RunningApp], chosen: [String], recent: String?) -> [RunningApp] {
-        var seen = Set(chosen.map { $0.folding(options: .caseInsensitive, locale: nil) })
-        var recentApp: RunningApp?
-        var others: [RunningApp] = []
-        for app in running {
-            guard let id = app.bundleID, (try? AppBundleID.validate(id)) != nil,
-                  seen.insert(id.folding(options: .caseInsensitive, locale: nil)).inserted else { continue }
-            if let recent, AppBundleID.matches(id, recent) {
-                recentApp = app
-            } else {
-                others.append(app)
-            }
-        }
-        others.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if let recentApp { others.insert(recentApp, at: 0) }
-        return others
-    }
-
-    var body: some View {
-        let candidates = Self.candidates(running: running, chosen: chosen.map(\.id), recent: recent)
-        let rows = max(1, chosen.count + candidates.count)
-        Column(rows: rows) {
-            ForEach(chosen, id: \.id) { app in
-                row(app.name, help: app.id, symbol: "minus.circle.fill", color: palette.text,
-                    accessibility: "Stop pausing for \(app.name)") { change(.remove(app.id)) }
-            }
-            ForEach(candidates, id: \.processID) { app in
-                if let id = app.bundleID {
-                    row(app.name, help: id, symbol: "plus.circle", color: palette.secondary,
-                        accessibility: "Pause for \(app.name)") { change(.add(id)) }
-                }
-            }
-            if chosen.isEmpty && candidates.isEmpty {
-                Text("No other apps are running")
-                    .font(.ember(12))
-                    .foregroundStyle(palette.tertiary)
-                    .frame(height: Self.rowHeight)
-            }
-        }
-    }
-
-    /// The scrolling column the lines sit in. It is wider than its lines by the focus
-    /// band's reach on each side: a scroll view clips, and would cut the band's ends off.
-    struct Column<Content: View>: View {
-        let rows: Int
-        @ViewBuilder let content: Content
-
-        var body: some View {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) { content }
-                    .padding(.horizontal, PauseForAppsRow.focusReach)
-            }
-            .padding(.horizontal, -PauseForAppsRow.focusReach)
-            .frame(height: CGFloat(min(rows, PauseForAppsRow.visibleRows)) * PauseForAppsRow.rowHeight)
-        }
-    }
-
-    private func row(_ name: String, help: String, symbol: String, color: Color, accessibility: String,
-                     action: @escaping () -> Void) -> some View {
-        EmberButton(action: action) { state in
-            RowFace(name: name, symbol: symbol, color: color, isFocused: state.isFocused)
-        }
-        .help(help)
-        .accessibilityLabel(accessibility)
-    }
-
-    /// One app's line as drawn. The focus band runs `focusReach` into the card's inset on
-    /// each side, clear of the name and the symbol.
-    struct RowFace: View {
-        let name: String
-        let symbol: String
-        let color: Color
-        let isFocused: Bool
-
-        var body: some View {
-            HStack(spacing: 6) {
-                Text(name).font(.ember(12)).lineLimit(1).truncationMode(.tail)
-                Spacer(minLength: 4)
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 16)
-            }
-            .foregroundStyle(color)
-            .frame(height: PauseForAppsRow.rowHeight)
-            .contentShape(Rectangle())
-            .background {
-                Color.clear
-                    .emberFocusHalo(RoundedRectangle(cornerRadius: 6, style: .continuous),
-                                    isFocused: isFocused, spread: 0)
-                    .padding(.horizontal, -PauseForAppsRow.focusReach)
-            }
-        }
     }
 }
 

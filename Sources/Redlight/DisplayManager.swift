@@ -3,6 +3,11 @@ import ColorSync
 import Observation
 import os
 
+enum PeekSource: Hashable, Sendable {
+    case shortcut
+    case command
+}
+
 @MainActor
 @Observable
 final class DisplayManager {
@@ -18,6 +23,7 @@ final class DisplayManager {
     struct OutputPair: Equatable {
         var intensity: Double
         var whitepoint: Double
+        var saturation: Double = 1
     }
 
     private enum OutputChannel: Hashable {
@@ -30,6 +36,8 @@ final class DisplayManager {
         var to: OutputPair
         var startedAt: TimeInterval
         var channels: Set<OutputChannel>
+        /// Auto's fade, or the shorter one of a switch between apps' rules.
+        var duration: TimeInterval
     }
 
     private struct DisplayTransition {
@@ -66,40 +74,67 @@ final class DisplayManager {
     /// Late preset's 0.30, was darker than most people want without having asked for it.
     /// The flag can still be taken to the floor.
     enum Defaults {
+        /// Learn my adjustments.
+        static let learningEnabled = true
         static let intensity = 1.0
         static let intensityMin = 0.0
         static let intensityMax = 1.0
+        static let saturation = 0.0
+        static let saturationEnabled = false
         static let whitepoint = 1.0
         static let whitepointMin = 0.625
         static let whitepointMax = 1.0
         static let adaptiveFadeDuration: TimeInterval = 2.0
         static let displayFadeDuration: TimeInterval = 0.7
         static let peekFadeDuration: TimeInterval = 0.15
+        /// Switching to or from an app with a Hold or Shift.
+        static let appRuleFadeDuration: TimeInterval = 0.4
         static let pauseDuration: TimeInterval = 30 * 60
         static let pauseLengthRange: ClosedRange<TimeInterval> = 60...86_400
     }
 
     private(set) var displays: [DisplayInfo] = []
-    var intensity: Double = 0.5 {
-        didSet {
+    // Auto can render a point between slider stops. User edits replace that output
+    // with a whole-percent setting, and the next Auto tick can resume interpolation.
+    private var manualColorPercent = 100
+    private var manualWhitepointPercent = 100
+    private var autoIntensity: Double?
+    private var autoWhitepoint: Double?
+
+    var colorPercent: Int { autoIntensity.map { SliderPercent.whole($0 * 100) } ?? manualColorPercent }
+    var whitepointPercent: Int {
+        autoWhitepoint.map { SliderPercent.whole(WhitepointScale.percent($0)) } ?? manualWhitepointPercent
+    }
+
+    var intensity: Double {
+        get { autoIntensity ?? SliderPercent.unit(manualColorPercent) }
+        set {
+            if adaptiveEnabled && internalUpdate {
+                autoIntensity = newValue
+            } else {
+                manualColorPercent = SliderPercent.whole(newValue * 100)
+                autoIntensity = nil
+            }
             // Internal (adaptive/preset) writes apply + save once at their call site.
             guard isInitialized, !internalUpdate else { return }
             cancelOutputTransition(.intensity)
             if adaptiveEnabled, isIntensityPinned {
                 // A pinned band is a fixed value, so a manual change moves the pin. It
                 // replaces any earlier nudge, which would otherwise return on un-pinning.
-                let pin = clamp(intensity, to: 0...1)
+                let pin = intensity
                 setInternal {
                     adaptiveMin = pin
                     adaptiveMax = pin
-                    if intensity != pin { intensity = pin }
                 }
                 adaptiveIntensityOffset = 0
                 pendingAdaptiveIntensity = nil
+                learningLimitsMovedByHand(.intensity, pinMoved: true)
+            } else if adaptiveEnabled, learningEnabled, habit != nil {
+                learnedNudge(.intensity)
             } else if adaptiveEnabled {
                 // While adaptive: the band is a hard limit on a manual nudge…
                 let clamped = clamp(intensity, to: intensityBand)
-                if clamped != intensity { setInternal { intensity = clamped } }
+                if clamped != intensity { autoIntensity = clamped }
                 // …and the nudge becomes a baseline offset the curve keeps riding — but
                 // only against a real curve value. Before the location resolves there is
                 // no baseline, and deriving an offset from the placeholder would later
@@ -118,22 +153,31 @@ final class DisplayManager {
             save()
         }
     }
-    var whitepoint: Double = 1.0 {
-        didSet {
+    var whitepoint: Double {
+        get { autoWhitepoint ?? WhitepointScale.output(percent: Double(manualWhitepointPercent)) }
+        set {
+            if adaptiveEnabled && internalUpdate {
+                autoWhitepoint = newValue
+            } else {
+                manualWhitepointPercent = SliderPercent.whole(WhitepointScale.percent(newValue))
+                autoWhitepoint = nil
+            }
             guard isInitialized, !internalUpdate else { return }
             cancelOutputTransition(.whitepoint)
             if adaptiveEnabled, isWhitepointPinned {
-                let pin = clamp(whitepoint, to: 0.25...1)
+                let pin = whitepoint
                 setInternal {
                     adaptiveWpMin = pin
                     adaptiveWpMax = pin
-                    if whitepoint != pin { whitepoint = pin }
                 }
                 adaptiveWhitepointOffset = 0
                 pendingAdaptiveWhitepoint = nil
+                learningLimitsMovedByHand(.whitepoint, pinMoved: true)
+            } else if adaptiveEnabled, learningEnabled, habit != nil {
+                learnedNudge(.whitepoint)
             } else if adaptiveEnabled {
                 let clamped = clamp(whitepoint, to: whitepointBand)
-                if clamped != whitepoint { setInternal { whitepoint = clamped } }
+                if clamped != whitepoint { autoWhitepoint = clamped }
                 if let curve = lastCurveWhitepoint {
                     adaptiveWhitepointOffset = clamped - curve
                     pendingAdaptiveWhitepoint = nil
@@ -149,11 +193,40 @@ final class DisplayManager {
         }
     }
 
+    /// Color retained after the grayscale pass. 1 is full color and 0 is grayscale.
+    var saturation: Double {
+        get { SliderPercent.unit(saturationPercent) }
+        set { saturationPercent = SliderPercent.whole(newValue * 100) }
+    }
+
+    private(set) var saturationPercent = 0 {
+        didSet {
+            guard isInitialized, !internalUpdate, oldValue != saturationPercent else { return }
+            if saturationEnabled || isPreviewingSaturation {
+                cancelSaturationTransition()
+                applyToActiveDisplays()
+            }
+            save()
+        }
+    }
+
+    /// Whether the grayscale/color saturation pass is active. The stored slider value is
+    /// retained while this is off so the switch can temporarily reveal full color.
+    var saturationEnabled: Bool = Defaults.saturationEnabled {
+        didSet {
+            guard isInitialized, !internalUpdate else { return }
+            isPreviewingSaturation = false
+            cancelSaturationTransition()
+            applyToActiveDisplays()
+            save()
+        }
+    }
+
     /// True while a tint reaches a display: one is switched on and the tint is neither paused
-    /// nor suspended for an app, or a fade is still running.
+    /// nor hidden by an app's Pause rule, or a fade is still running.
     var isTintShowing: Bool {
         !fadingDisplayIDs.isEmpty || isPauseFading
-            || (!isPaused && suspendedForApp == nil && displays.contains { $0.isEnabled })
+            || (!isPaused && !isPausedForApp && displays.contains { $0.isEnabled })
     }
 
     /// A tint or an inversion is showing.
@@ -169,9 +242,8 @@ final class DisplayManager {
         outputTransition != nil || !fadingDisplayIDs.isEmpty || pauseTransition != nil
     }
     /// Commands report endpoints; the render clock and marker previews are transient frames.
-    var commandTargetOutput: OutputPair {
-        OutputPair(intensity: intensity, whitepoint: whitepoint)
-    }
+    /// The endpoint is what the displays are heading for, an app's Hold or Shift included.
+    var commandTargetOutput: OutputPair { effectiveTarget }
     var commandElevation: Double? {
         guard let coordinate = location.coordinate else { return nil }
         return SolarCalculator.elevation(
@@ -223,16 +295,26 @@ final class DisplayManager {
             } else {
                 animateNextAdaptiveTarget = false
                 stopAdaptiveTracking()
-                // Adaptive-off is a hold, not a mode switch back to an older snapshot.
-                // Commit the exact frame the user was seeing (including a partially
-                // completed two-channel fade) so both sliders, persistence, and gamma stay
-                // in lockstep with no toggle-edge jump.
-                setInternal {
-                    intensity = rendered.intensity
-                    whitepoint = rendered.whitepoint
-                    activePresetIndex = nil
+                if activeAppRule != nil {
+                    // A Hold or Shift is shaping the frame on screen, which is not the model's
+                    // to keep: the model stays on its own target, and the screen eases to the
+                    // rule over Manual, whose limits differ from Auto's.
+                    setInternal {
+                        intensity = SliderPercent.unit(colorPercent)
+                        whitepoint = WhitepointScale.output(percent: Double(whitepointPercent))
+                        activePresetIndex = nil
+                    }
+                    startOutputTransition(from: rendered, to: effectiveTarget)
+                } else {
+                    // Hold the visible frame at the nearest manual slider stops,
+                    // including when Auto was partway through a fade.
+                    setInternal {
+                        intensity = rendered.intensity
+                        whitepoint = rendered.whitepoint
+                        activePresetIndex = nil
+                    }
+                    applyToActiveDisplays()
                 }
-                applyToActiveDisplays()
             }
             save()
         }
@@ -245,6 +327,7 @@ final class DisplayManager {
             let v = clamp(adaptiveMin, to: 0...1)
             if v != adaptiveMin { setInternal { adaptiveMin = v } }
             if v > adaptiveMax { setInternal { adaptiveMax = v } }
+            learningLimitsMovedByHand(.intensity, end: .lower)
             scheduleBandRefresh(.intensity)
         }
     }
@@ -254,6 +337,7 @@ final class DisplayManager {
             let v = clamp(adaptiveMax, to: 0...1)
             if v != adaptiveMax { setInternal { adaptiveMax = v } }
             if v < adaptiveMin { setInternal { adaptiveMin = v } }
+            learningLimitsMovedByHand(.intensity, end: .upper)
             scheduleBandRefresh(.intensity)
         }
     }
@@ -264,6 +348,7 @@ final class DisplayManager {
             let v = clamp(adaptiveWpMin, to: 0.25...1)
             if v != adaptiveWpMin { setInternal { adaptiveWpMin = v } }
             if v > adaptiveWpMax { setInternal { adaptiveWpMax = v } }
+            learningLimitsMovedByHand(.whitepoint, end: .lower)
             scheduleBandRefresh(.whitepoint)
         }
     }
@@ -273,9 +358,18 @@ final class DisplayManager {
             let v = clamp(adaptiveWpMax, to: 0.25...1)
             if v != adaptiveWpMax { setInternal { adaptiveWpMax = v } }
             if v < adaptiveWpMin { setInternal { adaptiveWpMin = v } }
+            learningLimitsMovedByHand(.whitepoint, end: .upper)
             scheduleBandRefresh(.whitepoint)
         }
     }
+    /// "Learn my adjustments": Auto keeps what the user keeps, where in the sun's day they
+    /// set it, and moves the limit flags to where they stay. Off, Auto is exactly as it was.
+    private(set) var learningEnabled = false
+    /// Counts up whenever what has been learned may have changed, for the views that say so.
+    private(set) var learningRevision = 0
+    /// How many earlier states of the learning are kept, newest last: a reset saves one first,
+    /// and `redlight learn restore` brings the newest back.
+    private(set) var learningBackupCount = 0
     private(set) var adaptiveStatusText: String = ""
     private(set) var nextSolarEventText: String?
     /// Last known location, set while adaptive resolves it — drives the sun-arc graphic.
@@ -325,6 +419,8 @@ final class DisplayManager {
     var isWhitepointPinned: Bool { adaptiveWpMin == adaptiveWpMax }
 
     var adaptiveIntensityAdjustment: Double { adaptiveIntensityOffset }
+    /// The same for the white point, in its output units.
+    var adaptiveWhitepointAdjustment: Double { adaptiveWhitepointOffset }
 
     // MARK: - Slider writes
 
@@ -337,7 +433,15 @@ final class DisplayManager {
     /// is left to `intensity`'s own rule, which moves the pin with the value.
     func setIntensityPushingBand(_ value: Double) {
         guard value.isFinite else { return }
-        let v = clamp(value, to: 0...1)
+        let v = SliderPercent.unit(SliderPercent.whole(value * 100))
+        if adaptiveEnabled, learningEnabled, habit != nil, !isIntensityPinned {
+            // Learning decides what a push past a flag does, after it has put back the
+            // state from before the gesture: see `learnedNudge`.
+            sliderWriteInFlight = true
+            defer { sliderWriteInFlight = false }
+            intensity = v
+            return
+        }
         if adaptiveEnabled, !isIntensityPinned, !intensityBand.contains(v) {
             setInternal {
                 if v > adaptiveMax { adaptiveMax = v } else { adaptiveMin = v }
@@ -350,7 +454,13 @@ final class DisplayManager {
     /// The same for the white point slider, over 0.25…1.
     func setWhitepointPushingBand(_ value: Double) {
         guard value.isFinite else { return }
-        let v = clamp(value, to: 0.25...1)
+        let v = WhitepointScale.output(percent: Double(SliderPercent.whole(WhitepointScale.percent(value))))
+        if adaptiveEnabled, learningEnabled, habit != nil, !isWhitepointPinned {
+            sliderWriteInFlight = true
+            defer { sliderWriteInFlight = false }
+            whitepoint = v
+            return
+        }
         if adaptiveEnabled, !isWhitepointPinned, !whitepointBand.contains(v) {
             setInternal {
                 if v > adaptiveWpMax { adaptiveWpMax = v } else { adaptiveWpMin = v }
@@ -432,6 +542,90 @@ final class DisplayManager {
         return clamp(curve.intensity + adaptiveIntensityOffset, to: intensityBand)
     }
 
+    /// Everything the day's tint depends on besides the sun. Equal inputs give an equal
+    /// `autoTintTrack`, so the sun arc works one out only when these change.
+    struct AutoTintInputs: Equatable {
+        var enabled: Bool
+        var intensityMin: Double
+        var intensityMax: Double
+        var offset: Double
+        var whitepointMin: Double
+        var whitepointMax: Double
+        var whitepointOffset: Double
+        var bedtime: Bedtime?
+        var wakeTime: Bedtime?
+        var presets: [Preset]
+        var learning: Bool
+        var learningRevision: Int
+        var latitude: Double?
+        var longitude: Double?
+    }
+
+    var autoTintInputs: AutoTintInputs {
+        AutoTintInputs(
+            enabled: adaptiveEnabled, intensityMin: adaptiveMin, intensityMax: adaptiveMax,
+            offset: adaptiveIntensityOffset, whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax,
+            whitepointOffset: adaptiveWhitepointOffset, bedtime: bedtime, wakeTime: wakeTime, presets: presets,
+            learning: learningEnabled, learningRevision: learningRevision,
+            latitude: coordinate?.latitude, longitude: coordinate?.longitude)
+    }
+
+    /// What Auto will show at one sample of the day: the colour temp, 0…1, and the white point
+    /// in its output units, 0.25…1.
+    struct AutoTint: Equatable {
+        var intensity: Double
+        var whitepoint: Double
+    }
+
+    /// What Auto will show at each sample of a day: the curve with the bedtime floor and the
+    /// wake-time lift, the user's offset or what was learned around that part of the day, and
+    /// the flags, for both sliders. Nil when Auto is off or has no location.
+    func autoTintTrack(for samples: [SunCycle.Sample]) -> [AutoTint]? {
+        guard adaptiveEnabled, let first = samples.first, let coord = location.coordinate else { return nil }
+        // The sun's part is worked out once for a day and place: a slider drag asks for a new
+        // track on every event, and only the limits and offsets have changed.
+        let key = TintFrameKey(
+            first: first.date, count: samples.count, latitude: coord.latitude, longitude: coord.longitude,
+            bedtime: bedtime, wakeTime: wakeTime)
+        let moments: [SolarMoment]
+        if let tintFrame, tintFrame.key == key {
+            moments = tintFrame.moments
+        } else {
+            moments = samples.map { sample in
+                let minElevation = SolarCalculator.elevationAtSolarMidnight(
+                    at: sample.date, latitude: coord.latitude, longitude: coord.longitude)
+                let maxElevation = SolarCalculator.elevationAtSolarNoon(
+                    at: sample.date, latitude: coord.latitude, longitude: coord.longitude)
+                return SolarMoment(
+                    elevation: sample.elevation, minElevation: minElevation, maxElevation: maxElevation,
+                    rising: sample.rising,
+                    weights: BedtimeRamp.weights(at: sample.date, bedtime: bedtime, wake: wakeTime,
+                                                 longitude: coord.longitude, calendar: calendar),
+                    phase: SolarCurve.phase(elevation: sample.elevation, minElevation: minElevation,
+                                            maxElevation: maxElevation, rising: sample.rising))
+            }
+            tintFrame = (key, moments)
+        }
+        let color = learningEnabled ? habit?.color : nil
+        let white = learningEnabled ? habit?.whitepoint : nil
+        let colorScale = scalingBand(.intensity), whiteScale = scalingBand(.whitepoint)
+        return moments.map { moment in
+            let curve = AdaptiveMapping.target(
+                elevation: moment.elevation, minElevation: moment.minElevation,
+                maxElevation: moment.maxElevation, rising: moment.rising, presets: presets,
+                intensityMin: colorScale.lowerBound, intensityMax: colorScale.upperBound,
+                whitepointMin: whiteScale.lowerBound, whitepointMax: whiteScale.upperBound, bedtime: moment.weights)
+            // As `resolveAdaptiveTarget` and `resolveLearnedTarget` work out the live target.
+            let intensity = color.map { clamp($0.output(curve: curve.intensity, phase: moment.phase), to: 0...1) }
+                ?? clamp(curve.intensity + adaptiveIntensityOffset, to: intensityBand)
+            let whitepoint = white.map {
+                clamp(toOutput($0.output(curve: toModel(curve.whitepoint, .whitepoint), phase: moment.phase), .whitepoint),
+                      to: 0.25...1)
+            } ?? clamp(curve.whitepoint + adaptiveWhitepointOffset, to: whitepointBand)
+            return AutoTint(intensity: intensity, whitepoint: whitepoint)
+        }
+    }
+
     /// The one banded curve, bedtime floor and wake-time lift included, behind the live
     /// target, the sun arc and the Save to Preset rebase.
     private func adaptiveCurve(
@@ -442,11 +636,15 @@ final class DisplayManager {
             BedtimeRamp.weights(at: $0.date, bedtime: bedtime, wake: wakeTime,
                                 longitude: $0.longitude, calendar: calendar)
         } ?? .inactive
+        // With learning on the curve is scaled into the limits as last set by hand; the
+        // flags, which learning may have moved inside them, only clamp what is shown.
+        let intensityScale = scalingBand(.intensity), whitepointScale = scalingBand(.whitepoint)
         return AdaptiveMapping.target(
             elevation: elevation, minElevation: minElevation, maxElevation: maxElevation,
             rising: rising, presets: presets,
-            intensityMin: adaptiveMin, intensityMax: adaptiveMax,
-            whitepointMin: adaptiveWpMin, whitepointMax: adaptiveWpMax, bedtime: weights
+            intensityMin: intensityScale.lowerBound, intensityMax: intensityScale.upperBound,
+            whitepointMin: whitepointScale.lowerBound, whitepointMax: whitepointScale.upperBound,
+            bedtime: weights
         )
     }
 
@@ -468,15 +666,20 @@ final class DisplayManager {
         }
 
         let transitionChannels: Set<OutputChannel>
+        let duration: TimeInterval
         if animateNextAdaptiveTarget || explicitStart != nil {
             transitionChannels = [.intensity, .whitepoint]
+            duration = adaptiveTransitionDuration
         } else {
+            // A fade already running is retargeted at its own pace: a switch between apps
+            // stays a short one.
             transitionChannels = outputTransition?.channels ?? []
+            duration = outputTransition?.duration ?? adaptiveTransitionDuration
         }
 
-        if !transitionChannels.isEmpty {
+        if !transitionChannels.isEmpty || transitionSaturationValue != nil {
             animateNextAdaptiveTarget = false
-            startOutputTransition(from: rendered, to: target, channels: transitionChannels)
+            startOutputTransition(from: rendered, to: effectiveTarget, channels: transitionChannels, duration: duration)
         } else {
             cancelOutputTransition()
             applyToActiveDisplays()
@@ -505,10 +708,12 @@ final class DisplayManager {
         }
         if coordinate == nil || coordinate! != coord { coordinate = coord }   // avoid spurious invalidation
 
-        let (elev, rising) = SolarCalculator.position(
+        let solar = SolarCalculator.positionAndBounds(
             at: date, latitude: coord.latitude, longitude: coord.longitude)
-        let minElev = SolarCalculator.elevationAtSolarMidnight(at: date, latitude: coord.latitude, longitude: coord.longitude)
-        let maxElev = SolarCalculator.elevationAtSolarNoon(at: date, latitude: coord.latitude, longitude: coord.longitude)
+        let elev = solar.elevation
+        let rising = solar.rising
+        let minElev = solar.minElevation
+        let maxElev = solar.maxElevation
         // Morning and evening curves differ above the horizon. They meet at solar noon and
         // midnight everywhere but within a few degrees of the poles; fade across the switch
         // so that what is left of a step there is never a jump.
@@ -517,6 +722,15 @@ final class DisplayManager {
         let banded = adaptiveCurve(
             elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising,
             time: (date: date, longitude: coord.longitude))
+        if learningEnabled, habit != nil {
+            let moment = SolarMoment(
+                elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising,
+                weights: BedtimeRamp.weights(at: date, bedtime: bedtime, wake: wakeTime,
+                                             longitude: coord.longitude, calendar: calendar),
+                phase: SolarCurve.phase(elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising))
+            lastSolarMoment = moment
+            return resolveLearnedTarget(banded: banded, moment: moment, elevation: elev, date: date, coordinate: coord)
+        }
 
         // If the user moved a slider while Core Location was still resolving, preserve the
         // requested value and derive its curve-relative offset only now that a real baseline
@@ -541,18 +755,27 @@ final class DisplayManager {
             intensity: clamp(banded.intensity + adaptiveIntensityOffset, to: intensityBand),
             whitepoint: clamp(banded.whitepoint + adaptiveWhitepointOffset, to: whitepointBand))
 
-        let elevationText = Self.formatElevation(elev)
-        // The floor, not the sun, set the curve (before the manual offset).
-        let floored = banded.wake ? " · wake time" : banded.bedtime ? " · bedtime" : ""
         let adjusted = (adaptiveIntensityOffset != 0 || adaptiveWhitepointOffset != 0)
             ? " · adjusted" : ""
+        describeAdaptive(elevation: elev, banded: banded, adjusted: adjusted, date: date, coordinate: coord)
+        return target
+    }
+
+    /// The status line and the countdown for a resolved target. `adjusted` is the suffix that
+    /// says the user's own changes are part of it.
+    private func describeAdaptive(
+        elevation: Double, banded: AdaptiveMapping.Target, adjusted: String, date: Date,
+        coordinate coord: (latitude: Double, longitude: Double)
+    ) {
+        let elevationText = Self.formatElevation(elevation)
+        // The floor, not the sun, set the curve (before the manual offset).
+        let floored = banded.wake ? " · wake time" : banded.bedtime ? " · bedtime" : ""
         let source = location.manualCoordinate != nil ? " · manual"
             : location.isApproximate ? " · time zone"
             : location.authorization == .denied ? " · last known" : ""
         let status = "Following the sun · \(elevationText)\(floored)\(adjusted)\(source)"
         if status != adaptiveStatusText { adaptiveStatusText = status }   // avoid 5 s-tick invalidation
         updateNextSolarEvent(at: date, coordinate: coord)
-        return target
     }
 
     /// Keep the popover countdown current from the cached event. The scan behind it is ~720
@@ -608,7 +831,10 @@ final class DisplayManager {
     private func startAdaptiveTimer() {
         adaptiveTimer?.invalidate()
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyAdaptive() }
+            MainActor.assumeIsolated {
+                self?.applyAdaptive()
+                self?.learningTick()
+            }
         }
         // The sun moves ~0.004°/s; a second of slack lets the kernel coalesce this wake-up
         // with others instead of firing on its own, which matters for a resident app.
@@ -629,6 +855,10 @@ final class DisplayManager {
         lastCurveWhitepoint = nil
         lastLocationRequest = nil
         lastAdaptiveRising = nil
+        lastSolarMoment = nil
+        lastLearningTick = nil
+        habit?.color.dropGesture()
+        habit?.whitepoint.dropGesture()
         adaptiveStatusText = ""
         solarEventCache = nil
         if nextSolarEventText != nil { nextSolarEventText = nil }
@@ -655,13 +885,15 @@ final class DisplayManager {
     /// Adaptive off the offset still counts: it comes back the next time Adaptive is on.
     var intensityIsDefault: Bool {
         guard adaptiveMin == Defaults.intensityMin, adaptiveMax == Defaults.intensityMax,
-              adaptiveIntensityOffset == 0, pendingAdaptiveIntensity == nil else { return false }
+              adaptiveIntensityOffset == 0, pendingAdaptiveIntensity == nil,
+              !hasLearned(.intensity) else { return false }
         return adaptiveEnabled || intensity == Defaults.intensity
     }
 
     var whitepointIsDefault: Bool {
         guard adaptiveWpMin == Defaults.whitepointMin, adaptiveWpMax == Defaults.whitepointMax,
-              adaptiveWhitepointOffset == 0, pendingAdaptiveWhitepoint == nil else { return false }
+              adaptiveWhitepointOffset == 0, pendingAdaptiveWhitepoint == nil,
+              !hasLearned(.whitepoint) else { return false }
         return adaptiveEnabled || whitepoint == Defaults.whitepoint
     }
 
@@ -670,11 +902,13 @@ final class DisplayManager {
     var intensityAutoSettingsAreDefault: Bool {
         adaptiveMin == Defaults.intensityMin && adaptiveMax == Defaults.intensityMax
             && adaptiveIntensityOffset == 0 && pendingAdaptiveIntensity == nil
+            && !hasLearned(.intensity)
     }
 
     var whitepointAutoSettingsAreDefault: Bool {
         adaptiveWpMin == Defaults.whitepointMin && adaptiveWpMax == Defaults.whitepointMax
             && adaptiveWhitepointOffset == 0 && pendingAdaptiveWhitepoint == nil
+            && !hasLearned(.whitepoint)
     }
 
     /// Restore Intensity to factory settings: the band back to its full default range, any
@@ -689,6 +923,7 @@ final class DisplayManager {
             pendingAdaptiveIntensity = nil
             intensity = Defaults.intensity
         }
+        forgetLearning(.intensity)
         finishReset()
     }
 
@@ -703,6 +938,7 @@ final class DisplayManager {
             pendingAdaptiveWhitepoint = nil
             whitepoint = Defaults.whitepoint
         }
+        forgetLearning(.whitepoint)
         finishReset()
     }
 
@@ -759,11 +995,18 @@ final class DisplayManager {
     @ObservationIgnored nonisolated(unsafe) private var screenObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var clockObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var pauseTimer: Timer?
-    /// Fraction of the tint shown: 1 normally, 0 while paused, peeking or suspended for an app.
-    /// Invert is not scaled.
+    /// Fraction of the tint shown: 1 normally, 0 while paused, peeking or in an app with a
+    /// Pause rule. Invert is not scaled.
     @ObservationIgnored private var pauseLevel: Double = 1
     @ObservationIgnored private var pauseTransition: PauseTransition?
-    @ObservationIgnored private var isPeeking = false
+    /// The frame on screen when an app's Pause rule started hiding it, kept until the pause
+    /// level's fade is over: the tint fades out as it was rather than through the output
+    /// behind it.
+    @ObservationIgnored private var heldOutput: OutputPair?
+    // Observed so the popover's pause button can show the peek; it changes only as a peek
+    // starts or ends.
+    private var peekSources: Set<PeekSource> = []
+    var isPeeking: Bool { !peekSources.isEmpty }
     // Observable only at fade boundaries, like `fadingDisplayIDs`, for the tray icon.
     private var isPauseFading = false
     @ObservationIgnored private var adaptiveIntensityOffset: Double = 0
@@ -776,9 +1019,11 @@ final class DisplayManager {
     // through `shownIntensity` and `shownWhitepoint`, so they are written only on a change.
     private var previewIntensityValue: Double?
     private var previewWhitepointValue: Double?
+    @ObservationIgnored private var isPreviewingSaturation = false
     // Transient rendered-output overrides used by the Adaptive and preset crossfades.
     @ObservationIgnored private var transitionIntensityValue: Double?
     @ObservationIgnored private var transitionWhitepointValue: Double?
+    @ObservationIgnored private var transitionSaturationValue: Double?
     @ObservationIgnored private var outputTransition: OutputTransition?
     @ObservationIgnored private var shutdownOutput: OutputPair?
     @ObservationIgnored private var shutdownDisplayAmounts: [CGDirectDisplayID: Double] = [:]
@@ -791,6 +1036,27 @@ final class DisplayManager {
     @ObservationIgnored private var lastCurveWhitepoint: Double?
     @ObservationIgnored private var lastLocationRequest: Date?
     @ObservationIgnored private var lastAdaptiveRising: Bool?
+    /// What has been learned. Kept while the switch is off, for the next time it is on.
+    @ObservationIgnored private var habit: HabitModel?
+    @ObservationIgnored private let presence: PresenceMonitoring
+    /// The sun as the last resolved target saw it: what a nudge is measured against.
+    @ObservationIgnored private var lastSolarMoment: SolarMoment?
+    /// The sun at each sample of the day the arc last drew, for `autoTintTrack`.
+    @ObservationIgnored private var tintFrame: (key: TintFrameKey, moments: [SolarMoment])?
+    @ObservationIgnored private var lastLearningTick: Date?
+    /// True while the popover's slider is writing: only it may push a flag.
+    @ObservationIgnored private var sliderWriteInFlight = false
+    /// Whether each channel's last nudge came from the popover's slider.
+    @ObservationIgnored private var lastNudgeFromSlider: [OutputChannel: Bool] = [:]
+    /// Ends whose learned flag a limit change just folded into the hand band, until the band
+    /// change is flushed: setting one of them in the same change still sets a learned flag.
+    @ObservationIgnored private var foldedLearnedEnds: [OutputChannel: Set<HabitModel.End>] = [:]
+    @ObservationIgnored private var lastSavedHabit: Data?
+    /// `uptime` at the last save.
+    @ObservationIgnored private var lastHabitSave: TimeInterval?
+    /// The saved learning is from a newer version: it is never written this session.
+    @ObservationIgnored private var keepsNewerHabit = false
+    @ObservationIgnored nonisolated(unsafe) private var habitSaveTimer: Timer?
     @ObservationIgnored private var solarEventCache: SolarEventCache?
     @ObservationIgnored private var hasActivatedForLocationPrompt = false
     // Presets rarely change; skip re-encoding them on every slider-driven save.
@@ -801,7 +1067,10 @@ final class DisplayManager {
     @ObservationIgnored private let adaptiveTransitionDuration: TimeInterval
     @ObservationIgnored private let displayTransitionDuration: TimeInterval
     @ObservationIgnored private let peekTransitionDuration: TimeInterval
+    @ObservationIgnored private let appRuleTransitionDuration: TimeInterval
     @ObservationIgnored private let transitionUptime: () -> TimeInterval
+    /// Real time, which a test's clock does not move: how often dwell alone is saved.
+    @ObservationIgnored private let uptime: () -> TimeInterval
 
     init(
         gamma: GammaControlling = DisplayFilterController(),
@@ -823,8 +1092,11 @@ final class DisplayManager {
         adaptiveTransitionDuration: TimeInterval = Defaults.adaptiveFadeDuration,
         displayTransitionDuration: TimeInterval = Defaults.displayFadeDuration,
         peekTransitionDuration: TimeInterval = Defaults.peekFadeDuration,
+        appRuleTransitionDuration: TimeInterval = Defaults.appRuleFadeDuration,
         transitionUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-        suspendedForApp: String? = nil,
+        activeApp: ActiveApp? = nil,
+        presence: PresenceMonitoring? = nil,
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         locationPromptActivation: @escaping () -> Void = { NSApplication.shared.activate() },
         controlDefaults: UserDefaults? = nil,
         onMasterStateChange: @escaping (Bool) -> Void = { _ in }
@@ -843,19 +1115,34 @@ final class DisplayManager {
         self.locationPromptActivation = locationPromptActivation
         self.location = location
         self.manualLocation = location.manualCoordinate
+        self.presence = presence ?? SystemPresence()
         self.now = now
         self.calendar = calendar
         self.nextSolarEvent = nextSolarEvent
         self.adaptiveTransitionDuration = max(0, adaptiveTransitionDuration)
         self.displayTransitionDuration = max(0, displayTransitionDuration)
         self.peekTransitionDuration = max(0, peekTransitionDuration)
+        self.appRuleTransitionDuration = max(0, appRuleTransitionDuration)
         self.transitionUptime = transitionUptime
+        self.uptime = uptime
         // Clamp on load: a hand-edited or corrupt plist must not put the thumb off the
         // track or send >1 into the gamma composer. (Bands are normalized below.)
-        self.intensity = Self.loadClamped(
-            defaults, "redlight.intensity", default: Defaults.intensity, range: 0...1)
-        self.whitepoint = Self.loadClamped(
-            defaults, "redlight.whitepoint", default: Defaults.whitepoint, range: 0.25...1)
+        func savedPercent(_ key: String, legacy: String, whitepoint: Bool = false) -> Int? {
+            if let value = Self.loadOptionalClamped(defaults, key, range: 0...100) {
+                return SliderPercent.whole(value)
+            }
+            let range = whitepoint ? WhitepointScale.output : 0...1
+            guard let old = Self.loadOptionalClamped(defaults, legacy, range: range) else { return nil }
+            let percent = SliderPercent.whole(whitepoint ? WhitepointScale.percent(old) : old * 100)
+            defaults.set(percent, forKey: key)
+            return percent
+        }
+        manualColorPercent = savedPercent("redlight.colorPercent", legacy: "redlight.intensity") ?? 100
+        manualWhitepointPercent = savedPercent("redlight.whitepointPercent", legacy: "redlight.whitepoint", whitepoint: true) ?? 100
+        let legacySaturation = Self.loadOptionalClamped(defaults, "redlight.saturation", range: 0...1)
+        saturationPercent = savedPercent("redlight.saturationPercent", legacy: "redlight.saturation") ?? 0
+        saturationEnabled = defaults.object(forKey: "redlight.saturationEnabled") as? Bool
+            ?? (legacySaturation.map { $0 < 1 } ?? false)
         self.adaptiveEnabled = defaults.bool(forKey: "redlight.adaptiveEnabled")
         // Offsets span at most the full slider range; a NaN would poison every target.
         self.adaptiveIntensityOffset = Self.loadClamped(
@@ -882,14 +1169,16 @@ final class DisplayManager {
         self.wakeTime = (defaults.object(forKey: "redlight.adaptiveWakeTime") as? Int)
             .flatMap { Bedtime(minuteOfDay: $0) }
         loadPresets()
+        loadLearning()
         if adaptiveEnabled { activePresetIndex = nil }
         refreshDisplays(apply: false)
         loadPause()
-        // The app in front at launch is known before the first frame, so a chosen one starts
-        // hidden like a saved pause instead of fading in and straight back out.
-        if let suspendedForApp {
-            self.suspendedForApp = suspendedForApp
-            pauseLevel = 0
+        // The app in front at launch is known before the first frame, so its rule applies
+        // from the start: a Pause starts hidden like a saved pause instead of fading in and
+        // straight back out, and a Hold or Shift is the first thing shown.
+        if let activeApp {
+            self.activeApp = activeApp
+            if activeApp.rule == .pause { pauseLevel = 0 }
         }
         startListening()
         isInitialized = true
@@ -902,11 +1191,15 @@ final class DisplayManager {
             if location.coordinate == nil {
                 applyToActiveDisplays()
             }
+            // A day that ended while the app was not running closes before the first frame.
+            closeLearningDayIfDue()
             applyAdaptive()
             startAdaptiveTimer()
         } else {
             applyToActiveDisplays()
         }
+        self.presence.onAway = { [weak self] in self?.presenceWentAway() }
+        self.presence.onReturn = { [weak self] in self?.presenceReturned() }
         // Subscribe only after the launch target is on screen. Core Location can hand back
         // its last known fix from inside the request above; fading to it would start from
         // the persisted pair, which may be hours old, during the launch fade-in. The
@@ -928,6 +1221,7 @@ final class DisplayManager {
     deinit {
         adaptiveTimer?.invalidate()
         bandRefreshTimer?.invalidate()
+        habitSaveTimer?.invalidate()
         transitionTimer?.invalidate()
         pauseTimer?.invalidate()
         displayRecoveryTimer?.invalidate()
@@ -1257,6 +1551,9 @@ final class DisplayManager {
         bandRefreshTimer?.invalidate()
         bandRefreshTimer = nil
         pendingBandRefreshChannels.removeAll()
+        flushLearning()
+        presence.onAway = nil
+        presence.onReturn = nil
         location.onChange = nil
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
@@ -1286,9 +1583,7 @@ final class DisplayManager {
             whitepoint = preset.whitepoint
         }
         activePresetIndex = index
-        startOutputTransition(
-            from: rendered,
-            to: OutputPair(intensity: preset.intensity, whitepoint: preset.whitepoint))
+        startOutputTransition(from: rendered, to: effectiveTarget)
         save()
     }
 
@@ -1298,6 +1593,8 @@ final class DisplayManager {
         let desiredWhitepoint = whitepoint
         presets[index].intensity = desiredIntensity
         presets[index].whitepoint = desiredWhitepoint
+        // The presets are the curve's anchors: what was learned keeps its picture on the new curve.
+        rebaseLearningToPresets()
         if adaptiveEnabled {
             // Bake the live values into the preset, then rebase the manual offsets against
             // the newly shaped curve. Reusing the old offsets would apply the same nudge a
@@ -1313,8 +1610,12 @@ final class DisplayManager {
                 let curve = adaptiveCurve(
                     elevation: elev, minElevation: minElev, maxElevation: maxElev, rising: rising,
                     time: (date: date, longitude: coord.longitude))
-                adaptiveIntensityOffset = desiredIntensity - curve.intensity
-                adaptiveWhitepointOffset = desiredWhitepoint - curve.whitepoint
+                if learningEnabled, habit != nil {
+                    holdLearnedOutput(OutputPair(intensity: desiredIntensity, whitepoint: desiredWhitepoint))
+                } else {
+                    adaptiveIntensityOffset = desiredIntensity - curve.intensity
+                    adaptiveWhitepointOffset = desiredWhitepoint - curve.whitepoint
+                }
             }
             applyAdaptive()
         } else {
@@ -1358,8 +1659,19 @@ final class DisplayManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshPause() }
+            MainActor.assumeIsolated { self?.handleClockChange() }
         }
+    }
+
+    /// The system clock was set. Kept internal so tests can call it without posting the
+    /// notification to every manager.
+    func handleClockChange() {
+        refreshPause()
+        guard learningEnabled, habit != nil else { return }
+        let time = now().timeIntervalSinceReferenceDate
+        habit?.color.clockWasSet(at: time)
+        habit?.whitepoint.clockWasSet(at: time)
+        lastLearningTick = nil
     }
 
     /// Reapply gamma after wake and force a fresh one-shot location request: the laptop may
@@ -1377,6 +1689,10 @@ final class DisplayManager {
         guard adaptiveEnabled else { applyToActiveDisplays(); return }
         requestLocationIfNeeded(at: now(), force: true)
         if location.coordinate == nil { applyToActiveDisplays() }
+        // Nobody has seen the screen since it slept: a learning day that ended meanwhile
+        // closes before the first frame, not in front of whoever woke it.
+        lastLearningTick = nil
+        closeLearningDayIfDue()
         applyAdaptive()
     }
 
@@ -1385,6 +1701,17 @@ final class DisplayManager {
         guard !isTerminating else { return }
         refreshPause()
         refreshDisplays(apply: true, resetCalibration: true)
+        // Nobody has seen the screens since they slept: a learning day that ended meanwhile,
+        // with no tick to close it, closes now, without a fade, as on a wake of the Mac.
+        if learningEnabled, adaptiveEnabled {
+            lastLearningTick = nil
+            if closeLearningDayIfDue() {
+                // The sun turning from evening to morning meanwhile is no reason to fade either.
+                lastAdaptiveRising = nil
+                animateNextAdaptiveTarget = false
+                applyAdaptive()
+            }
+        }
         scheduleDisplayRecovery()
     }
 
@@ -1463,16 +1790,29 @@ final class DisplayManager {
 
     private func currentRenderedOutput() -> OutputPair {
         if let shutdownOutput { return shutdownOutput }
+        if let heldOutput { return heldOutput }
+        let target = effectiveTarget
         return OutputPair(
-            intensity: previewIntensityValue ?? transitionIntensityValue ?? intensity,
-            whitepoint: previewWhitepointValue ?? transitionWhitepointValue ?? whitepoint)
+            intensity: previewIntensityValue ?? transitionIntensityValue ?? target.intensity,
+            whitepoint: previewWhitepointValue ?? transitionWhitepointValue ?? target.whitepoint,
+            saturation: isPreviewingSaturation && activeAppRule?.saturation == nil
+                ? saturation : transitionSaturationValue ?? target.saturation)
     }
 
     private func cancelOutputTransition() {
         outputTransition = nil
         transitionIntensityValue = nil
         transitionWhitepointValue = nil
+        transitionSaturationValue = nil
         stopTransitionTimerIfIdle()
+    }
+
+    private func cancelSaturationTransition() {
+        transitionSaturationValue = nil
+        if outputTransition?.channels.isEmpty == true {
+            outputTransition = nil
+            stopTransitionTimerIfIdle()
+        }
     }
 
     /// Stop only the channel the user took over. The other channel keeps its current rendered
@@ -1484,7 +1824,7 @@ final class DisplayManager {
         }
         guard var transition = outputTransition else { return }
         transition.channels.remove(channel)
-        guard !transition.channels.isEmpty else {
+        guard !transition.channels.isEmpty || transitionSaturationValue != nil else {
             outputTransition = nil
             stopTransitionTimerIfIdle()
             return
@@ -1492,25 +1832,30 @@ final class DisplayManager {
         outputTransition = transition
     }
 
+    /// `to` is a resolved target (`effectiveTarget`), and `from` the frame on screen.
     private func startOutputTransition(
         from: OutputPair,
         to: OutputPair,
-        channels requestedChannels: Set<OutputChannel> = [.intensity, .whitepoint]
+        channels requestedChannels: Set<OutputChannel> = [.intensity, .whitepoint],
+        duration requestedDuration: TimeInterval? = nil
     ) {
         cancelOutputTransition()
+        let duration = requestedDuration ?? adaptiveTransitionDuration
         let channels = requestedChannels.filter { channel in
             switch channel {
             case .intensity: from.intensity != to.intensity
             case .whitepoint: from.whitepoint != to.whitepoint
             }
         }
-        guard adaptiveTransitionDuration > 0, !channels.isEmpty else {
+        let fadesSaturation = from.saturation != to.saturation
+        guard duration > 0, !channels.isEmpty || fadesSaturation else {
             applyToActiveDisplays()
             return
         }
 
         outputTransition = OutputTransition(
-            from: from, to: to, startedAt: transitionUptime(), channels: channels)
+            from: from, to: to, startedAt: transitionUptime(), channels: channels, duration: duration)
+        if fadesSaturation { transitionSaturationValue = from.saturation }
         if channels.contains(.intensity) { transitionIntensityValue = from.intensity }
         if channels.contains(.whitepoint) { transitionWhitepointValue = from.whitepoint }
         applyToActiveDisplays()
@@ -1520,7 +1865,7 @@ final class DisplayManager {
     func tickOutputTransition() {
         guard let transition = outputTransition else { return }
         let elapsed = max(0, transitionUptime() - transition.startedAt)
-        advanceOutputTransition(toProgress: elapsed / adaptiveTransitionDuration)
+        advanceOutputTransition(toProgress: elapsed / transition.duration)
     }
 
     /// Deterministic test hook and the single implementation used by the timer. Smoothstep
@@ -1550,7 +1895,12 @@ final class DisplayManager {
                 mix(transition.from.whitepoint, transition.to.whitepoint), to: 0.25...1)
         }
 
+        if transitionSaturationValue != nil {
+            transitionSaturationValue = mix(transition.from.saturation, transition.to.saturation)
+        }
+
         if progress >= 1 {
+            transitionSaturationValue = nil
             outputTransition = nil
             transitionIntensityValue = nil
             transitionWhitepointValue = nil
@@ -1709,8 +2059,7 @@ final class DisplayManager {
         var outputChanged = false
         if let transition = outputTransition {
             let elapsed = max(0, timestamp - transition.startedAt)
-            outputChanged = updateOutputTransition(
-                toProgress: elapsed / adaptiveTransitionDuration)
+            outputChanged = updateOutputTransition(toProgress: elapsed / transition.duration)
         }
         if updatePauseTransition(at: timestamp) { outputChanged = true }
         applyDisplayTransitionFrame(at: timestamp, applyAll: outputChanged)
@@ -1723,7 +2072,7 @@ final class DisplayManager {
     private func synchronizeTransitionState(at timestamp: TimeInterval) {
         if let transition = outputTransition {
             let elapsed = max(0, timestamp - transition.startedAt)
-            updateOutputTransition(toProgress: elapsed / adaptiveTransitionDuration)
+            updateOutputTransition(toProgress: elapsed / transition.duration)
         }
         if !displayTransitions.isEmpty {
             for display in displays { updateDisplayTransition(display.id, at: timestamp) }
@@ -1754,6 +2103,140 @@ final class DisplayManager {
         progress * progress * (3 - 2 * progress)
     }
 
+    // MARK: - Effective output
+
+    /// The one place that decides what the displays show for the model's target, in this
+    /// order:
+    ///
+    /// 1. The global target: Auto (the curve, learning) or Manual. A rule never changes it.
+    /// 2. The app rule: a Hold replaces both channels; a Shift adds slider percent.
+    /// 3. Limits: in Auto a Shift stays inside Auto's flags, and a Fixed channel takes none;
+    ///    a Hold is held only to each channel's own range.
+    ///
+    /// Tint visibility comes last and is not here: a pause, a peek and an app's Pause rule
+    /// scale whatever this gives down to nothing (`pauseLevel`), so a peek always shows the
+    /// untinted screen. Every display write, the status target, the sliders and wake
+    /// recovery read it, through `effectiveTarget` and `currentRenderedOutput`.
+    func resolvedOutput(_ target: OutputPair, rule: AppRule?) -> OutputPair {
+        switch rule {
+        case nil, .pause?:
+            return target
+        case .hold(let color, let whitepoint, let level)?:
+            return OutputPair(intensity: SliderPercent.unit(color),
+                              whitepoint: WhitepointScale.output(percent: Double(whitepoint)),
+                              saturation: level.map(SliderPercent.unit) ?? target.saturation)
+        case .shift(let color, let whitepoint, let delta)?:
+            return OutputPair(intensity: shifted(target.intensity, by: Double(color), .intensity),
+                              whitepoint: shifted(target.whitepoint, by: Double(whitepoint), .whitepoint),
+                              saturation: clamp(target.saturation + SliderPercent.unit(delta ?? 0), to: 0...1))
+        }
+    }
+
+    private var globalOutput: OutputPair {
+        OutputPair(intensity: intensity, whitepoint: whitepoint, saturation: saturationEnabled ? saturation : 1)
+    }
+
+    /// The per-app control parks at 100% while the rule follows global saturation.
+    func appSaturationPercent(_ rule: AppRule) -> Int {
+        rule.saturation == nil ? 100 : SliderPercent.whole(shownOutput(editing: rule).saturation * 100)
+    }
+
+    func rule(_ rule: AppRule, showingSaturation level: Double) -> AppRule {
+        guard level.isFinite else { return rule }
+        let percent = SliderPercent.whole(level * 100)
+        if percent == 100 { return rule.withSaturation(nil) }
+        let base = saturationEnabled ? saturationPercent : 100
+        return rule.withSaturation(rule.kind == .shift ? percent - base : percent)
+    }
+
+    /// What the displays are heading for: the model's target under the app in front's rule.
+    var effectiveTarget: OutputPair {
+        resolvedOutput(globalOutput, rule: activeAppRule)
+    }
+
+    /// The sliders' values while they edit `rule`, or the model's own for none.
+    func shownOutput(editing rule: AppRule?) -> OutputPair {
+        resolvedOutput(globalOutput, rule: Self.outputRule(rule))
+    }
+
+    /// `rule` changed so that `channel` shows `value`, in output units: a slider dragged while
+    /// it edits the rule. A Hold takes the value. A Shift takes the amount that puts the value
+    /// there, inside Auto's flags in Auto, and stays as it is on a Fixed channel.
+    ///
+    /// A rule that would show what `rule` already shows is `rule` itself: a Shift held at a
+    /// limit keeps its saved amount through a step or a tap at the limit.
+    func rule(_ rule: AppRule, showing value: Double, on channel: CommandChannel) -> AppRule {
+        guard value.isFinite else { return rule }
+        let output: OutputChannel = channel == .color ? .intensity : .whitepoint
+        let range: ClosedRange<Double> = output == .intensity ? 0...1 : 0.25...1
+        let next: AppRule
+        switch rule {
+        case .pause:
+            return rule
+        case .hold:
+            next = rule.with(channel, SliderPercent.whole(toModel(clamp(value, to: range), output) * 100))
+        case .shift:
+            if adaptiveEnabled, isPinned(output) { return rule }
+            let model = output == .intensity ? intensity : whitepoint
+            let shown = clamp(value, to: adaptiveEnabled ? shiftBand(output, around: model) : range)
+            let current = shownOutput(editing: rule)
+            let currentValue = output == .intensity ? current.intensity : current.whitepoint
+            let percent = SliderPercent.whole(toModel(shown, output) * 100)
+            if percent == SliderPercent.whole(toModel(currentValue, output) * 100) { return rule }
+            next = rule.with(channel, percent - SliderPercent.whole(toModel(model, output) * 100))
+        }
+        func shown(_ rule: AppRule) -> Double {
+            let pair = shownOutput(editing: rule)
+            return output == .intensity ? pair.intensity : pair.whitepoint
+        }
+        // The white point's round trip through slider percent is not bit-exact.
+        return abs(shown(next) - shown(rule)) < 1e-9 ? rule : next
+    }
+
+    /// `rule` as a rule of `kind` that shows what `rule` shows now, so choosing a kind changes
+    /// the closest whole-percent setting until the user changes an amount.
+    /// In Auto a Shift can only come as near as the flags allow, and on a Fixed channel
+    /// takes nothing.
+    func rule(_ kind: AppRule.Kind, replacing rule: AppRule) -> AppRule {
+        guard kind != rule.kind else { return rule }
+        let start: AppRule
+        switch kind {
+        case .pause: return .pause
+        case .hold: start = .hold(color: 0, whitepoint: 0)
+        case .shift: start = .shift(color: 0, whitepoint: 0)
+        }
+        let shown = shownOutput(editing: rule)
+        let color = self.rule(start, showing: shown.intensity, on: .color)
+        let converted = self.rule(color, showing: shown.whitepoint, on: .whitepoint)
+        return rule.saturation == nil ? converted : self.rule(converted, showingSaturation: shown.saturation)
+    }
+
+    /// `rule` stepped so that `channel` shows `percent` more of its slider, or less: a hotkey
+    /// pressed in the app with the rule. Unchanged at a limit.
+    func rule(_ rule: AppRule, steppedBy percent: Double, on channel: CommandChannel) -> AppRule {
+        let output: OutputChannel = channel == .color ? .intensity : .whitepoint
+        let shown = shownOutput(editing: rule)
+        let current = toModel(output == .intensity ? shown.intensity : shown.whitepoint, output) * 100
+        let next = min(100, max(0, current + percent))
+        return self.rule(rule, showing: toOutput(next / 100, output), on: channel)
+    }
+
+    /// A Shift's amount in slider percent added to `value`, in output units.
+    private func shifted(_ value: Double, by percent: Double, _ channel: OutputChannel) -> Double {
+        // A Fixed channel is a value the user set; a shift would move it off.
+        if adaptiveEnabled, isPinned(channel) { return value }
+        let range: ClosedRange<Double> = channel == .intensity ? 0...1 : 0.25...1
+        let moved = clamp(toOutput(toModel(value, channel) + percent / 100, channel), to: range)
+        return adaptiveEnabled ? clamp(moved, to: shiftBand(channel, around: value)) : moved
+    }
+
+    /// Auto's flags, as they hold a Shift: a target already past one (a learned value can be)
+    /// keeps its place rather than being pulled back by a shift the other way.
+    private func shiftBand(_ channel: OutputChannel, around value: Double) -> ClosedRange<Double> {
+        let band = flagBand(channel)
+        return min(band.lowerBound, value)...max(band.upperBound, value)
+    }
+
     // MARK: - Apply
 
     private func applyToActiveDisplays() {
@@ -1770,12 +2253,14 @@ final class DisplayManager {
             ?? (display.isEnabled ? 1 : 0))
         let i = Float(1 + (rendered.intensity - 1) * amount)
         let w = Float(1 + (rendered.whitepoint - 1) * amount)
-        if !display.isInverted && i == 1 && w == 1 {
+        let s = Float(1 + (rendered.saturation - 1) * amount)
+        if !display.isInverted && i == 1 && w == 1 && s == 1 {
             // A neutral enabled filter must leave the ColorSync calibration untouched.
             gamma.restore(display.id)
         } else {
-            gamma.applyFilter(to: display.id, intensity: i, whitepoint: w,
-                              invert: display.isInverted)
+            gamma.applyFilter(
+                to: display.id, intensity: i, whitepoint: w,
+                invert: display.isInverted, saturation: s)
         }
     }
 
@@ -1846,7 +2331,7 @@ final class DisplayManager {
 
     private func startPause(until deadline: Date, length: TimeInterval, usesDeadline: Bool) -> Bool {
         guard !isTerminating, isOn else { return false }
-        isPeeking = false
+        peekSources.removeAll()
         pauseLength = length
         pauseUsesDeadline = usesDeadline
         pausedUntil = deadline
@@ -1864,24 +2349,77 @@ final class DisplayManager {
         publishMasterState()
     }
 
-    /// The name of the chosen app in front, which hides the tint (not Invert) like a pause.
-    /// Unlike a pause it is untimed, not saved, and not off: `isOn`, `isFiltering` and the
-    /// published master state ignore it, and turning the master off and on keeps it.
-    private(set) var suspendedForApp: String?
+    /// The app in front with a rule, from `AppRulesController`. A Pause rule hides the tint
+    /// (not Invert) like a pause; unlike one it is untimed, not saved, and not off: `isOn`,
+    /// `isFiltering` and the published master state ignore it, and turning the master off
+    /// and on keeps it. A Hold or Shift changes what is shown (`effectiveTarget`), never
+    /// the model.
+    private(set) var activeApp: ActiveApp?
 
-    /// The level every pause, peek and app suspension edge fades to: 0 while any of them
-    /// hides the tint, so ending one never shows the filter while another still applies.
-    private var pauseTarget: Double {
-        isPaused || isPeeking || suspendedForApp != nil ? 0 : 1
+    /// True while the app in front has a Pause rule.
+    var isPausedForApp: Bool { activeApp?.rule == .pause }
+
+    /// The app in front's Hold or Shift, which shapes the output; nil for none or a Pause.
+    var activeAppRule: AppRule? { Self.outputRule(activeApp?.rule) }
+
+    private static func outputRule(_ rule: AppRule?) -> AppRule? {
+        rule?.shapesOutput == true ? rule : nil
     }
 
-    /// Needs no filter: a suspension that starts while off still applies when turned on.
-    func setSuspendedForApp(_ name: String?) {
-        guard !isTerminating, suspendedForApp != name else { return }
+    /// The level every pause, peek and Pause rule edge fades to: 0 while any of them hides
+    /// the tint, so ending one never shows the filter while another still applies.
+    private var pauseTarget: Double {
+        isPaused || isPeeking || isPausedForApp ? 0 : 1
+    }
+
+    /// Needs no filter: a rule that starts while off still applies when turned on.
+    ///
+    /// Another app's Hold or Shift, or another kind of rule, fades in over
+    /// `appRuleTransitionDuration` from the frame on screen, through the one output
+    /// transition, so a switch in the middle of any fade, or a second switch, carries on
+    /// from what is visible. A new amount for the same app's rule is an edit, and shows at
+    /// once as a slider's does. A switch into an app that pauses keeps the frame on screen
+    /// (`heldOutput`) while the tint fades out.
+    func setActiveApp(_ app: ActiveApp?) {
+        guard !isTerminating, activeApp != app else { return }
+        let rendered = currentRenderedOutput()
         let target = pauseTarget
-        suspendedForApp = name
-        // Switching between two chosen apps, or a pause or peek already hiding the tint,
-        // leaves the level (and any fade in progress) alone.
+        let previous = activeApp
+        let wasHeld = heldOutput != nil
+        activeApp = app
+        heldOutput = nil
+        // Nothing to fade where nothing is tinted: the pause level's own fade reveals it.
+        let isVisible = pauseLevel > 0 && (isOn || !fadingDisplayIDs.isEmpty)
+        let oldRule = Self.outputRule(previous?.rule), newRule = Self.outputRule(app?.rule)
+        if isVisible, pauseTarget == 0, target == 1 || wasHeld {
+            // The tint is going. Fading the output too would pass through the global value on
+            // the way out, a colour neither end shows, so the frame stays as it is until the
+            // pause level's fade has taken it out.
+            cancelOutputTransition()
+            heldOutput = rendered
+        } else if wasHeld || oldRule != newRule {
+            // Out of a held frame is always a switch: the output behind it is another one.
+            let isEdit = !wasHeld && previous?.processID == app?.processID && previous?.bundleID == app?.bundleID
+                && oldRule?.kind == newRule?.kind
+            if isEdit {
+                // Only the amounts that changed show at once; a fade of the other carries on.
+                if oldRule?.saturation != newRule?.saturation { cancelSaturationTransition() }
+                if oldRule?.amount(.color) != newRule?.amount(.color) { cancelOutputTransition(.intensity) }
+                if oldRule?.amount(.whitepoint) != newRule?.amount(.whitepoint) {
+                    cancelOutputTransition(.whitepoint)
+                }
+                applyToActiveDisplays()
+            } else {
+                startOutputTransition(from: rendered, to: effectiveTarget,
+                                      duration: isVisible ? appRuleTransitionDuration : 0)
+            }
+        }
+        updatePauseLevelForApp(previousTarget: target)
+    }
+
+    private func updatePauseLevelForApp(previousTarget target: Double) {
+        // Switching between two apps that pause, or a pause or peek already hiding the
+        // tint, leaves the level (and any fade in progress) alone.
         guard pauseTarget != target else { return }
         // Ending it while off, perhaps mid fade-out: fold the hidden level into that fade-out,
         // as `endPauseIntoFadeOut` does, so the tint cannot come back on its way out.
@@ -1902,14 +2440,24 @@ final class DisplayManager {
         startPauseTransition(to: pauseTarget, duration: tinted ? displayTransitionDuration : 0)
     }
 
-    /// Show the unfiltered screen only while a shortcut is held. Does nothing while paused
-    /// or suspended for an app.
+    /// Show the unfiltered screen only while a source is held, whatever the app in front's
+    /// rule. Does nothing visible while paused or in an app with a Pause rule.
     func setPeeking(_ peeking: Bool) {
-        guard !isTerminating, isPeeking != peeking, !peeking || isOn else { return }
+        setPeeking(peeking, source: .shortcut)
+    }
+
+    func setPeeking(_ peeking: Bool, source: PeekSource) {
+        guard !isTerminating, !peeking || isOn else { return }
+        let wasPeeking = isPeeking
         let target = pauseTarget
-        isPeeking = peeking
+        if peeking { peekSources.insert(source) } else { peekSources.remove(source) }
+        guard wasPeeking != isPeeking else { return }
         guard pauseTarget != target else { return }
         startPauseTransition(to: pauseTarget, duration: peekTransitionDuration)
+    }
+
+    func isPeeking(source: PeekSource) -> Bool {
+        peekSources.contains(source)
     }
 
     /// End an expired pause, and cap one that a clock change pushed further out.
@@ -1974,14 +2522,14 @@ final class DisplayManager {
     }
 
     /// Turning the last display off ends a pause. Carry the pause level into each display's
-    /// fade-out so a paused filter does not briefly reappear on its way out. An app
-    /// suspension outlives off, so its level stays at (or keeps fading to) 0 and scales the
+    /// fade-out so a paused filter does not briefly reappear on its way out. An app's Pause
+    /// rule outlives off, so its level stays at (or keeps fading to) 0 and scales the
     /// fade-out as usual; turning on again while the app is in front then stays untinted.
     private func endPauseIntoFadeOut() {
         guard isPaused || isPeeking || pauseLevel < 1 || pauseTransition != nil else { return }
-        if suspendedForApp != nil {
+        if isPausedForApp {
             pausedUntil = nil
-            isPeeking = false
+            peekSources.removeAll()
             persistPause()
             publishMasterState()
             return
@@ -1992,8 +2540,9 @@ final class DisplayManager {
                 ?? (display.isEnabled ? 1 : 0)))
         }
         pausedUntil = nil
-        isPeeking = false
+        peekSources.removeAll()
         pauseTransition = nil
+        heldOutput = nil
         isPauseFading = false
         pauseLevel = 1
         persistPause()
@@ -2006,6 +2555,7 @@ final class DisplayManager {
         pauseTransition = nil
         guard duration > 0, pauseLevel != target else {
             pauseLevel = target
+            heldOutput = nil
             if isPauseFading { isPauseFading = false }
             applyToActiveDisplays()
             stopTransitionTimerIfIdle()
@@ -2030,6 +2580,7 @@ final class DisplayManager {
         pauseLevel = transition.from + (transition.to - transition.from) * Self.smoothstep(progress)
         if progress >= 1 {
             pauseTransition = nil
+            heldOutput = nil
             isPauseFading = false
         }
         return true
@@ -2062,6 +2613,14 @@ final class DisplayManager {
         applyToActiveDisplays()
     }
 
+    /// Bypass the off switch only for the lifetime of a pointer drag.
+    func setSaturationPreview(_ active: Bool) {
+        guard !isTerminating, !saturationEnabled, isPreviewingSaturation != active else { return }
+        isPreviewingSaturation = active
+        cancelSaturationTransition()
+        applyToActiveDisplays()
+    }
+
     /// End any marker preview: flush the coalesced band work so the adaptive value lands
     /// in the (possibly moved) band immediately, then revert the filter to it.
     func endPreview() {
@@ -2078,18 +2637,20 @@ final class DisplayManager {
     /// the views that follow `shownIntensity` are not told of a change that did not happen.
     @discardableResult
     private func clearPreview() -> Bool {
-        let wasPreviewing = previewIntensityValue != nil || previewWhitepointValue != nil
+        let wasPreviewing = previewIntensityValue != nil || previewWhitepointValue != nil || isPreviewingSaturation
+        isPreviewingSaturation = false
         if previewIntensityValue != nil { previewIntensityValue = nil }
         if previewWhitepointValue != nil { previewWhitepointValue = nil }
         return wasPreviewing
     }
 
     /// The colour temp the popover paints with: a limit's value while its flag is dragged,
-    /// as the displays show it, and otherwise the value itself. A crossfade in progress is
-    /// left out: the popover shows where the value is going.
-    var shownIntensity: Double { previewIntensityValue ?? intensity }
+    /// as the displays show it, and otherwise the value the displays are heading for, the
+    /// app in front's rule included. A crossfade in progress is left out: the popover shows
+    /// where the value is going.
+    var shownIntensity: Double { previewIntensityValue ?? effectiveTarget.intensity }
     /// The same for the white point.
-    var shownWhitepoint: Double { previewWhitepointValue ?? whitepoint }
+    var shownWhitepoint: Double { previewWhitepointValue ?? effectiveTarget.whitepoint }
 
     // MARK: - Band change coalescing
 
@@ -2108,6 +2669,7 @@ final class DisplayManager {
     /// Apply any pending band change now: re-clamp the adaptive value into the new band
     /// and persist. Also a test hook for deterministic assertions around the coalescing.
     func flushBandRefresh() {
+        foldedLearnedEnds = [:]
         guard bandRefreshTimer != nil else { return }
         bandRefreshTimer?.invalidate()
         bandRefreshTimer = nil
@@ -2141,13 +2703,803 @@ final class DisplayManager {
             }
         }
         save()
+        // The limits live in the model while learning is on: saved together with their keys.
+        if learningEnabled { flushLearning() }
+    }
+
+    // MARK: - Learning
+
+    /// The sun as one resolved target saw it. A nudge is measured against the curve at this
+    /// moment, as the flat offset always was against `lastCurveIntensity`.
+    private struct SolarMoment {
+        var elevation: Double
+        var minElevation: Double
+        var maxElevation: Double
+        var rising: Bool
+        var weights: BedtimeRamp.Weights
+        var phase: SolarCurve.Phase
+    }
+
+    private struct TintFrameKey: Equatable {
+        var first: Date
+        var count: Int
+        var latitude: Double
+        var longitude: Double
+        var bedtime: Bedtime?
+        var wakeTime: Bedtime?
+    }
+
+    private static let habitKey = "redlight.learning.model"
+    private static let learningLog = Logger(subsystem: "com.redlight.app", category: "learning")
+    /// No input for this long and the time no longer counts as evidence.
+    private static let idleLimit: TimeInterval = 600
+    /// No input for this long, and no video holding the displays awake, and nobody is taken
+    /// to be there: a day may close. Longer than `idleLimit`, as someone reading is still there.
+    private static let closeIdleLimit: TimeInterval = 1800
+    /// A day this far past its end closes even in front of someone, so that days never merge.
+    private static let longestOverrun: TimeInterval = 12 * 3600
+    /// A gap between ticks counts for no more than this.
+    private static let longestTick: TimeInterval = 60
+    /// Dwell alone is written out this often; everything else is written when it changes.
+    private static let dwellSaveInterval: TimeInterval = 600
+
+    // The model works in slider fractions, 0…1. Colour temp is stored that way already; the
+    // white point is stored as its output value, 0.25…1.
+    private func toModel(_ output: Double, _ channel: OutputChannel) -> Double {
+        channel == .intensity ? output : (output - 0.25) / 0.75
+    }
+    private func toOutput(_ model: Double, _ channel: OutputChannel) -> Double {
+        channel == .intensity ? model : 0.25 + model * 0.75
+    }
+    private func toOutputDelta(_ model: Double, _ channel: OutputChannel) -> Double {
+        channel == .intensity ? model : model * 0.75
+    }
+    private func toModel(_ band: ClosedRange<Double>, _ channel: OutputChannel) -> ClosedRange<Double> {
+        toModel(band.lowerBound, channel)...toModel(band.upperBound, channel)
+    }
+
+    private func habitChannel(_ channel: OutputChannel) -> HabitModel.Channel? {
+        channel == .intensity ? habit?.color : habit?.whitepoint
+    }
+    private func setHabitChannel(_ channel: OutputChannel, _ value: HabitModel.Channel) {
+        if channel == .intensity { habit?.color = value } else { habit?.whitepoint = value }
+    }
+    private func flagBand(_ channel: OutputChannel) -> ClosedRange<Double> {
+        channel == .intensity ? intensityBand : whitepointBand
+    }
+    private func isPinned(_ channel: OutputChannel) -> Bool {
+        channel == .intensity ? isIntensityPinned : isWhitepointPinned
+    }
+    private func lastCurve(_ channel: OutputChannel) -> Double? {
+        channel == .intensity ? lastCurveIntensity : lastCurveWhitepoint
+    }
+
+    /// The band the sun curve is scaled into: the limits as last set by hand while learning
+    /// is on, and the flags themselves otherwise.
+    private func scalingBand(_ channel: OutputChannel) -> ClosedRange<Double> {
+        guard learningEnabled, let learned = habitChannel(channel) else { return flagBand(channel) }
+        let hand = learned.handBand
+        return toOutput(hand.lowerBound, channel)...toOutput(hand.upperBound, channel)
+    }
+
+    /// The sun curve's value at each anchor for one channel, in model units, when that
+    /// channel's hand band is `band` (model units).
+    private func habitAnchors(_ channel: OutputChannel, _ band: ClosedRange<Double>) -> [Double] {
+        let lower = toOutput(band.lowerBound, channel), upper = toOutput(band.upperBound, channel)
+        let targets = AdaptiveMapping.anchorTargets(
+            presets: presets,
+            intensityMin: channel == .intensity ? lower : 0, intensityMax: channel == .intensity ? upper : 1,
+            whitepointMin: channel == .whitepoint ? lower : 0.25, whitepointMax: channel == .whitepoint ? upper : 1)
+        return channel == .intensity ? targets.intensity : targets.whitepoint.map { toModel($0, .whitepoint) }
+    }
+
+    /// The sun curve at `moment` for one channel, floor and lift included, in model units,
+    /// when that channel's hand band is `band` (model units).
+    private func habitCurve(_ channel: OutputChannel, _ band: ClosedRange<Double>, at moment: SolarMoment) -> Double {
+        let lower = toOutput(band.lowerBound, channel), upper = toOutput(band.upperBound, channel)
+        let target = AdaptiveMapping.target(
+            elevation: moment.elevation, minElevation: moment.minElevation,
+            maxElevation: moment.maxElevation, rising: moment.rising, presets: presets,
+            intensityMin: channel == .intensity ? lower : 0, intensityMax: channel == .intensity ? upper : 1,
+            whitepointMin: channel == .whitepoint ? lower : 0.25, whitepointMax: channel == .whitepoint ? upper : 1,
+            bedtime: moment.weights)
+        return channel == .intensity ? target.intensity : toModel(target.whitepoint, .whitepoint)
+    }
+
+    /// While learning is on the model holds the flags and the flat offset. This writes them
+    /// to the properties the rest of the app reads, and saves under their usual keys.
+    private func syncFromHabit(_ channel: OutputChannel) {
+        guard let learned = habitChannel(channel) else { return }
+        let range: ClosedRange<Double> = channel == .intensity ? 0...1 : 0.25...1
+        let lower = clamp(toOutput(learned.flags.lowerBound, channel), to: range)
+        let upper = clamp(toOutput(learned.flags.upperBound, channel), to: range)
+        // Written only on a real change: these are observed, and a round trip through the
+        // white point's scale can differ in the last bit.
+        setInternal {
+            switch channel {
+            case .intensity:
+                if abs(adaptiveMin - lower) > 1e-12 { adaptiveMin = lower }
+                if abs(adaptiveMax - upper) > 1e-12 { adaptiveMax = upper }
+            case .whitepoint:
+                if abs(adaptiveWpMin - lower) > 1e-12 { adaptiveWpMin = lower }
+                if abs(adaptiveWpMax - upper) > 1e-12 { adaptiveWpMax = upper }
+            }
+        }
+        switch channel {
+        case .intensity: adaptiveIntensityOffset = clamp(learned.flat, to: -1...1)
+        case .whitepoint: adaptiveWhitepointOffset = clamp(toOutputDelta(learned.flat, channel), to: -0.75...0.75)
+        }
+    }
+
+    /// True when Reset beside a slider has learning of that channel to forget. A limit set by
+    /// hand alone is not learning: the limits say it.
+    private func hasLearned(_ channel: OutputChannel) -> Bool {
+        // The model is not observed; the revision is, so the row hears of a close or a reset.
+        _ = learningRevision
+        return learningEnabled && (habitChannel(channel)?.learnedAnchors ?? 0) > 0
+    }
+
+    private func freshHabit() -> HabitModel {
+        func fresh(_ channel: OutputChannel, offset: Double) -> HabitModel.Channel {
+            let band = toModel(flagBand(channel), channel)
+            return HabitModel.Channel(band: band, flat: offset, base: habitAnchors(channel, band))
+        }
+        return HabitModel(
+            color: fresh(.intensity, offset: adaptiveIntensityOffset),
+            whitepoint: fresh(.whitepoint, offset: adaptiveWhitepointOffset / 0.75),
+            dayStart: HabitDay.start(containing: now(), calendar: calendar))
+    }
+
+    // MARK: Learning: nudges and limits
+
+    /// A value set by hand in Auto while learning is on: the popover's slider, the command
+    /// line, a hotkey or a Shortcut. The model places it on the anchors around the sun; the
+    /// screen lands on the value, inside the flags.
+    private func learnedNudge(_ channel: OutputChannel) {
+        let requested = channel == .intensity ? intensity : whitepoint
+        let slider = sliderWriteInFlight
+        guard let moment = lastSolarMoment, lastCurve(channel) != nil,
+              var learned = habitChannel(channel) else {
+            // No curve yet, as before a first location. A slider past a flag moves the flag
+            // by hand, as it does without learning, and the value waits for the curve.
+            if slider, !flagBand(channel).contains(requested) {
+                setInternal {
+                    switch channel {
+                    case .intensity: if requested > adaptiveMax { adaptiveMax = requested } else { adaptiveMin = requested }
+                    case .whitepoint: if requested > adaptiveWpMax { adaptiveWpMax = requested } else { adaptiveWpMin = requested }
+                    }
+                }
+                learningLimitsMovedByHand(channel)
+            }
+            let held = clamp(requested, to: flagBand(channel))
+            setInternal {
+                switch channel {
+                case .intensity:
+                    if intensity != held { intensity = held }
+                    pendingAdaptiveIntensity = held
+                case .whitepoint:
+                    if whitepoint != held { whitepoint = held }
+                    pendingAdaptiveWhitepoint = held
+                }
+            }
+            return
+        }
+        noteNudgeSource(channel, slider: slider, in: &learned)
+        let flagsBefore = learned.flags
+        learned.write(
+            toModel(requested, channel), slider: slider, phase: moment.phase,
+            at: now().timeIntervalSinceReferenceDate,
+            curve: { self.habitCurve(channel, $0, at: moment) },
+            anchors: { self.habitAnchors(channel, $0) })
+        setHabitChannel(channel, learned)
+        syncFromHabit(channel)
+        // A push may have changed the hand band, and with it the curve the next tick uses.
+        let curve = habitCurve(channel, learned.handBand, at: moment)
+        let shown = toOutput(learned.output(curve: curve, phase: moment.phase), channel)
+        setInternal {
+            switch channel {
+            case .intensity:
+                lastCurveIntensity = toOutput(curve, channel)
+                // The model lands on the value to the last bit or so; keep the value as written.
+                if abs(intensity - shown) > 1e-9 { intensity = shown }
+                pendingAdaptiveIntensity = nil
+            case .whitepoint:
+                lastCurveWhitepoint = toOutput(curve, channel)
+                if abs(whitepoint - shown) > 1e-9 { whitepoint = shown }
+                pendingAdaptiveWhitepoint = nil
+            }
+        }
+        learningRevision += 1
+        // A push moved a flag, and `save()` has already written the flags' keys: save the model
+        // with them, or a crash in between would read the push as a limit set by hand.
+        if learned.flags != flagsBefore { flushLearning() } else { scheduleLearningSave() }
+    }
+
+    /// Writes from one source within the gesture window are one nudge. Only the slider may
+    /// push a flag, so a write from anywhere else would put back the state from before a
+    /// push: it starts a nudge of its own.
+    private func noteNudgeSource(_ channel: OutputChannel, slider: Bool, in learned: inout HabitModel.Channel) {
+        if lastNudgeFromSlider[channel] != slider { learned.dropGesture() }
+        lastNudgeFromSlider[channel] = slider
+    }
+
+    /// A flag dragged, `redlight limits`, or a Fixed value moved: the limits are the user's
+    /// again. Learned flags fold into the hand band, the curve scales into the new limits as
+    /// it does without learning, and the end that moved stands like four accepted days.
+    ///
+    /// `pinMoved` is a Fixed value changed by its slider, which drops Auto's offset for the
+    /// channel as it does without learning.
+    ///
+    /// `end` is the limit that was set, when one was. Set where its learned flag already is,
+    /// it is still a hand move: the user has chosen that limit.
+    private func learningLimitsMovedByHand(
+        _ channel: OutputChannel, end: HabitModel.End? = nil, pinMoved: Bool = false
+    ) {
+        guard learningEnabled, var learned = habitChannel(channel) else { return }
+        let flags = learned.flags
+        let band = bandForModel(channel, keeping: flags)
+        // `redlight limits` sets one end after the other, and the first folds every learned
+        // flag into the hand band: the second end was on a learned flag all the same.
+        let setAtFlag = end.flatMap {
+            learned.hasLearnedFlag($0) || foldedLearnedEnds[channel, default: []].contains($0) ? $0 : nil
+        }
+        if band != flags || setAtFlag != nil {
+            // Only a named end is half of `redlight limits`; a push before there is a curve is not.
+            for other in [HabitModel.End.lower, .upper]
+            where end != nil && other != end && learned.hasLearnedFlag(other) {
+                foldedLearnedEnds[channel, default: []].insert(other)
+            }
+            if let setAtFlag { foldedLearnedEnds[channel]?.remove(setAtFlag) }
+            learned.setHandBand(band, setAt: setAtFlag, anchors: { self.habitAnchors(channel, $0) })
+        }
+        if pinMoved { learned.setFlat(0) }
+        learned.dropGesture()
+        setHabitChannel(channel, learned)
+        syncFromHabit(channel)
+        learningRevision += 1
+        scheduleLearningSave()
+    }
+
+    /// The flags as they are now, in model units. An end that has not moved from `flags`
+    /// keeps that exact value: the white point's scale does not always round-trip to the
+    /// last bit, and an end that looks moved would lose its anchor's history.
+    private func bandForModel(_ channel: OutputChannel, keeping flags: ClosedRange<Double>) -> ClosedRange<Double> {
+        let band = toModel(flagBand(channel), channel)
+        let lower = abs(band.lowerBound - flags.lowerBound) < 1e-9 ? flags.lowerBound : band.lowerBound
+        let upper = abs(band.upperBound - flags.upperBound) < 1e-9 ? flags.upperBound : band.upperBound
+        return min(lower, upper)...max(lower, upper)
+    }
+
+    /// The learned half of `resolveAdaptiveTarget`: the curve in the hand band, plus the
+    /// offsets of the anchors around the sun, inside the flags.
+    private func resolveLearnedTarget(
+        banded: AdaptiveMapping.Target, moment: SolarMoment, elevation: Double, date: Date,
+        coordinate coord: (latitude: Double, longitude: Double)
+    ) -> OutputPair {
+        lastCurveIntensity = banded.intensity
+        lastCurveWhitepoint = banded.whitepoint
+        // A value set before there was a curve becomes a nudge now that there is one.
+        for channel in [OutputChannel.intensity, .whitepoint] {
+            let pending = channel == .intensity ? pendingAdaptiveIntensity : pendingAdaptiveWhitepoint
+            guard let pending else { continue }
+            if channel == .intensity { pendingAdaptiveIntensity = nil } else { pendingAdaptiveWhitepoint = nil }
+            guard !isPinned(channel), var learned = habitChannel(channel) else { continue }
+            noteNudgeSource(channel, slider: false, in: &learned)
+            learned.write(
+                toModel(clamp(pending, to: flagBand(channel)), channel), slider: false, phase: moment.phase,
+                at: date.timeIntervalSinceReferenceDate,
+                curve: { self.habitCurve(channel, $0, at: moment) },
+                anchors: { self.habitAnchors(channel, $0) })
+            setHabitChannel(channel, learned)
+            syncFromHabit(channel)
+            learningRevision += 1
+            scheduleLearningSave()
+        }
+        var learnedHere = false, adjustedHere = false
+        func shown(_ channel: OutputChannel, curve: Double) -> Double {
+            guard let learned = habitChannel(channel) else { return curve }
+            if !isPinned(channel) {
+                if learned.isLearned(at: moment.phase) {
+                    learnedHere = true
+                } else if learned.offset(at: moment.phase) != 0 {
+                    adjustedHere = true
+                }
+            }
+            return toOutput(learned.output(curve: toModel(curve, channel), phase: moment.phase), channel)
+        }
+        let target = OutputPair(
+            intensity: clamp(shown(.intensity, curve: banded.intensity), to: 0...1),
+            whitepoint: clamp(shown(.whitepoint, curve: banded.whitepoint), to: 0.25...1))
+        // One slider can be learned here while the other has only Auto's own offset.
+        describeAdaptive(
+            elevation: elevation, banded: banded,
+            adjusted: (learnedHere ? " · learned" : "") + (adjustedHere ? " · adjusted" : ""),
+            date: date, coordinate: coord)
+        return target
+    }
+
+    /// Reset beside a slider also forgets what was learned on that channel.
+    private func forgetLearning(_ channel: OutputChannel) {
+        guard habit != nil else { return }
+        archiveLearning()
+        let band = toModel(flagBand(channel), channel)
+        setHabitChannel(channel, HabitModel.Channel(band: band, base: habitAnchors(channel, band)))
+        if channel == .intensity { habit?.heldColor = nil } else { habit?.heldWhitepoint = nil }
+        if learningEnabled { learningRevision += 1 }
+        flushLearning()
+    }
+
+    /// A preset was saved, which reshapes the curve. Known anchors keep the picture they had:
+    /// each gives up what the curve moved by under it. In any mode, and with learning off
+    /// too, so that what is stored stays true to the curve it will come back to.
+    private func rebaseLearningToPresets() {
+        guard habit != nil else { return }
+        for channel in [OutputChannel.intensity, .whitepoint] {
+            guard var learned = habitChannel(channel) else { continue }
+            learned.reshape(to: habitAnchors(channel, learned.handBand))
+            setHabitChannel(channel, learned)
+            if learningEnabled { syncFromHabit(channel) }
+        }
+        if learningEnabled { learningRevision += 1 }
+        flushLearning()
+    }
+
+    /// After a preset was saved in Auto: the screen stays on the pair that was just saved,
+    /// as a nudge to it on the reshaped curve.
+    private func holdLearnedOutput(_ desired: OutputPair) {
+        _ = resolveAdaptiveTarget()
+        guard let moment = lastSolarMoment else { return }
+        for channel in [OutputChannel.intensity, .whitepoint] where !isPinned(channel) {
+            guard var learned = habitChannel(channel) else { continue }
+            let value = channel == .intensity ? desired.intensity : desired.whitepoint
+            // Not part of a nudge in progress, which it would otherwise put back.
+            learned.dropGesture()
+            let flat = learned.flat
+            learned.write(
+                toModel(clamp(value, to: flagBand(channel)), channel), slider: false, phase: moment.phase,
+                at: now().timeIntervalSinceReferenceDate,
+                curve: { self.habitCurve(channel, $0, at: moment) },
+                anchors: { self.habitAnchors(channel, $0) })
+            // A preset changes its own part of the day; the rest keeps its offset.
+            learned.keepOpenAnchors(at: moment.phase, flat: flat)
+            learned.dropGesture()
+            setHabitChannel(channel, learned)
+            syncFromHabit(channel)
+        }
+        learningRevision += 1
+        flushLearning()
+    }
+
+    // MARK: Learning: the switch
+
+    /// Switch "Learn my adjustments".
+    ///
+    /// On for the first time changes nothing on screen: every anchor is open and the offset
+    /// Auto already has is the flat one. On again after a time off brings back what was
+    /// learned, and the screen fades to it. Off holds the screen: the flags stay where they
+    /// are as ordinary limits, and what is showing becomes Auto's offset.
+    func setLearning(_ on: Bool) {
+        guard !isTerminating, on != learningEnabled else { return }
+        let date = now()
+        if on {
+            if var model = habit {
+                for channel in [OutputChannel.intensity, .whitepoint] {
+                    var learned = channel == .intensity ? model.color : model.whitepoint
+                    // A preset or a limit may have changed while learning was off.
+                    learned.reshape(to: habitAnchors(channel, learned.handBand))
+                    let band = bandForModel(channel, keeping: learned.flags)
+                    if band != learned.flags {
+                        learned.setHandBand(band, anchors: { self.habitAnchors(channel, $0) })
+                    }
+                    // The offset was changed while learning was off: it is the flat one now.
+                    let offset = channel == .intensity ? adaptiveIntensityOffset : adaptiveWhitepointOffset / 0.75
+                    let held = channel == .intensity ? model.heldColor : model.heldWhitepoint
+                    if held.map({ abs($0 - offset) > 1e-9 }) ?? true { learned.setFlat(offset) }
+                    learned.discardDay()
+                    if channel == .intensity { model.color = learned } else { model.whitepoint = learned }
+                }
+                model.heldColor = nil
+                model.heldWhitepoint = nil
+                model.dayStart = HabitDay.start(containing: date, calendar: calendar)
+                habit = model
+            } else {
+                habit = freshHabit()
+            }
+            learningEnabled = true
+            syncFromHabit(.intensity)
+            syncFromHabit(.whitepoint)
+        } else {
+            let showing = OutputPair(intensity: intensity, whitepoint: whitepoint)
+            for channel in [OutputChannel.intensity, .whitepoint] {
+                guard var learned = habitChannel(channel) else { continue }
+                learned.fold(anchors: { self.habitAnchors(channel, $0) })
+                learned.discardDay()
+                setHabitChannel(channel, learned)
+                syncFromHabit(channel)
+            }
+            learningEnabled = false
+            if adaptiveEnabled {
+                // Measure what is showing against the plain curve in the flags, as a nudge is.
+                _ = resolveAdaptiveTarget()
+                if let curve = lastCurveIntensity, !isIntensityPinned {
+                    adaptiveIntensityOffset = clamp(showing.intensity - curve, to: -1...1)
+                }
+                if let curve = lastCurveWhitepoint, !isWhitepointPinned {
+                    adaptiveWhitepointOffset = clamp(showing.whitepoint - curve, to: -0.75...0.75)
+                }
+            }
+            habit?.heldColor = adaptiveIntensityOffset
+            habit?.heldWhitepoint = adaptiveWhitepointOffset / 0.75
+        }
+        learningRevision += 1
+        lastLearningTick = nil
+        if adaptiveEnabled {
+            animateNextAdaptiveTarget = true
+            applyAdaptive()
+        }
+        save()
+        flushLearning()
+    }
+
+    /// Reset learning: every part of the day open again on both channels and the flags back
+    /// where they were last set by hand. Auto's own offset is kept.
+    func resetLearning() {
+        guard !isTerminating, var model = habit else { return }
+        archiveLearning()
+        model.color.openAll()
+        model.whitepoint.openAll()
+        model.dayStart = HabitDay.start(containing: now(), calendar: calendar)
+        // Off, nothing is left for the stored flat offsets to belong to: the next switch-on
+        // takes Auto's own.
+        if !learningEnabled {
+            model.heldColor = nil
+            model.heldWhitepoint = nil
+        }
+        habit = model
+        if learningEnabled {
+            syncFromHabit(.intensity)
+            syncFromHabit(.whitepoint)
+            if adaptiveEnabled {
+                animateNextAdaptiveTarget = true
+                applyAdaptive()
+            }
+        }
+        learningRevision += 1
+        lastLearningTick = nil
+        save()
+        flushLearning()
+    }
+
+    /// Brings back the learning as it was before the last reset. What is learned now is kept
+    /// as a backup in turn, so running it again undoes it. False when there is nothing to
+    /// bring back.
+    @discardableResult
+    func restoreLearning() -> Bool {
+        guard !isTerminating else { return false }
+        var backups = loadLearningBackups()
+        guard let last = backups.popLast(), var model = HabitModel.decode(last.model) else { return false }
+        if let current = habit, Self.hasSomethingLearned(current), let data = current.encoded() {
+            backups.append(LearningBackup(date: now(), model: data))
+        }
+        storeLearningBackups(backups)
+        // The day's evidence belongs to the day it was saved on; the presets may have changed since.
+        model.color.discardDay()
+        model.whitepoint.discardDay()
+        model.dayStart = HabitDay.start(containing: now(), calendar: calendar)
+        habit = model
+        for channel in [OutputChannel.intensity, .whitepoint] {
+            guard var learned = habitChannel(channel) else { continue }
+            learned.reshape(to: habitAnchors(channel, learned.handBand))
+            setHabitChannel(channel, learned)
+            if learningEnabled { syncFromHabit(channel) }
+        }
+        if learningEnabled, adaptiveEnabled {
+            animateNextAdaptiveTarget = true
+            applyAdaptive()
+        }
+        learningRevision += 1
+        lastLearningTick = nil
+        save()
+        flushLearning()
+        return true
+    }
+
+    private struct LearningBackup: Codable {
+        var date: Date
+        var model: Data
+    }
+
+    private static let backupsKey = "redlight.learning.backups"
+    /// Resets kept for `redlight learn restore`.
+    static let learningBackupLimit = 5
+
+    private static func hasSomethingLearned(_ model: HabitModel) -> Bool {
+        model.color.knownAnchors + model.whitepoint.knownAnchors > 0
+            || model.color.hasLearnedFlags || model.whitepoint.hasLearnedFlags
+    }
+
+    /// Keeps what is learned now, before a reset forgets it. Nothing learned, nothing kept.
+    private func archiveLearning() {
+        guard let habit, Self.hasSomethingLearned(habit), let data = habit.encoded() else { return }
+        var backups = loadLearningBackups()
+        backups.append(LearningBackup(date: now(), model: data))
+        storeLearningBackups(Array(backups.suffix(Self.learningBackupLimit)))
+    }
+
+    private func loadLearningBackups() -> [LearningBackup] {
+        guard let data = defaults.data(forKey: Self.backupsKey),
+              let backups = try? JSONDecoder().decode([LearningBackup].self, from: data) else { return [] }
+        return backups
+    }
+
+    private func storeLearningBackups(_ backups: [LearningBackup]) {
+        if backups.isEmpty {
+            defaults.removeObject(forKey: Self.backupsKey)
+        } else if let data = try? JSONEncoder().encode(backups) {
+            defaults.set(data, forKey: Self.backupsKey)
+        }
+        if learningBackupCount != backups.count { learningBackupCount = backups.count }
+    }
+
+    /// The model itself, for tests.
+    var learnedModel: HabitModel? { habit }
+
+    /// How many parts of the day have something learned, over both channels.
+    var learnedAnchorCount: Int {
+        let counts = learnedAnchorCounts
+        return counts.color + counts.whitepoint
+    }
+
+    /// How many parts of the day have something learned on each slider. A Fixed slider shows
+    /// none of it, so it counts none.
+    var learnedAnchorCounts: (color: Int, whitepoint: Int) {
+        _ = learningRevision
+        guard learningEnabled, let habit else { return (0, 0) }
+        func count(_ channel: HabitModel.Channel) -> Int { channel.isFixed ? 0 : channel.learnedAnchors }
+        return (count(habit.color), count(habit.whitepoint))
+    }
+
+    /// One slider's learned day, as Settings draws it: what Auto shows at each part of the
+    /// day, and what it would show with nothing learned. Values are 0…1 of the slider.
+    struct LearnedShape: Equatable {
+        /// The parts of the day in the order they come, from late night through the morning,
+        /// midday and the evening back to late night: Late appears at both ends.
+        static let order: [SolarCurve.Anchor] = [
+            .late, .morningNight, .morningNautical, .morningCivil, .morningSunset, .morningWarm, .day,
+            .eveningWarm, .eveningSunset, .eveningCivil, .eveningNautical, .eveningNight, .late,
+        ]
+        var learned: [Double]
+        var plain: [Double]
+        /// True where that part of the day has been learned from what the user kept.
+        var known: [Bool]
+    }
+
+    /// Nil while learning is off, and for a slider that is Fixed.
+    func learnedShape(_ channel: CommandChannel) -> LearnedShape? {
+        _ = learningRevision
+        guard learningEnabled, let habit else { return nil }
+        let learned = channel == .color ? habit.color : habit.whitepoint
+        guard !learned.isFixed else { return nil }
+        let order = LearnedShape.order.map(\.rawValue)
+        return LearnedShape(
+            learned: order.map { learned.shown(at: $0) },
+            plain: order.map { learned.state.base[$0] },
+            known: order.map { learned.isLearnedAnchor($0) })
+    }
+
+    /// What has been learned, a sentence per slider. Empty while there is nothing to say.
+    var learningSummary: [String] {
+        _ = learningRevision
+        guard learningEnabled, let habit else { return [] }
+        return habit.sentences()
+    }
+
+    // MARK: Learning: time at the screen, and the day's close
+
+    /// Somebody may be at the screen: it is awake and unlocked, and there has been input in
+    /// the last ten minutes.
+    private var isSomeonePresent: Bool {
+        !presence.isAway && !presence.isLocked && presence.idleSeconds() < Self.idleLimit
+    }
+
+    /// Nobody is there to see a change: away, locked, or idle for half an hour with nothing
+    /// playing. A learning day closes only when this is true, or once it has run far over.
+    private var isNobodyThere: Bool {
+        presence.isAway || presence.isLocked
+            || (presence.idleSeconds() >= Self.closeIdleLimit && !presence.isVideoKeepingDisplayAwake)
+    }
+
+    private enum LearningClose { case notDue, due, overrun }
+
+    /// Whether the learning day can close now, and whether it has run so far over that it
+    /// closes in front of someone.
+    private func learningClose(at date: Date) -> LearningClose {
+        // No day, or the clock was set back past its start: the close opens one.
+        guard let start = habit?.dayStart, date >= start else { return .due }
+        let end = HabitDay.end(of: start, calendar: calendar)
+        if date >= end.addingTimeInterval(Self.longestOverrun) { return .overrun }
+        return date >= end ? .due : .notDue
+    }
+
+    /// Somebody can be looking at a tinted screen that Auto is driving: time that counts as
+    /// evidence. Narrower than `isSomeonePresent`: a pause, a peek, an app with a Pause or a
+    /// Hold or a flag being dragged stop the evidence, not the person. Time in an app with a
+    /// Shift counts: the model holds Auto's own day, without the shift, and so does a tick.
+    private var isAttended: Bool {
+        adaptiveEnabled && isOn && !isPaused && !isPeeking
+            && activeApp.map({ $0.rule.kind == .shift }) ?? true
+            && previewIntensityValue == nil && previewWhitepointValue == nil
+            && isSomeonePresent
+    }
+
+    /// Runs after each 5 s Auto tick: time at the screen counts as evidence for the offsets
+    /// showing, and a learning day that has ended closes once nobody is there to see it.
+    /// `elapsed` stands in for the time since the last tick, for tests that step a clock.
+    func learningTick(elapsed override: TimeInterval? = nil) {
+        guard learningEnabled, adaptiveEnabled, habit != nil, !isTerminating else {
+            lastLearningTick = nil
+            return
+        }
+        let date = now()
+        switch learningClose(at: date) {
+        case .notDue: break
+        case .due: if isNobodyThere { closeLearningDayAndApply() }
+        case .overrun: closeLearningDayAndApply()
+        }
+        guard isAttended else {
+            lastLearningTick = nil
+            return
+        }
+        defer { lastLearningTick = date }
+        // Going away, a wake and a return start the count again, so a longer gap here is a
+        // timer held back while someone stayed (App Nap, coalescing): it counts as one long
+        // tick at most. A test's own step is taken as given.
+        let measured = lastLearningTick.map { date.timeIntervalSince($0) } ?? 0
+        let elapsed = override ?? min(max(0, measured), Self.longestTick)
+        guard elapsed > 0, let moment = lastSolarMoment else { return }
+        let time = date.timeIntervalSinceReferenceDate
+        for channel in [OutputChannel.intensity, .whitepoint] where !isPinned(channel) {
+            guard var learned = habitChannel(channel), let curve = lastCurve(channel) else { continue }
+            learned.record(phase: moment.phase, seconds: elapsed, at: time, curve: toModel(curve, channel))
+            setHabitChannel(channel, learned)
+        }
+        // Measured in real time: a test that steps its clock through days would otherwise
+        // write the model on every tenth of its ticks.
+        if lastHabitSave.map({ uptime() - $0 >= Self.dwellSaveInterval }) ?? true {
+            flushLearning()
+        }
+    }
+
+    /// Ends the learning day once 04:00 has passed. Call only when nobody is at the screen,
+    /// or once the day has run far over: a close moves what is learned, and with it what
+    /// shows. However many days went by,
+    /// one close runs: a day with no evidence casts no votes.
+    @discardableResult
+    func closeLearningDayIfDue() -> Bool {
+        guard learningEnabled, var model = habit, !isTerminating else { return false }
+        let date = now()
+        guard let start = model.dayStart, date >= start else {
+            // No day yet, or the clock was set back past its start: open one here.
+            model.color.discardDay()
+            model.whitepoint.discardDay()
+            model.dayStart = HabitDay.start(containing: date, calendar: calendar)
+            habit = model
+            return false
+        }
+        let end = HabitDay.end(of: start, calendar: calendar)
+        guard date >= end else { return false }
+        let offer = location.coordinate.map {
+            HabitDay.offer(from: start, to: end, latitude: $0.latitude, longitude: $0.longitude)
+        } ?? Array(repeating: .infinity, count: HabitModel.Channel.anchorCount)
+        model.color.close(offer: offer)
+        model.whitepoint.close(offer: offer)
+        model.dayStart = HabitDay.start(containing: date, calendar: calendar)
+        habit = model
+        syncFromHabit(.intensity)
+        syncFromHabit(.whitepoint)
+        learningRevision += 1
+        lastLearningTick = nil
+        save()
+        flushLearning()
+        return true
+    }
+
+    private func closeLearningDayAndApply() {
+        guard closeLearningDayIfDue(), adaptiveEnabled else { return }
+        // Nobody sees a fade on screens that are asleep; it would only still be running as
+        // they light.
+        if !presence.areScreensAsleep { animateNextAdaptiveTarget = true }
+        applyAdaptive()
+    }
+
+    private func presenceWentAway() {
+        guard learningEnabled, !isTerminating else { return }
+        lastLearningTick = nil
+        flushLearning()
+        closeLearningDayAndApply()
+    }
+
+    /// Someone is back. A day that ended while they were away has closed already where the
+    /// app kept running, and closes in `handleWake` before the first frame where the Mac
+    /// slept. It does not close here, in front of whoever just returned.
+    private func presenceReturned() {
+        lastLearningTick = nil
+    }
+
+    // MARK: Learning: persistence
+
+    private func loadLearning() {
+        // On until the user switches it off.
+        learningEnabled = defaults.object(forKey: "redlight.learningEnabled") as? Bool ?? Defaults.learningEnabled
+        learningBackupCount = loadLearningBackups().count
+        if let data = defaults.data(forKey: Self.habitKey) {
+            habit = HabitModel.decode(data)
+            // A newer version's learning is kept for when that version runs again: this one
+            // learns from nothing and never writes over it.
+            if let version = HabitModel.storedVersion(data), version > HabitModel.currentVersion {
+                keepsNewerHabit = true
+                Self.learningLog.notice("Saved learning is from a newer version; it is left as it is")
+            } else if habit == nil {
+                Self.learningLog.notice("Saved learning could not be read; starting with none")
+            } else {
+                lastSavedHabit = data
+            }
+        }
+        guard learningEnabled else { return }
+        if habit == nil { habit = freshHabit() }
+        for channel in [OutputChannel.intensity, .whitepoint] {
+            guard var learned = habitChannel(channel) else { continue }
+            learned.reshape(to: habitAnchors(channel, learned.handBand))
+            // The limits and the offset were changed outside the model (an older version,
+            // `defaults write`): they are the user's, as at switch-on. The day goes on.
+            let band = bandForModel(channel, keeping: learned.flags)
+            if band != learned.flags {
+                learned.setHandBand(band, anchors: { self.habitAnchors(channel, $0) })
+            }
+            // Against what `syncFromHabit` writes, which clamps: a wide flat offset is not a change.
+            let mirrored = channel == .intensity
+                ? clamp(learned.flat, to: -1...1)
+                : clamp(toOutputDelta(learned.flat, channel), to: -0.75...0.75)
+            let offset = channel == .intensity ? adaptiveIntensityOffset : adaptiveWhitepointOffset
+            if abs(offset - mirrored) > 1e-9 {
+                learned.setFlat(channel == .intensity ? offset : offset / 0.75)
+            }
+            setHabitChannel(channel, learned)
+            // While learning is on the model is what holds the flags and the flat offset.
+            syncFromHabit(channel)
+        }
+    }
+
+    /// Writes what has been learned, if it changed. Also a test hook.
+    func flushLearning() {
+        habitSaveTimer?.invalidate()
+        habitSaveTimer = nil
+        guard let habit, !keepsNewerHabit else { return }
+        guard let data = habit.encoded() else {
+            Self.learningLog.error("What was learned could not be encoded and was not saved")
+            return
+        }
+        lastHabitSave = uptime()
+        guard data != lastSavedHabit else { return }
+        defaults.set(data, forKey: Self.habitKey)
+        lastSavedHabit = data
+    }
+
+    /// A drag writes many times a second; the model is saved on the trailing edge.
+    private func scheduleLearningSave() {
+        habitSaveTimer?.invalidate()
+        habitSaveTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushLearning() }
+        }
     }
 
     // MARK: - Persistence
 
     private func save() {
-        persist(intensity, "redlight.intensity")
-        persist(whitepoint, "redlight.whitepoint")
+        persist(colorPercent, "redlight.colorPercent")
+        persist(whitepointPercent, "redlight.whitepointPercent")
+        persist(saturationPercent, "redlight.saturationPercent")
+        persist(saturationEnabled, "redlight.saturationEnabled")
         for display in displays {
             let prefix = displayDefaultsPrefix(display.persistenceKey)
             persist(display.isEnabled, "\(prefix).enabled")
@@ -2159,6 +3511,7 @@ final class DisplayManager {
         }
         persist(activePresetIndex ?? -1, "redlight.activePresetIndex")
         persist(adaptiveEnabled, "redlight.adaptiveEnabled")
+        persist(learningEnabled, "redlight.learningEnabled")
         persist(adaptiveIntensityOffset, "redlight.adaptiveOffsetIntensity")
         persist(adaptiveWhitepointOffset, "redlight.adaptiveOffsetWhitepoint")
         persist(pendingAdaptiveIntensity, "redlight.pendingAdaptiveIntensity")
@@ -2185,25 +3538,17 @@ final class DisplayManager {
         if let data = defaults.data(forKey: "redlight.presets"),
            let saved = try? JSONDecoder().decode([Preset].self, from: data),
            saved.count == Preset.defaults.count {
-            // Presets feed `intensity`/`whitepoint` through internal writes that skip the
-            // didSet clamp, so clamp them here; a non-finite value falls back to the default.
-            presets = zip(saved, Preset.defaults).map { preset, fallback in
-                var p = preset
-                p.intensity = p.intensity.isFinite ? clamp(p.intensity, to: 0...1) : fallback.intensity
-                p.whitepoint = p.whitepoint.isFinite
-                    ? clamp(p.whitepoint, to: 0.25...1) : fallback.whitepoint
-                return p
-            }
-            lastSavedPresets = saved
-            // Saved presets keep their stored name, so the renamed default is migrated here.
-            // Write it now: nothing else saves until the user next changes a setting.
+            presets = saved
             if let last = presets.indices.last, presets[last].name == Preset.legacyLastName {
                 presets[last].name = Preset.defaults[last].name
-                if let data = try? JSONEncoder().encode(presets) {
-                    defaults.set(data, forKey: "redlight.presets")
-                    lastSavedPresets = presets
-                }
             }
+            // Rewrite legacy output fractions in the whole-percent format on first load.
+            let records = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            if (presets != saved || records?.contains(where: { $0["intensity"] != nil }) == true),
+               let encoded = try? JSONEncoder().encode(presets) {
+                defaults.set(encoded, forKey: "redlight.presets")
+            }
+            lastSavedPresets = presets
         }
         if let index = defaults.object(forKey: "redlight.activePresetIndex") as? Int,
            presets.indices.contains(index),

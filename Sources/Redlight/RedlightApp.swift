@@ -26,8 +26,10 @@ enum DisplaySessionRecovery {
     }
 }
 
-/// Launch-at-login state, backed by `SMAppService.mainApp`. Registration only ever happens
-/// from the user's explicit toggle — never automatically at launch.
+/// Launch-at-login state, backed by `SMAppService.mainApp`. On for a new install: the first
+/// launch of a copy in Applications, with no Redlight settings saved before, registers it.
+/// Otherwise registration only ever follows the user's toggle, so switching it off sticks and
+/// an existing install keeps what it has.
 @MainActor
 @Observable
 final class LaunchAtLogin {
@@ -87,6 +89,25 @@ final class LaunchAtLogin {
 
     func openSystemSettings() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    /// Switches it on for a new install, once. See the type's note.
+    func turnOnForNewInstall(isFreshInstall: Bool, bundleURL: URL = Bundle.main.bundleURL) {
+        guard isFreshInstall, Self.isInApplications(bundleURL), !isEnabled else { return }
+        isEnabled = true
+    }
+
+    /// Nothing of Redlight's saved yet. Asked before anything at launch writes a setting.
+    static func isFreshInstall(_ defaults: UserDefaults) -> Bool {
+        !defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix("redlight.") }
+    }
+
+    /// A copy in /Applications or ~/Applications. A build run from anywhere else, or the disk
+    /// image, is not made a login item: it would be that copy that opens at login.
+    static func isInApplications(_ bundleURL: URL) -> Bool {
+        let path = bundleURL.standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        return ["/Applications/", home + "/Applications/"].contains { path.hasPrefix($0) }
     }
 
     static func isRegistered(_ status: SMAppService.Status) -> Bool {
@@ -198,13 +219,15 @@ enum RedlightApp {
     }
 
     private static func configureServices() {
+        // Before anything below writes a setting.
+        let isFreshInstall = LaunchAtLogin.isFreshInstall(.standard)
         // Must run before DisplayManager enumerates displays and captures gamma tables.
         DisplaySessionRecovery.begin()
-        // Decided before the manager exists, so a chosen app already in front at launch
-        // starts the tint hidden instead of fading it in and back out.
-        let appSuspension = AppSuspensionController()
+        // Decided before the manager exists, so the rule of an app already in front at launch
+        // is the first thing shown, instead of fading in after the tint.
+        let appRules = AppRulesController()
         let manager = DisplayManager(
-            suspendedForApp: appSuspension.suspendedFor,
+            activeApp: appRules.activeApp,
             locationPromptActivation: {},
             controlDefaults: UserDefaults(suiteName: RedlightControlPreferences.domain),
             onMasterStateChange: { _ in reloadRedlightControls() }
@@ -214,8 +237,9 @@ enum RedlightApp {
             manager.publishStoppedState()
             DisplaySessionRecovery.finish()
         }
-        appSuspension.onChange = { [weak manager] in manager?.setSuspendedForApp($0) }
+        appRules.onChange = { [weak manager] in manager?.setActiveApp($0) }
         let launchAtLogin = LaunchAtLogin()
+        launchAtLogin.turnOnForNewInstall(isFreshInstall: isFreshInstall)
         let handler = CommandHandler(manager: manager, services: CommandServices(
             appearance: { AppearanceController.shared.isDark },
             refreshAppearance: { AppearanceController.shared.refresh() },
@@ -230,8 +254,8 @@ enum RedlightApp {
             quit: { NSApplication.shared.terminate(nil) },
             version: { AboutInfo.version() },
             canUpdate: { Updater.shared.canCheckForUpdates },
-            apps: { appSuspension.bundleIDs },
-            changeApps: { try appSuspension.apply($0) }
+            appRules: { appRules.statusRules },
+            changeApps: { try appRules.apply($0) }
         ))
         do {
             guard let server = AppDelegate.commandServer else {
@@ -256,11 +280,12 @@ enum RedlightApp {
         }
         AppDelegate.makeStatusItem = {
             StatusItemController(iconLevel: {
+                // The colour temp the displays are heading for, an app's Hold or Shift included.
                 MenuBarIcon.Level(isActive: manager.isAnyActive, showsTint: manager.isTintShowing,
-                                  intensity: manager.intensity)
+                                  intensity: manager.effectiveTarget.intensity)
             }) {
                 MenuBarView(manager: manager, launchAtLogin: launchAtLogin, handler: handler,
-                            openShortcuts: { shortcutsWindow.show() }, apps: appSuspension)
+                            openShortcuts: { shortcutsWindow.show() }, apps: appRules)
                     .onAppear { installer.offerPrivilegedInstallOnPopoverOpen() }
             }
         }

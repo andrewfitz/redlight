@@ -28,15 +28,15 @@ import Testing
         var login = false
         var updated = false
         var quit = false
-        let apps = AppSuspensionController(source: FakeAppSource(frontmost: .photoshop), defaults: defaults,
-                                           ownBundleID: "com.redlight.app", ownProcessID: 999)
-        apps.onChange = { manager.setSuspendedForApp($0) }
+        let apps = AppRulesController(source: FakeAppSource(frontmost: .photoshop), defaults: defaults,
+                                      ownBundleID: "com.redlight.app", ownProcessID: 999)
+        apps.onChange = { manager.setActiveApp($0) }
         let services = CommandServices(
             appearance: { dark }, setAppearance: { dark = $0 },
             login: { Status.Login(enabled: login, requiresApproval: false) }, setLogin: { login = $0 },
             update: { updated = true }, quit: { quit = true }, version: { "test-version" },
             deferAction: { $0() },
-            apps: { apps.bundleIDs }, changeApps: { try apps.apply($0) }
+            appRules: { apps.statusRules }, changeApps: { try apps.apply($0) }
         )
         let handler = CommandHandler(manager: manager, services: services)
         var received: [RedlightCommand] = []
@@ -77,18 +77,31 @@ import Testing
         #expect(wakeStatus.value?.contains("Wake time: 07:00") == true)
         _ = try await TurnOffRedlightWakeTimeIntent().perform()
         #expect(manager.wakeTime == nil)
-        _ = try await PauseRedlightForAppIntent(bundleID: "com.adobe.Photoshop").perform()
-        #expect(manager.suspendedForApp == "Photoshop")
-        let suspendedStatus = try await GetRedlightStatusIntent().perform()
-        #expect(suspendedStatus.value?.contains("suspended for Photoshop") == true)
-        #expect(try await ListRedlightPauseAppsIntent().perform().value == ["com.adobe.Photoshop"])
-        _ = try await StopPausingRedlightForAppIntent(bundleID: "com.adobe.Photoshop").perform()
-        #expect(manager.suspendedForApp == nil)
-        _ = try await PauseRedlightForAppIntent(bundleID: "com.apple.Photos").perform()
-        _ = try await ClearRedlightPauseAppsIntent().perform()
-        #expect(apps.bundleIDs.isEmpty)
+        _ = try await SetRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop", rule: .pause).perform()
+        #expect(manager.isPausedForApp)
+        let pausedForApp = try await GetRedlightStatusIntent().perform()
+        #expect(pausedForApp.value?.contains("\nPhotoshop: pause") == true)
+        _ = try await SetRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop", rule: .hold, color: 40, whitepoint: 70)
+            .perform()
+        #expect(manager.activeApp?.rule == .hold(color: 40, whitepoint: 70))
+        let heldStatus = try await GetRedlightStatusIntent().perform()
+        #expect(heldStatus.value?.contains("\nPhotoshop: hold") == true)
+        #expect(try await ListRedlightAppRulesIntent().perform().value
+                == ["com.adobe.Photoshop: hold color temp 40%, white point 70%"])
+        await #expect(throws: CommandError.self) {
+            _ = try await SetRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop", rule: .hold, color: -5, whitepoint: 70)
+                .perform()
+        }
+        _ = try await RemoveRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop").perform()
+        #expect(manager.activeApp == nil)
+        _ = try await SetRedlightAppRuleIntent(bundleID: "com.apple.Photos", rule: .shift, color: -10, whitepoint: 5)
+            .perform()
+        _ = try await ClearRedlightAppRulesIntent().perform()
+        #expect(apps.rules.isEmpty)
         _ = try await SetRedlightColorIntent(value: 55).perform()
         _ = try await SetRedlightWhitepointIntent(value: 65).perform()
+        _ = try await SetRedlightSaturationIntent(value: 35).perform()
+        _ = try await SetRedlightSaturationEnabledIntent(mode: .on).perform()
         _ = try await ResetRedlightLevelIntent(channel: .color).perform()
         _ = try await ResetRedlightLevelIntent(channel: .whitepoint).perform()
         _ = try await SetRedlightPresetIntent(preset: .night).perform()
@@ -102,7 +115,13 @@ import Testing
         _ = try await SetRedlightInvertIntent(display: .all, mode: .toggle).perform()
         _ = try await SetRedlightAppearanceIntent(appearance: .dark).perform()
         _ = try await SetRedlightLoginIntent(enabled: true).perform()
+        _ = try await SetRedlightLearningIntent(mode: .on).perform()
+        let learning = try await GetRedlightStatusIntent().perform()
+        #expect(learning.value?.contains("Learning: on\nLearned: nothing yet") == true)
+        _ = try await ResetRedlightLearningIntent().perform()
+        _ = try await SetRedlightLearningIntent(mode: .off).perform()
         let statusResult = try await GetRedlightStatusIntent().perform()
+        #expect(statusResult.value?.contains("Learning") == false)
         #expect(statusResult.value?.contains("test-version") == true)
         #expect(statusResult.value?.contains("Bedtime") == false)
         #expect(statusResult.value?.contains("Wake time") == false)
@@ -118,13 +137,17 @@ import Testing
             .location(.manual(latitude: 51.5, longitude: -0.13)), .location(.automatic),
             .bedtime(.at(hour: 22, minute: 30)), .status, .bedtime(.off),
             .wake(.at(hour: 7, minute: 0)), .status, .wake(.off),
-            .apps(.add("com.adobe.Photoshop")), .status, .appsList, .apps(.remove("com.adobe.Photoshop")),
-            .apps(.add("com.apple.Photos")), .apps(.clear),
-            .color(55), .whitepoint(65),
+            .apps(.set("com.adobe.Photoshop", .pause)), .status,
+            .apps(.set("com.adobe.Photoshop", .hold(color: 40, whitepoint: 70))), .status, .appsList,
+            .apps(.set("com.adobe.Photoshop", .hold(color: -5, whitepoint: 70))),
+            .apps(.remove("com.adobe.Photoshop")),
+            .apps(.set("com.apple.Photos", .shift(color: -10, whitepoint: 5))), .apps(.clear),
+            .color(55), .whitepoint(65), .saturation(35), .saturationEnabled(.on),
             .reset(.color), .reset(.whitepoint), .preset(.night), .savePreset(.warm),
             .adaptive(.on), .adaptive(.off), .limits(.color, min: 10, max: 90),
             .limits(.whitepoint, min: 35, max: 95), .display(.key("stable-2"), .on),
-            .invert(.all, .toggle), .appearance(.dark), .login(true), .status, .displayList,
+            .invert(.all, .toggle), .appearance(.dark), .login(true),
+            .learn(.on), .status, .learn(.reset), .learn(.off), .status, .displayList,
         ]
         if #available(macOS 15.0, *) { expected.append(.master(.off)) }
         expected += [.update, .quit]
@@ -145,11 +168,13 @@ import Testing
         #expect(RedlightChannel.allCases.map(\.rawValue) == CommandChannel.allCases.map(\.rawValue))
         #expect(RedlightAppearance.allCases.map(\.rawValue) == CommandAppearance.allCases.map(\.rawValue))
         // macOS allows at most 10 App Shortcuts per app.
-        #expect(RedlightShortcuts.appShortcuts.count == 7)
+        #expect(RedlightShortcuts.appShortcuts.count == 9)
         #expect(RedlightAdjustment.warmer.command(amount: 5) == .step(.color, -5))
         #expect(RedlightAdjustment.cooler.command(amount: 5) == .step(.color, 5))
         #expect(RedlightAdjustment.dimmer.command(amount: 2) == .step(.whitepoint, -2))
         #expect(RedlightAdjustment.brighter.command(amount: 2) == .step(.whitepoint, 2))
+        #expect(RedlightAdjustment.moreColor.command(amount: 2) == .saturationStep(2))
+        #expect(RedlightAdjustment.lessColor.command(amount: 2) == .saturationStep(-2))
         let status = Status(displays: [Status.Display(key: "monitor-uuid", number: 1, name: "Studio Display", enabled: true, inverted: false)])
         IntentBridge.install(execute: { _ in status }, snapshot: { status })
         defer { IntentBridge.uninstall() }
@@ -170,6 +195,30 @@ import Testing
         _ = try await PauseRedlightIntent(minutes: nil).perform()
         _ = try await PauseRedlightIntent(minutes: 45).perform()
         #expect(received == [.pause(.on), .pause(.on), .pauseFor(.minutes(45))])
+    }
+
+    /// A Hold left at its defaults shows no tint rather than the deepest one, and a Shift
+    /// moves nothing; each takes its own amounts.
+    @Test func appRuleAmountsDefaultForTheirRule() async throws {
+        var received: [RedlightCommand] = []
+        IntentBridge.install(execute: { received.append($0); return Status() }, snapshot: { Status() })
+        defer { IntentBridge.uninstall() }
+        var hold = SetRedlightAppRuleIntent()
+        hold.bundleID = "com.adobe.Photoshop"
+        hold.rule = .hold
+        _ = try await hold.perform()
+        var shift = SetRedlightAppRuleIntent()
+        shift.bundleID = "com.adobe.Photoshop"
+        shift.rule = .shift
+        _ = try await shift.perform()
+        _ = try await SetRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop", rule: .hold).perform()
+        _ = try await SetRedlightAppRuleIntent(bundleID: "com.adobe.Photoshop", rule: .shift, color: -10, saturation: -30).perform()
+        #expect(received == [
+            .apps(.set("com.adobe.Photoshop", .hold(color: 100, whitepoint: 100))),
+            .apps(.set("com.adobe.Photoshop", .shift(color: 0, whitepoint: 0))),
+            .apps(.set("com.adobe.Photoshop", .hold(color: 100, whitepoint: 100))),
+            .apps(.set("com.adobe.Photoshop", .shift(color: -10, whitepoint: 0, saturation: -30))),
+        ])
     }
 
     @Test func handlerValidationErrorsReachTheIntent() async throws {

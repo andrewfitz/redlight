@@ -1,0 +1,33 @@
+{
+  "name": "redlight-streamdeck",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Redlight controls and live status for Stream Deck",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.redlight.app.streamdeck\"",
+    "typecheck": "tsc --noEmit",
+    "validate": "streamdeck validate com.redlight.app.streamdeck.sdPlugin",
+    "pack": "streamdeck pack com.redlight.app.streamdeck.sdPlugin --output dist --force",
+    "test": "tsc --outDir .test-build --rootDir src && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@elgato/streamdeck": "^3.0.6"
+  },
+  "devDependencies": {
+    "@elgato/cli": "^1.10.5",
+    "@rollup/plugin-commonjs": "^28.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-typescript": "^12.0.0",
+    "@types/node": "^24.0.0",
+    "rollup": "^4.0.0",
+    "tslib": "^2.9.1",
+    "typescript": "^5.0.0"
+  },
+  "overrides": {
+    "@elgato/utils@0.7.0": {
+      "zod": "4.6.7"
+    }
+  }
+}
