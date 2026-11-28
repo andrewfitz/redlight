@@ -309,18 +309,33 @@ struct PopoverState {
         }.showing { $0.menuBarView(page: .settings, MenuBarInitialState(updateAvailable: true)) },
         PopoverState("about") { $0.manager.applyPreset(3) }.showing { $0.menuBarView(page: .about) },
         // The README's picture: Auto a little after sunset. The sun arc follows the wall clock,
-        // so the scene is wherever the sun has just set at the moment of the run: Lisbon, on
-        // UTC in winter, for a run around noon in Chicago. Run it alone with
+        // so the scene is wherever, at Lisbon's latitude, the sun has just set at the moment of
+        // the run (`readmeScene`), on that longitude's own hour. Run it alone with
         // REDLIGHT_SNAPSHOT_STATES=readme.
         PopoverState("readme", displays: ["Studio Display", "iPad"], defaults: adaptive(),
-                     location: .at(latitude: 38.72, longitude: -9.14), clock: .wall)
+                     location: .at(latitude: readmeScene.latitude, longitude: readmeScene.longitude), clock: .wall)
             .showing {
                 var calendar = Calendar(identifier: .gregorian)
-                calendar.timeZone = TimeZone(identifier: "Europe/Lisbon")!
+                calendar.timeZone = readmeScene.timeZone
                 return AnyView($0.menuBarView()
                     .environment(\.calendar, calendar).environment(\.timeZone, calendar.timeZone))
             },
     ]
+
+    /// Where the sun is 3° below the horizon and still going down, at Lisbon's latitude, now:
+    /// a little after sunset. The time zone is that longitude's whole hour.
+    static let readmeScene: (latitude: Double, longitude: Double, timeZone: TimeZone) = {
+        let now = Date(), latitude = 38.72
+        var best = 0.0, bestGap = Double.infinity
+        for step in -360...360 {
+            let longitude = Double(step) / 2
+            guard !SolarCalculator.isRising(at: now, longitude: longitude) else { continue }
+            let gap = abs(SolarCalculator.elevation(at: now, latitude: latitude, longitude: longitude) + 3)
+            if gap < bestGap { best = longitude; bestGap = gap }
+        }
+        let zone = TimeZone(secondsFromGMT: Int((best / 15).rounded()) * 3600) ?? .gmt
+        return (latitude, best, zone)
+    }()
 
     /// A saved model with a learned minimum and a part of the evening on each slider, as
     /// weeks of learning would leave it. The limits saved with it are its flags.

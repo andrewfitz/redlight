@@ -10,30 +10,32 @@ screen's true colours (see [Screenshots, recordings and screen sharing](#screens
 
 See the [changelog](CHANGELOG.md) for release history.
 
-<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset, showing a monitor and a Sidecar iPad at the top, the next solar event, the sun arc with sunrise and sunset times, Color Temp and White Point sliders, Deepest by and Settings, with Pause and the light/dark switch in the header" height="420"></picture>
-  <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing the Redlight README" height="420"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset: a monitor and a Sidecar iPad with Invert and on/off switches, the Auto/Manual switch, the sun arc with sunrise and sunset times, Color temp and White point sliders with Auto's limit flags, Saturation with its switch, Per-App and Settings, with Pause, the light/dark switch and the master switch in the header" height="420"></picture>
+  <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing Redlight's GitHub page, with the Redlight popover open in Auto at 750 K" height="420"></p>
 
 ## tl;dr
 
 Free open source blue light filter mac app that:
-- goes total red (way past night shift limits)
-- white point reduction
-- saturation down to grayscale
-- color temp as % or as real kelvin, calibrated to your display's profile
-- per-app rules: pause, hold or shift the tint while an app is in front
-- learns how you like it at each time of day
-- invisible to screenshots, screen recording and screen sharing
-- multi monitor support / disable and invert
-- ipad sidecar support
-- dark and light mode toggle
-- location-aware adaptive circadian rhythm over the day (allow location)
-- native hardware gpu accelerated: fast, efficient & lightweight
-- modern and elegant, not janky old archaic code
-- set and forget as a menu/task bar
-- command center and shortcut support
-- assignable keyboard shortcuts
-- cli & command line controllable (ai agent accessible)
+- goes total red (way past Night Shift limits)
+- white point reduction (dim without flickering)
+- b&w grayscale and saturation control
+- location-aware adaptive circadian rhythm over the day
+- adapts to your preferences over time
 - stream deck plugin
+- pause countdown and peek
+- per-app settings
+- multi monitor support / disable
+- ipad sidecar support
+- invert color per monitor
+- monitor color profile calibrated kelvin units
+- dark and light mode toggle
+- native gpu accelerated: fast, efficient & lightweight
+- modern design vs Iris and f.lux
+- menu bar only
+- control center and shortcut support
+- assignable keyboard shortcuts
+- cli controllable (ai agent accessible)
+- invisible to screenshots, screen recording and screen sharing
 - no tracking data sent, fully private
 
 ## What it does
