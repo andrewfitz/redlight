@@ -1,6 +1,19 @@
-# Redlight
+<p align="center">
+  <img src="screenshots/icon.png" alt="Redlight app icon" width="128" height="128">
+</p>
 
-A Mac app that filters blue light from your screen and reduces brightness without PWM, following the circadian rhythm of your day. A modern alternative to f.lux, Iris and Night Shift.
+<h1 align="center">Redlight</h1>
+
+<p align="center">
+  <strong>Filters blue light and dims your Mac's screens without PWM, following the circadian rhythm of your day.</strong><br>
+  A modern alternative to f.lux, Iris and Night Shift.
+</p>
+
+<p align="center">
+  <a href="../../releases/latest"><strong>Download</strong></a> ·
+  <a href="#tldr">Features</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
 A macOS menu bar app with independent control of each display, including Sidecar iPads. Auto follows the local sun. Control it from
 the popover, keyboard shortcuts, the command line, Siri and Shortcuts, Control Center or a Stream Deck.
@@ -8,10 +21,8 @@ the popover, keyboard shortcuts, the command line, Siri and Shortcuts, Control C
 The tint never shows up in screenshots, screen recordings or screen sharing: they keep your
 screen's true colours (see [Screenshots, recordings and screen sharing](#screenshots-recordings-and-screen-sharing)).
 
-See the [changelog](CHANGELOG.md) for release history.
-
-<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/menubar-light.png"><img src="screenshots/menubar.png" alt="Redlight popover in Auto just after sunset: a monitor and a Sidecar iPad with Invert and on/off switches, the Auto/Manual switch, the sun arc with sunrise and sunset times, Color temp and White point sliders with Auto's limit flags, Saturation with its switch, Per-App and Settings, with Pause, the light/dark switch and the master switch in the header" height="420"></picture>
-  <img src="screenshots/real-world.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing Redlight's GitHub page, with the Redlight popover open in Auto at 750 K" height="420"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="screenshots/popover-light.png"><img src="screenshots/popover-dark.png" alt="Redlight popover in Auto just after sunset: a monitor and a Sidecar iPad with Invert and on/off switches, the Auto/Manual switch, the sun arc with sunrise and sunset times, Color temp and White point sliders with Auto's limit flags, Saturation with its switch, Per-App and Settings, with Pause, the light/dark switch and the master switch in the header" height="420"></picture>
+  <img src="screenshots/desk-photo.jpg" alt="Photo of a desktop monitor with Redlight's filter on, turning the whole screen deep red while showing Redlight's GitHub page, with the Redlight popover open in Auto at 750 K" height="420"></p>
 
 ## tl;dr
 
