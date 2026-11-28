@@ -430,8 +430,15 @@ tint is drawn into that picture, and a capture of the iPad's screen shows it.
 
 ## Install
 
-Download the latest `Redlight-<version>.dmg` from [Releases](../../releases), open it, and
-drag **Redlight** to `/Applications`. Installed copies update themselves.
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask andrewfitz/tap/redlight
+```
+
+Or download the latest `Redlight-<version>.dmg` from [Releases](../../releases), open it, and
+drag **Redlight** to `/Applications`. Either way it is signed and notarized, and installed
+copies update themselves.
 
 If macOS blocks an older release from opening, right-click the app and choose **Open**, or
 allow it under **System Settings → Privacy & Security**.
